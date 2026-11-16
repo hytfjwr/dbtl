@@ -1,7 +1,7 @@
 use super::*;
 use crate::manifest::{RawContract, RawManifest, RawNode, RawSource, RawTestMetadata};
 use crate::project_config::{project_config_path, ProjectConfig, PROJECT_CONFIG_NAME};
-use crate::{Catalog, SqlDialect, SqlParseResolver};
+use crate::{Catalog, SqlDialect, SqlParseResolver, UnparsedReason};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -142,7 +142,7 @@ fn default_config_enables_the_registry_default_set() {
         );
     }
     // The opt-in set the registry ships today — a pinned list so adding a
-    // fifth default-off rule is a deliberate edit, not drift.
+    // sixth default-off rule is a deliberate edit, not drift.
     assert_eq!(
         LintRule::ALL
             .iter()
@@ -153,7 +153,8 @@ fn default_config_enables_the_registry_default_set() {
             "undocumented_exposures",
             "model_too_long",
             "layer_materializations",
-            "models_without_unit_tests"
+            "models_without_unit_tests",
+            "suppressions_without_reason"
         ]
     );
     assert_eq!(
@@ -1205,7 +1206,7 @@ fn registry_rows_match_all_one_for_one_in_order() {
 
 #[test]
 fn registry_rows_carry_the_fixed_metadata() {
-    // The 45 ids are a fixed contract — config keys, --rules args and the
+    // The 46 ids are a fixed contract — config keys, --rules args and the
     // baseline format all rely on them. The original structure rules lead;
     // rules added later append in the registry's order so the emitted
     // sequence stays stable.
@@ -1258,6 +1259,7 @@ fn registry_rows_carry_the_fixed_metadata() {
             "layer_materializations",
             "models_without_unit_tests",
             "unresolved_references",
+            "suppressions_without_reason",
         ]
     );
     // Only rules that represent a broken guarantee or a build failure
@@ -2458,6 +2460,260 @@ fn meta_dbtl_reason_is_a_stringifyable_scalar_in_both_modes() {
     let s = suppressed.suppression.expect("the record");
     assert_eq!(s.by, SuppressionSource::Meta);
     assert_eq!(s.reason.as_deref(), Some("per-rule"));
+}
+
+// ---- suppressions_without_reason -----------------------------------------------
+//
+// The audit rule is opt-in (the strict preset — or an explicit `rules:`
+// entry — switches it on): it flags a `meta.dbtl` suppression carrying no
+// reason, one finding per node listing the suppressed ids, and it can
+// never be suppressed itself — not by `meta.dbtl.ignore` (even `all`),
+// not by an `exclude:` spec. `.dbtl.yml` `exclude:` entries are config
+// declarations: never findings, but the outcome counts the reasonless
+// ones for the summary.
+
+#[test]
+fn suppressions_without_reason_flags_reasonless_meta_suppressions() {
+    // Every `ignore` shape audits by the same effective-reason rule the
+    // suppression machinery uses: a `~`/bare declaration is reasonless
+    // unless `meta.dbtl.reason` fills in; an entry's own string wins.
+    let mk = |name: &str, meta: serde_json::Value| {
+        (
+            format!("model.p.{name}"),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("staging/{name}.sql")),
+                meta: meta.as_object().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+        )
+    };
+    let m = manifest(
+        vec![
+            mk(
+                "stg_list",
+                serde_json::json!({"dbtl": {"ignore": ["select_star", "root_models"]}}),
+            ),
+            mk("stg_all", serde_json::json!({"dbtl": {"ignore": "all"}})),
+            mk(
+                "stg_map",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": null, "unused_cte": null}}}),
+            ),
+            mk(
+                "stg_mixed",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": "why", "unused_cte": null}}}),
+            ),
+            // Reasoned forms — never flagged.
+            mk(
+                "stg_reasoned",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": "why"}}}),
+            ),
+            mk(
+                "stg_fallback",
+                serde_json::json!({"dbtl": {"ignore": ["root_models"], "reason": "shared"}}),
+            ),
+            mk(
+                "stg_mapall",
+                serde_json::json!({"dbtl": {"ignore": {"all": "generic"}}}),
+            ),
+            // Nothing to audit at all.
+            model("stg_plain", "staging/stg_plain.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    let cfg = LintConfig {
+        preset: LintPreset::Strict,
+        ..LintConfig::default()
+    };
+    let out = run_rules(LintInput::new(&Dag::build(&m), &cfg));
+    assert_eq!(
+        flagged(&out.findings, LintRule::SuppressionsWithoutReason),
+        vec![
+            "model.p.stg_all",
+            "model.p.stg_list",
+            "model.p.stg_map",
+            "model.p.stg_mixed"
+        ],
+        "reasoned suppressions and undeclared nodes never flag"
+    );
+    let audit = |uid: &str| {
+        out.findings
+            .iter()
+            .find(|f| f.node_uid == uid && f.rule == LintRule::SuppressionsWithoutReason)
+            .map(|f| f.message.clone())
+            .unwrap_or_else(|| panic!("{uid} carries an audit finding"))
+    };
+    // One finding per node, listing the suppressed ids it read off the
+    // declaration — `all` phrases as all rules, never an id list.
+    assert_eq!(
+        audit("model.p.stg_list"),
+        "stg_list suppresses rules without a reason: root_models, select_star"
+    );
+    assert_eq!(
+        audit("model.p.stg_all"),
+        "stg_all suppresses all rules without a reason"
+    );
+    assert_eq!(
+        audit("model.p.stg_map"),
+        "stg_map suppresses rules without a reason: root_models, unused_cte"
+    );
+    // Only the `~` entry flags — the reasoned key beside it doesn't join.
+    assert_eq!(
+        audit("model.p.stg_mixed"),
+        "stg_mixed suppresses rule without a reason: unused_cte"
+    );
+}
+
+#[test]
+fn suppressions_without_reason_is_opt_in() {
+    // Default-off like every opt-in rule: the default config never runs
+    // it; `strict` or an explicit `rules:` entry does.
+    let mut node = model("stg_x", "staging/stg_x.sql");
+    node.1.meta = serde_json::json!({"dbtl": {"ignore": "all"}})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let m = manifest(vec![node], vec![], &[]);
+    let dag = Dag::build(&m);
+    let out = run_rules(LintInput::new(&dag, &LintConfig::default()));
+    assert!(
+        flagged(&out.findings, LintRule::SuppressionsWithoutReason).is_empty(),
+        "the audit never runs under the default config"
+    );
+    for cfg in [
+        LintConfig {
+            preset: LintPreset::Strict,
+            ..LintConfig::default()
+        },
+        config_from("lint:\n  rules:\n    suppressions_without_reason: true\n"),
+    ] {
+        let out = run_rules(LintInput::new(&dag, &cfg));
+        assert_eq!(
+            flagged(&out.findings, LintRule::SuppressionsWithoutReason),
+            vec!["model.p.stg_x"],
+            "strict and an explicit rules: entry both enable it"
+        );
+    }
+}
+
+#[test]
+fn suppressions_without_reason_can_never_be_suppressed() {
+    // The node's own `ignore: all` — and `ignore:` naming the audit rule
+    // — and a config `exclude:` spec all fail to erase the audit: a rule
+    // judging suppression can't be judged away by it.
+    let mk = |name: &str, meta: serde_json::Value| {
+        (
+            format!("model.p.{name}"),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("staging/{name}.sql")),
+                meta: meta.as_object().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+        )
+    };
+    let m = manifest(
+        vec![
+            mk("stg_all", serde_json::json!({"dbtl": {"ignore": "all"}})),
+            mk(
+                "stg_named",
+                serde_json::json!({"dbtl": {"ignore": ["root_models", "suppressions_without_reason"]}}),
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    // The `exclude:` spec under the audit rule names both nodes — the
+    // audit findings still report (and the reasonless spec counts).
+    let cfg = config_from(
+        "lint:\n  preset: strict\n  rules:\n    suppressions_without_reason:\n      exclude: [stg_*]\n",
+    );
+    let out = run_rules(LintInput::new(&Dag::build(&m), &cfg));
+    assert_eq!(
+        flagged(&out.findings, LintRule::SuppressionsWithoutReason),
+        vec!["model.p.stg_all", "model.p.stg_named"],
+        "neither meta.dbtl.ignore nor exclude: can suppress the audit"
+    );
+    assert!(
+        out.suppressed
+            .iter()
+            .all(|f| f.rule != LintRule::SuppressionsWithoutReason),
+        "the audit never joins the suppressed set"
+    );
+    // `stg_named`'s OTHER suppressions still work — only the audit is
+    // immune (its root_models finding lands suppressed, reasonless).
+    let s = out
+        .suppressed
+        .iter()
+        .find(|f| f.node_uid == "model.p.stg_named" && f.rule == LintRule::RootModels)
+        .expect("stg_named's root_models finding still suppresses");
+    assert_eq!(
+        s.suppression.as_ref().unwrap().by,
+        SuppressionSource::Meta,
+        "meta.dbtl.ignore still works for ordinary rules"
+    );
+}
+
+#[test]
+fn suppressions_without_reason_counts_reasonless_excludes_never_findings() {
+    // `exclude:` entries are config declarations — they can never be the
+    // audit's findings; the outcome counts the reasonless ones so the
+    // summary reports them while the audit runs.
+    let cfg = config_from(
+        "lint:\n  preset: strict\n  rules:\n    root_models:\n      exclude:\n        - stg_a\n        - {select: stg_*, reason: staging roots}\n    select_star:\n      exclude: [\"*\"]\n",
+    );
+    let m = manifest(vec![model("stg_a", "staging/stg_a.sql")], vec![], &[]);
+    let out = run_rules(LintInput::new(&Dag::build(&m), &cfg));
+    assert_eq!(
+        out.reasonless_excludes, 2,
+        "the bare `stg_a` entry and the bare `*` list count; the reasoned object doesn't"
+    );
+    assert!(
+        flagged(&out.findings, LintRule::SuppressionsWithoutReason).is_empty(),
+        "an exclude entry is never an audit finding"
+    );
+}
+
+#[test]
+fn suppressions_without_reason_points_at_the_yml_declaration() {
+    // Source mode: the finding's file resolves to the node's schema.yml
+    // entry — the metadata declaration — like every other yaml-side rule.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nversion: \"1.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("models/stg_x.sql"), "select 1").unwrap();
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\nmodels:\n  - name: stg_x\n    meta:\n      dbtl:\n        ignore: [root_models]\n",
+    )
+    .unwrap();
+    let m = crate::manifest_from_source(dir.path()).unwrap();
+    let dag = Dag::build(&m);
+    let cfg = config_from("lint:\n  rules:\n    suppressions_without_reason: true\n");
+    let mut findings = run_rules(LintInput::new(&dag, &cfg)).findings;
+    let f = findings
+        .iter_mut()
+        .find(|f| f.rule == LintRule::SuppressionsWithoutReason)
+        .expect("the audit finding");
+    fill_finding_lines(std::slice::from_mut(f), &dag, dir.path());
+    let loc = f.location.clone().expect("a located finding");
+    assert!(
+        loc.file.ends_with("schema.yml"),
+        "the finding anchors the declaring yml, not the .sql: {}",
+        loc.file
+    );
+    assert_eq!(
+        loc.line,
+        Some(3),
+        "the `- name: stg_x` entry — the node's metadata declaration"
+    );
 }
 
 // ---- the baseline -------------------------------------------------------------
@@ -8157,7 +8413,7 @@ fn missing_inputs_report_skipped_rules_not_findings() {
 #[test]
 fn presets_define_the_base_rule_set() {
     // minimal = exactly the error-default rules; standard = the registry's
-    // `default_enabled` set; strict = everything — the four opt-in rules
+    // `default_enabled` set; strict = everything — the five opt-in rules
     // included.
     let minimal: Vec<_> = LintRule::ALL
         .iter()
@@ -8196,6 +8452,7 @@ fn presets_define_the_base_rule_set() {
         LintRule::ModelTooLong,
         LintRule::LayerMaterializations,
         LintRule::ModelsWithoutUnitTests,
+        LintRule::SuppressionsWithoutReason,
     ] {
         assert!(!LintPreset::Minimal.enables(opt_in.info()));
         assert!(!LintPreset::Standard.enables(opt_in.info()));
@@ -8417,9 +8674,51 @@ fn unparsed_counts_models_whose_sql_wont_parse_once() {
     ]);
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
     assert_eq!(
-        out.unparsed.iter().collect::<Vec<_>>(),
+        out.unparsed.keys().collect::<Vec<_>>(),
         vec!["model.p.unparsable"],
         "each unparsable model lands once, however many rules asked"
+    );
+    // …and it carries WHY: the parser's rejection, position included.
+    match out.unparsed.get("model.p.unparsable") {
+        Some(UnparsedReason::ParseError {
+            line: Some(line),
+            column: Some(column),
+            message,
+        }) => {
+            assert!(
+                *line >= 1 && *column >= 1 && !message.is_empty(),
+                "a positioned parse error: {line}:{column} {message}"
+            );
+        }
+        other => panic!("a parse rejection records its ParseError: {other:?}"),
+    }
+}
+
+#[test]
+fn unparsed_records_no_query_statement_for_non_select_sql() {
+    // SQL that parses but holds no `SELECT` — a bare DDL model body —
+    // lands on `unparsed` under its own reason (the SQL rules can't
+    // judge a statement that isn't a query).
+    let m = manifest(
+        vec![
+            model_sql("ddl", "create table t (a int)"),
+            model_sql("clean", "select 1"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::SelectStar]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        out.unparsed.get("model.p.ddl"),
+        Some(&UnparsedReason::NoQueryStatement),
+        "a statementless-of-query model reads by name, not by parse error"
+    );
+    assert!(
+        !out.unparsed.contains_key("model.p.clean"),
+        "an ordinary select still analyzes"
     );
 }
 
@@ -8466,12 +8765,13 @@ fn deep_sql_linted(sql: &str) -> LintOutcome {
 /// The deep model lands on `unparsed`; the plain one beside it still
 /// analyzes — the bound degrades per model.
 fn assert_deep_unparsed(out: &LintOutcome) {
-    assert!(
-        out.unparsed.iter().any(|u| u == "model.p.deep"),
-        "the over-depth model must read as unparsable"
+    assert_eq!(
+        out.unparsed.get("model.p.deep"),
+        Some(&crate::UnparsedReason::DepthLimit),
+        "the over-depth model must read as unparsable, by depth"
     );
     assert!(
-        !out.unparsed.iter().any(|u| u == "model.p.ok"),
+        !out.unparsed.contains_key("model.p.ok"),
         "an ordinary model still parses on the same run"
     );
 }
@@ -8540,7 +8840,7 @@ fn statementless_rendered_sql_is_judged_not_unparsed() {
         out.findings
     );
     assert_eq!(
-        out.unparsed.iter().collect::<Vec<_>>(),
+        out.unparsed.keys().collect::<Vec<_>>(),
         vec!["model.p.broken"],
         "whitespace/comments/config-only are judged empty — only real unparsable SQL counts"
     );

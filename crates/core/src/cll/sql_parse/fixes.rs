@@ -710,7 +710,7 @@ pub(crate) fn unread_cte_deletes(
 /// must still render under Jinja and parse — the same `Plain` render
 /// the positions pass judges.
 pub(crate) fn sql_still_parses(sql: &str, dialect: SqlDialect) -> bool {
-    jinja_parse(sql, JinjaMark::Plain, dialect).is_some()
+    jinja_parse(sql, JinjaMark::Plain, dialect).is_ok()
 }
 
 #[cfg(test)]

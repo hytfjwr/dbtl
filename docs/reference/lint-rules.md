@@ -2,7 +2,7 @@
 
 # Lint rules
 
-45 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
+46 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
 
 ## Rule-set presets
 
@@ -12,7 +12,7 @@
 | ------ | ----- |
 | `minimal` | only the rules whose default severity is `error` — 5 rules |
 | `standard` | every rule the registry enables by default — 41 rules |
-| `strict` | every rule, opt-in included — 45 rules |
+| `strict` | every rule, opt-in included — 46 rules |
 
 | Rule | Category | Default | `minimal` | `standard` | `strict` | Inputs | Fix | Summary |
 | ---- | -------- | ------- | --------- | ---------- | -------- | ------ | --- | ------- |
@@ -61,6 +61,7 @@
 | [`layer_materializations`](#layer_materializations) | performance | off (opt-in) | off | off | on | graph | - | a model's materialization isn't allowed for its layer |
 | [`models_without_unit_tests`](#models_without_unit_tests) | testing | off (opt-in) | off | off | on | graph | - | a model in a checked layer has no unit test |
 | [`unresolved_references`](#unresolved_references) | modeling | warn | off | on | on | graph | - | a ref()/source() call resolves to no node |
+| [`suppressions_without_reason`](#suppressions_without_reason) | governance | off (opt-in) | off | off | on | graph | - | a node's meta.dbtl suppression records no reason |
 
 ## `direct_join_to_source`
 
@@ -759,5 +760,19 @@ A ref()/source() call resolves to no node.
 **Example:** fct_orders refs stg_ordres — a typo for stg_orders — and reads source('raw', 'nonexistent'), which no schema.yml declares. Fix: correct the names, or declare the source.
 
 **Fix:** fix the call's name or declare the target so the reference resolves
+
+**Parameters:** none.
+
+## `suppressions_without_reason`
+
+Category: `governance` · Default: `off` (opt-in — runs at `warn` when enabled) · Inputs: graph · Auto-fix: no
+
+A node's meta.dbtl suppression records no reason.
+
+**Why:** A suppression without a reason is invisible debt: the reader can't tell a deliberate exception from a leftover, and the lint run's 'no reason' tally can't enforce the convention on its own — an enabled rule can. The audit reads the same `meta.dbtl` block the suppression machinery does (`ignore: all`, a rule-id list, or a `{rule\|all: reason}` map, with `meta.dbtl.reason` as the fallback), and reports one finding per node listing the suppressed rule ids. Because the rule audits the suppression machinery itself, its own findings can never be suppressed — a reasonless `ignore: all` must not erase the audit, so `meta.dbtl.ignore` and `.dbtl.yml` `exclude:` do not apply to it. `.dbtl.yml` `exclude:` entries aren't node metadata and flag nothing; when this rule is enabled the summary counts the reasonless ones instead.
+
+**Example:** stg_orders carries meta: {dbtl: {ignore: [select_star]}} with no reason. Fix: write meta: {dbtl: {ignore: {select_star: "wide staging read"}}} or meta: {dbtl: {reason: ...}}.
+
+**Fix:** record a reason on the meta.dbtl suppression (or drop it)
 
 **Parameters:** none.

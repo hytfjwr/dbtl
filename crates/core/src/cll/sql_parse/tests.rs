@@ -658,8 +658,8 @@ fn plain_positions_extract_wildcard_join_and_column_spans() {
             ("a".to_string(), 7..8),
         ]
     );
-    // An unparsable text is `None` — never a position to guess.
-    assert!(plain_positions("select from where or", SqlDialect::Generic).is_none());
+    // An unparsable text is `Err` — never a position to guess.
+    assert!(plain_positions("select from where or", SqlDialect::Generic).is_err());
 }
 
 #[test]
@@ -674,8 +674,8 @@ fn marked_relations_carry_name_spans() {
             ..raw.find("analytics.orders").unwrap() + "analytics.orders".len(),
         "the written name underlines itself"
     );
-    // An unparsable text is `None` — never a position to guess.
-    assert!(marked_relations("select from where or", SqlDialect::Generic).is_none());
+    // An unparsable text is `Err` — never a position to guess.
+    assert!(marked_relations("select from where or", SqlDialect::Generic).is_err());
 }
 
 #[test]
@@ -2343,7 +2343,7 @@ fn jinja_parse_recovers_loop_separators_and_exclusive_arms() {
         "select * {% if x %} from a.t {% else %} from b.u {% endif %}",
     ] {
         assert!(
-            jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_some(),
+            jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_ok(),
             "{sql:?} parses"
         );
     }
@@ -2353,7 +2353,7 @@ fn jinja_parse_recovers_loop_separators_and_exclusive_arms() {
         JinjaMark::Plain,
         SqlDialect::Generic
     )
-    .is_none());
+    .is_err());
 }
 
 #[test]
@@ -2396,7 +2396,7 @@ fn jinja_arm_splits_where_a_comma_cannot_parse_render_a_space() {
     ] {
         assert_eq!(render_jinja(sql, SqlDialect::Generic), rendered, "{sql:?}");
         assert!(
-            jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_some(),
+            jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_ok(),
             "{sql:?} parses"
         );
     }

@@ -226,15 +226,34 @@ pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
         }
         lines.push(line);
     }
+    if let Some(n) = lint.reasonless_excludes {
+        if n > 0 {
+            // `exclude:` entries are config declarations — a count, never
+            // a finding — so the audit reports them on the summary.
+            lines.push(format!(
+                "{} in .dbtl.yml without a reason",
+                counted(n, "exclude entry", "exclude entries")
+            ));
+        }
+    }
     if !lint.unparsed_models.is_empty() {
         // Name up to 10 skipped models — a wall of names would bury the
         // exit-relevant tally; the `+K more` tail keeps the count honest.
+        // Each name carries the reason its parse failed.
         const SHOWN: usize = 10;
         let shown = lint.unparsed_models.len().min(SHOWN);
+        let named = lint.unparsed_models[..shown]
+            .iter()
+            .map(|name| match lint.unparsed_reasons.get(name) {
+                Some(reason) => format!("{name} ({reason})"),
+                None => name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         let mut line = format!(
             "{} skipped SQL rules (unparsable SQL): {}",
             counted(lint.unparsed_models.len(), "model", "models"),
-            lint.unparsed_models[..shown].join(", "),
+            named,
         );
         let hidden = lint.unparsed_models.len() - shown;
         if hidden > 0 {
@@ -598,6 +617,8 @@ mod tests {
             has_diff: false,
             skipped: Vec::new(),
             unparsed_models: Vec::new(),
+            unparsed_reasons: std::collections::BTreeMap::new(),
+            reasonless_excludes: None,
             suppressed: SuppressedSummary::default(),
             fixed: None,
             fix_refused: Vec::new(),
@@ -733,6 +754,56 @@ mod tests {
             summary_lines(&report, &LintTally::default(), false),
             "No findings\n0 rules reported findings"
         );
+    }
+
+    /// Each named model carries the reason its parse failed — `name
+    /// (reason)` — while a name without a recorded reason prints bare.
+    #[test]
+    fn summary_appends_each_unparsed_reason() {
+        let report = Report::new("p", "source (x)");
+        let lint = LintTally {
+            unparsed_models: vec!["m_a".to_string(), "m_b".to_string()],
+            unparsed_reasons: [(
+                "m_a".to_string(),
+                "parse error at 1:13: Expected: table name".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..LintTally::default()
+        };
+        assert_eq!(
+            summary_lines(&report, &lint, false),
+            "No findings\n\
+             0 rules reported findings\n\
+             2 models skipped SQL rules (unparsable SQL): \
+             m_a (parse error at 1:13: Expected: table name), m_b"
+        );
+    }
+
+    /// While `suppressions_without_reason` runs, reasonless `exclude:`
+    /// entries count on the summary — `Some(0)` and `None` print no line.
+    #[test]
+    fn summary_counts_reasonless_excludes_only_while_the_audit_runs() {
+        let report = Report::new("p", "source (x)");
+        let lint = |n: Option<usize>| LintTally {
+            reasonless_excludes: n,
+            ..LintTally::default()
+        };
+        assert_eq!(
+            summary_lines(&report, &lint(Some(1)), false),
+            "No findings\n\
+             0 rules reported findings\n\
+             1 exclude entry in .dbtl.yml without a reason"
+        );
+        assert!(summary_lines(&report, &lint(Some(2)), false)
+            .contains("2 exclude entries in .dbtl.yml without a reason"));
+        for none in [lint(Some(0)), lint(None)] {
+            assert_eq!(
+                summary_lines(&report, &none, false),
+                "No findings\n0 rules reported findings",
+                "zero reasonless entries — or the audit not running — prints no line"
+            );
+        }
     }
 
     /// The `--fix` tally lists every refused edit as `file: rule —

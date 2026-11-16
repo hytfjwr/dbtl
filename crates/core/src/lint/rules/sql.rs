@@ -15,24 +15,44 @@
 //! it. Python models (`language == "python"`) are excluded entirely —
 //! their `raw_code` is Python, not SQL.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use super::*;
-use crate::{SqlDialect, SqlParseResolver};
+use crate::{SqlDialect, SqlParseResolver, UnparsedReason};
 
 /// One raw-SQL occurrence a finding can point at: the byte range inside
 /// the model's `raw_code` and the note the position carries (the primary
 /// position's `label`, a secondary `labels` entry).
 type SpanNote = (Range<usize>, String);
 
+/// The [`UnparsedReason`] a failed analysis recorded for `uid` — a
+/// failure that somehow recorded none still reads as a parse failure
+/// (never a guess about which stage).
+fn unparsed_reason(sql: &SqlParseResolver, uid: &str) -> UnparsedReason {
+    sql.unparsed_reason(uid)
+        .unwrap_or(UnparsedReason::ParseError {
+            line: None,
+            column: None,
+            message: String::new(),
+        })
+}
+
 /// `uid` asked for parse facts and got `None` though the model HAS SQL
 /// text (raw or compiled — [`crate::resolution_sql`]'s either-source
 /// read): it belongs on the outcome's `unparsed` set, so the summary can
-/// report "skipped by SQL rules" instead of silently passing it.
-fn record_unparsed(dag: &Dag, uid: &str, unparsed: &mut BTreeSet<String>) {
-    if crate::resolution_sql(dag, uid).is_some() {
-        unparsed.insert(uid.to_string());
+/// report "skipped by SQL rules" — and WHY — instead of silently passing
+/// it.
+fn record_unparsed(
+    dag: &Dag,
+    uid: &str,
+    sql: &SqlParseResolver,
+    unparsed: &mut BTreeMap<String, UnparsedReason>,
+) {
+    if crate::resolution_sql(dag, uid).is_none() {
+        return;
     }
+    unparsed.insert(uid.to_string(), unparsed_reason(sql, uid));
 }
 
 /// The `(file, raw SQL)` a SQL finding's positions anchor into — the
@@ -90,7 +110,7 @@ pub(super) fn select_star(
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
     sql: &SqlParseResolver,
-    unparsed: &mut BTreeSet<String>,
+    unparsed: &mut BTreeMap<String, UnparsedReason>,
     out: &mut Vec<Finding>,
 ) {
     let allow_cte_close = config
@@ -102,7 +122,7 @@ pub(super) fn select_star(
             continue;
         }
         let Some(facts) = sql.sql_facts(dag, uid) else {
-            record_unparsed(dag, uid, unparsed);
+            record_unparsed(dag, uid, sql, unparsed);
             continue;
         };
         if !facts.unbounded_wildcard || (allow_cte_close && facts.star_over_single_explicit_cte) {
@@ -159,7 +179,7 @@ pub(super) fn hard_coded_references(
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
     sql: &SqlParseResolver,
-    unparsed: &mut BTreeSet<String>,
+    unparsed: &mut BTreeMap<String, UnparsedReason>,
     out: &mut Vec<Finding>,
 ) {
     let ignore: Vec<regex::Regex> = config
@@ -191,9 +211,11 @@ pub(super) fn hard_coded_references(
         }
         let Some(scan) = sql.hard_coded_relations(dag, uid) else {
             // `hard_coded_relations` judges `raw_code` only — a compiled-
-            // only model isn't unparsed, it's deliberately unjudged.
+            // only model isn't unparsed, it's deliberately unjudged. Raw
+            // SQL that wouldn't parse counts, with the marked render's
+            // recorded failure as its reason.
             if dag.raw_code(uid).is_some_and(|r| !r.trim().is_empty()) {
-                unparsed.insert((*uid).clone());
+                unparsed.insert((*uid).clone(), unparsed_reason(sql, uid));
             }
             continue;
         };
@@ -241,7 +263,7 @@ pub(super) fn cartesian_join(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
-    unparsed: &mut BTreeSet<String>,
+    unparsed: &mut BTreeMap<String, UnparsedReason>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -250,7 +272,7 @@ pub(super) fn cartesian_join(
             continue;
         }
         let Some(facts) = sql.sql_facts(dag, uid) else {
-            record_unparsed(dag, uid, unparsed);
+            record_unparsed(dag, uid, sql, unparsed);
             continue;
         };
         if facts.cartesian.is_empty() {
@@ -315,7 +337,7 @@ pub(super) fn unknown_column_reference(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
-    unparsed: &mut BTreeSet<String>,
+    unparsed: &mut BTreeMap<String, UnparsedReason>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -324,7 +346,7 @@ pub(super) fn unknown_column_reference(
             continue;
         }
         let Some(facts) = sql.sql_facts(dag, uid) else {
-            record_unparsed(dag, uid, unparsed);
+            record_unparsed(dag, uid, sql, unparsed);
             continue;
         };
         let mut missed: Vec<&(String, String)> = facts
@@ -530,7 +552,7 @@ pub(super) fn duplicate_output_columns(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
-    unparsed: &mut BTreeSet<String>,
+    unparsed: &mut BTreeMap<String, UnparsedReason>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -539,7 +561,7 @@ pub(super) fn duplicate_output_columns(
             continue;
         }
         let Some(facts) = sql.sql_facts(dag, uid) else {
-            record_unparsed(dag, uid, unparsed);
+            record_unparsed(dag, uid, sql, unparsed);
             continue;
         };
         if facts.duplicate_outputs.is_empty() {
@@ -641,7 +663,7 @@ pub(super) fn unused_cte(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
-    unparsed: &mut BTreeSet<String>,
+    unparsed: &mut BTreeMap<String, UnparsedReason>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -650,7 +672,7 @@ pub(super) fn unused_cte(
             continue;
         }
         let Some(facts) = sql.sql_facts(dag, uid) else {
-            record_unparsed(dag, uid, unparsed);
+            record_unparsed(dag, uid, sql, unparsed);
             continue;
         };
         if facts.unused_ctes.is_empty() {
@@ -724,7 +746,7 @@ pub(super) fn order_by_without_limit(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
-    unparsed: &mut BTreeSet<String>,
+    unparsed: &mut BTreeMap<String, UnparsedReason>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -733,7 +755,7 @@ pub(super) fn order_by_without_limit(
             continue;
         }
         let Some(facts) = sql.sql_facts(dag, uid) else {
-            record_unparsed(dag, uid, unparsed);
+            record_unparsed(dag, uid, sql, unparsed);
             continue;
         };
         if !facts.unlimited_order_by {

@@ -75,6 +75,8 @@ mod tests {
             has_diff: false,
             skipped: Vec::new(),
             unparsed_models: Vec::new(),
+            unparsed_reasons: BTreeMap::new(),
+            reasonless_excludes: None,
             suppressed: SuppressedSummary::default(),
             fixed: None,
             fix_refused: Vec::new(),

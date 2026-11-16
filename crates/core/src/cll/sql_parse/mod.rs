@@ -169,6 +169,64 @@ pub struct SqlFacts {
     pub star_over_single_explicit_cte: bool,
 }
 
+/// Why a model's SQL exists but the analyzer gave up on it — the reason
+/// an `unparsed` entry carries into the lint summary. Every uid in
+/// [`crate::LintOutcome::unparsed`] maps to exactly one: the analysis
+/// only ever fails one of these ways.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnparsedReason {
+    /// A depth bound tripped — the lexical pre-parse bound
+    /// (`depth::MAX_DEPTH`), `sqlparser`'s own recursion budget, or the
+    /// resolver's per-model nesting budget: the text was too deep to
+    /// walk safely.
+    DepthLimit,
+    /// `sqlparser` rejected the rendered text — its error summary, plus
+    /// the 1-based `line`/`column` the error reported when it has one.
+    /// The position indexes into the Jinja-rendered text the parse ran
+    /// on, so it can drift a few lines off the raw file for a macro that
+    /// emits whole clauses.
+    ParseError {
+        line: Option<u32>,
+        column: Option<u32>,
+        message: String,
+    },
+    /// The text parsed but carried no `Query` statement — a model body
+    /// that isn't a `SELECT` (a bare DDL statement) has nothing to
+    /// analyze.
+    NoQueryStatement,
+    /// The resolution walk re-entered the uid — the manifest's
+    /// dependency chain cycles back on itself.
+    DependencyCycle,
+}
+
+impl std::fmt::Display for UnparsedReason {
+    /// The reason the lint summary prints after the model's name
+    /// (`orders (parse error at 12:5)`).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnparsedReason::DepthLimit => f.write_str("depth limit exceeded"),
+            UnparsedReason::ParseError {
+                line: Some(line),
+                column: Some(column),
+                message,
+            } if !message.is_empty() => {
+                write!(f, "parse error at {line}:{column}: {message}")
+            }
+            UnparsedReason::ParseError {
+                line: Some(line),
+                column: Some(column),
+                ..
+            } => write!(f, "parse error at {line}:{column}"),
+            UnparsedReason::ParseError { message, .. } if !message.is_empty() => {
+                write!(f, "parse error: {message}")
+            }
+            UnparsedReason::ParseError { .. } => f.write_str("parse error"),
+            UnparsedReason::NoQueryStatement => f.write_str("no query statement"),
+            UnparsedReason::DependencyCycle => f.write_str("dependency cycle"),
+        }
+    }
+}
+
 /// The parser-backed resolver: parses each model's SQL (compiled first, raw as
 /// the documented fallback) with `sqlparser`, resolves column references
 /// against a real FROM/JOIN/CTE scope, and classifies edges passthrough /
@@ -211,6 +269,12 @@ pub struct SqlParseResolver {
     /// In-flight `analyze` stack: a pathological manifest with a uid cycle
     /// degrades the re-entered node to "unresolved" instead of recursing.
     analyzing: RefCell<BTreeSet<String>>,
+    /// uid → the [`UnparsedReason`] a failed analysis recorded — populated
+    /// alongside `analyzed_memo`/`hard_coded_memo` `None` entries so a
+    /// lint `unparsed` entry says WHY the model's SQL rules were skipped.
+    /// First reason wins: the `Plain`/`resolution_sql` analysis is the
+    /// primary parse, so a later re-parse never overwrites it.
+    unparsed_reasons: RefCell<BTreeMap<String, UnparsedReason>>,
 }
 
 impl SqlParseResolver {
@@ -230,6 +294,7 @@ impl SqlParseResolver {
             positions_memo: RefCell::new(BTreeMap::new()),
             fallbacks: RefCell::new(BTreeSet::new()),
             analyzing: RefCell::new(BTreeSet::new()),
+            unparsed_reasons: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -320,7 +385,13 @@ impl SqlParseResolver {
             if raw.trim().is_empty() {
                 return None;
             }
-            marked_relations(raw, self.dialect).map(Rc::new)
+            match marked_relations(raw, self.dialect) {
+                Ok(m) => Some(Rc::new(m)),
+                Err(e) => {
+                    self.fail_unparsed(uid, e.into_reason());
+                    None
+                }
+            }
         })();
         self.hard_coded_memo
             .borrow_mut()
@@ -344,7 +415,7 @@ impl SqlParseResolver {
             if raw.trim().is_empty() {
                 return None;
             }
-            plain_positions(raw, self.dialect).map(Rc::new)
+            plain_positions(raw, self.dialect).ok().map(Rc::new)
         })();
         self.positions_memo
             .borrow_mut()
@@ -381,6 +452,24 @@ impl SqlParseResolver {
     #[cfg(test)]
     pub(crate) fn hard_coded_count(&self) -> usize {
         self.hard_coded_memo.borrow().len()
+    }
+
+    /// Why `uid`'s analysis gave up — `Some` once a parse or resolution
+    /// failure recorded it (the paths `sql_facts`/`hard_coded_relations`
+    /// return `None` for). A model never asked about, or one with no
+    /// SQL, has `None`.
+    pub fn unparsed_reason(&self, uid: &str) -> Option<UnparsedReason> {
+        self.unparsed_reasons.borrow().get(uid).cloned()
+    }
+
+    /// Record `reason` for `uid` — first failure wins: the primary
+    /// `Plain`/`resolution_sql` analysis records before the `Marked`
+    /// positions re-parse, whose own failure never overwrites it.
+    fn fail_unparsed(&self, uid: &str, reason: UnparsedReason) {
+        self.unparsed_reasons
+            .borrow_mut()
+            .entry(uid.to_string())
+            .or_insert(reason);
     }
 
     // -- column lists -------------------------------------------------------
@@ -473,7 +562,7 @@ impl SqlParseResolver {
     /// reason still catches the edit).
     fn compute_expr_map(&self, dag: &Dag, uid: &str) -> Option<BTreeMap<String, String>> {
         let (text, _) = resolution_sql(dag, uid)?;
-        let (_, stmts) = jinja_parse(text, JinjaMark::Plain, self.dialect)?;
+        let (_, stmts) = jinja_parse(text, JinjaMark::Plain, self.dialect).ok()?;
         let query = stmts.iter().find_map(|s| match s {
             Statement::Query(q) => Some(&**q),
             _ => None,
@@ -524,10 +613,17 @@ impl SqlParseResolver {
     fn compute_analyzed(&self, dag: &Dag, node: &str) -> Option<Rc<Analyzed>> {
         let (text, _) = resolution_sql(dag, node)?;
         if !self.analyzing.borrow_mut().insert(node.to_string()) {
+            self.fail_unparsed(node, UnparsedReason::DependencyCycle);
             return None; // uid cycle — degrade the re-entered node
         }
         let out = (|| {
-            let (rendered, stmts) = jinja_parse(text, JinjaMark::Plain, self.dialect)?;
+            let (rendered, stmts) = match jinja_parse(text, JinjaMark::Plain, self.dialect) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.fail_unparsed(node, e.into_reason());
+                    return None;
+                }
+            };
             // A render producing no statements — whitespace, comments, or
             // config-only (`{{ config() }}` renders to whitespace) — is
             // judged-and-empty, not unparsable: the SQL rules find nothing,
@@ -535,10 +631,16 @@ impl SqlParseResolver {
             if stmts.is_empty() {
                 return Some(Rc::new(Analyzed::default()));
             }
-            let query = stmts.iter().find_map(|s| match s {
+            let query = match stmts.iter().find_map(|s| match s {
                 Statement::Query(q) => Some(&**q),
                 _ => None,
-            })?;
+            }) {
+                Some(q) => q,
+                None => {
+                    self.fail_unparsed(node, UnparsedReason::NoQueryStatement);
+                    return None;
+                }
+            };
             let parents = Self::build_parents(dag, node);
             let ctx = Ctx {
                 dag,
@@ -552,7 +654,15 @@ impl SqlParseResolver {
                 ctes: &ctes,
                 locals: &NO_LOCALS,
             };
-            let (res, scope) = self.resolve_query_full(&ctx, env, query)?;
+            let (res, scope) = match self.resolve_query_full(&ctx, env, query) {
+                Some(v) => v,
+                // The only `None` the resolution walk produces is its
+                // per-model depth budget tripping (`Ctx::depth`).
+                None => {
+                    self.fail_unparsed(node, UnparsedReason::DepthLimit);
+                    return None;
+                }
+            };
             let scan = scan_statements(&stmts, Some(&rendered));
             let wildcards = query_wildcard_items(query);
             // The resolved output list IS the output-name truth: `*`/`t.*`

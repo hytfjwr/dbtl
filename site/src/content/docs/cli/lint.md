@@ -29,7 +29,8 @@ A closing tally summarizes the run. Each line appears only when it applies:
 | `N findings suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` | [Suppression](#suppressed-findings) dropped at least one finding. |
 | `N findings auto-fixed in M files` | A fix pass changed files. A dry run reads `auto-fixable … (dry run — no files written)`. |
 | `N fix edits refused:` | A fix pass refused edits — one `file: rule — reason` line follows per refusal. |
-| `N models skipped SQL rules (unparsable SQL): <names>` | A model carried SQL the parser could not read. It lists up to ten names, then `+K more`. |
+| `N models skipped SQL rules (unparsable SQL): <name (reason), …>` | A model carried SQL the parser could not read. Each name carries why — `parse error at L:C: …`, `depth limit exceeded`, or `no query statement`. It lists up to ten names, then `+K more`. |
+| `N exclude entries in .dbtl.yml without a reason` | `suppressions_without_reason` ran and at least one `exclude:` entry carried no reason. |
 
 ```text
 error[public_models_without_contract]: fct_public_api is access: public without an enforced contract
@@ -83,7 +84,7 @@ One findings list feeds every surface, so the numbers cannot drift apart:
 
 The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters. Rules in the `warehouse` category run against `catalog.json` and are skipped without one.
 
-Four rules ship opt-in. `standard` skips them, and `strict` or a `rules:` entry turns them on:
+Five rules ship opt-in. `standard` skips them, and `strict` or a `rules:` entry turns them on:
 
 | Rule | Flags | Main parameter |
 | ---- | ----- | -------------- |
@@ -91,6 +92,7 @@ Four rules ship opt-in. `standard` skips them, and `strict` or a `rules:` entry 
 | `model_too_long` | A SQL model whose counted lines pass a budget. Blank lines and Jinja-comment-only lines never count. | `max_lines` |
 | `layer_materializations` | A model materialized in a way its layer's `allowed` map does not list. | `allowed` |
 | `models_without_unit_tests` | A model in a checked layer with no unit test. Python models and materialized views cannot carry one and never flag. | `layers` (default `marts`) |
+| `suppressions_without_reason` | A node's `meta.dbtl` suppression records no reason. It can never be suppressed itself, and while it runs the summary counts `exclude:` entries without a reason. | none |
 
 `unresolved_references` flags a literal `ref()` or `source()` call that names nothing the project or its installed packages provide, such as a typo'd model name or an undeclared source table. It pins the finding to the call itself. See the [rule reference](../reference/lint-rules.md#unresolved_references) for what it skips.
 
@@ -193,6 +195,8 @@ Two mechanisms suppress a finding without disabling its rule:
 
 Both can record why. An `exclude` entry may be a `{select, reason}` object. `meta.dbtl.ignore` takes per-rule reasons in map form, with `meta.dbtl.reason` as the fallback. See [Suppress rules on one node](../configuration/project-config.md#suppress-rules-on-one-node).
 
+The opt-in `suppressions_without_reason` rule audits those reasons: one finding per node whose `meta.dbtl` suppression records none, pointing at the metadata declaration. Because it judges the suppression machinery itself, neither `meta.dbtl.ignore` (including `ignore: all`) nor an `exclude:` spec can suppress it. `exclude:` entries are config declarations, never findings — while the rule runs, the summary counts the ones carrying no reason instead.
+
 A suppressed finding never gates. It drops out of the `--fail-on` count, the baseline, and the exit code. It is also left out of the `sarif`, `junit`, `codeclimate`, `github`, and `markdown` outputs. The `github` and `markdown` summaries still count it, as in `2 suppressed`. The text and JSON summaries count it too, and `--show-suppressed` lists the findings themselves:
 
 ```sh
@@ -240,7 +244,8 @@ The `json` report's `summary` always carries `errors`, `warnings`, `baselined`, 
 | Key | Appears when |
 | --- | ------------ |
 | `suppressed` | A finding was suppressed. It holds the total, the `exclude`/`meta` split, and how many recorded no reason. |
-| `unparsed_models` | Models carried SQL the parser could not read. It is `{count, names}`. |
+| `unparsed_models` | Models carried SQL the parser could not read. It is `{count, names, reasons}` — `reasons` maps each name to why its parse failed. |
+| `exclude_entries_without_reason` | `suppressions_without_reason` ran — the count of `.dbtl.yml` `exclude:` entries carrying no reason. |
 | `fixed` | The run used `--fix` or `--fix-dry-run` and at least one file changed (or would have). |
 | `fix_refused` | A fix pass refused at least one edit — `[{file, rule, reason}]` per refusal, in file order. |
 

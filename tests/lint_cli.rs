@@ -2058,10 +2058,19 @@ fn json_summary_names_the_unparsable_models() {
         "json",
     ]);
     let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    // The additive `reasons` map keys the same display names to the
+    // failure the parse recorded.
+    assert_eq!(json["summary"]["unparsed_models"]["count"], 1);
     assert_eq!(
-        json["summary"]["unparsed_models"],
-        serde_json::json!({"count": 1, "names": ["m_broken"]}),
+        json["summary"]["unparsed_models"]["names"],
+        serde_json::json!(["m_broken"]),
         "the unparsable set lists by name: {}",
+        json["summary"]
+    );
+    assert_eq!(
+        json["summary"]["unparsed_models"]["reasons"],
+        serde_json::json!({"m_broken": "parse error at 1:13: Expected: table name, found: where"}),
+        "each name carries its parse-failure reason: {}",
         json["summary"]
     );
 }

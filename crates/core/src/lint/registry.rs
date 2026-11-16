@@ -1011,6 +1011,38 @@ pub static REGISTRY: &[RuleInfo] = &[
         params: &[],
         requires: Requires::Graph,
     },
+    RuleInfo {
+        rule: LintRule::SuppressionsWithoutReason,
+        id: "suppressions_without_reason",
+        category: Category::Governance,
+        default_severity: Severity::Warn,
+        default_enabled: false,
+        summary: "a node's meta.dbtl suppression records no reason",
+        rationale: "A suppression without a reason is invisible debt: the \
+                    reader can't tell a deliberate exception from a \
+                    leftover, and the lint run's 'no reason' tally can't \
+                    enforce the convention on its own — an enabled rule \
+                    can. The audit reads the same `meta.dbtl` block the \
+                    suppression machinery does (`ignore: all`, a rule-id \
+                    list, or a `{rule|all: reason}` map, with \
+                    `meta.dbtl.reason` as the fallback), and reports one \
+                    finding per node listing the suppressed rule ids. \
+                    Because the rule audits the suppression machinery \
+                    itself, its own findings can never be suppressed — a \
+                    reasonless `ignore: all` must not erase the audit, so \
+                    `meta.dbtl.ignore` and `.dbtl.yml` `exclude:` do not \
+                    apply to it. `.dbtl.yml` `exclude:` entries aren't \
+                    node metadata and flag nothing; when this rule is \
+                    enabled the summary counts the reasonless ones \
+                    instead.",
+        example: "stg_orders carries meta: {dbtl: {ignore: [select_star]}} \
+                  with no reason. Fix: write \
+                  meta: {dbtl: {ignore: {select_star: \"wide staging read\"}}} \
+                  or meta: {dbtl: {reason: ...}}.",
+        help: "record a reason on the meta.dbtl suppression (or drop it)",
+        params: &[],
+        requires: Requires::Graph,
+    },
 ];
 
 /// A rule the registry once carried and has since dropped. The id stays

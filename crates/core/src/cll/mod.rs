@@ -24,7 +24,9 @@ use serde::Serialize;
 pub(crate) use sql_parse::{
     semicolon_delete, sql_still_parses, trailing_semicolon, unread_cte_deletes,
 };
-pub use sql_parse::{MarkedRelations, SqlDialect, SqlFacts, SqlParseResolver, SqlPositions};
+pub use sql_parse::{
+    MarkedRelations, SqlDialect, SqlFacts, SqlParseResolver, SqlPositions, UnparsedReason,
+};
 
 use crate::catalog::Catalog;
 use crate::dag::Dag;

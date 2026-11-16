@@ -5,14 +5,14 @@
 //! shared predicates (layer resolution, parent classification, the scope
 //! test) also live here so no category file re-implements them.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
 use super::*;
 use crate::select::select_report;
 use crate::SqlDialect;
-use crate::{Catalog, SqlParseResolver};
+use crate::{Catalog, SqlParseResolver, UnparsedReason};
 
 pub(super) use crate::lint::call_sites::{
     display_name, display_names, family_name, name_list, pluralize, version_families,
@@ -141,11 +141,17 @@ pub struct LintOutcome {
     /// [`LintRule::ALL`] order.
     pub skipped: Vec<SkippedRule>,
     /// Models a [`Requires::Sql`] rule could not judge because their SQL
-    /// exists (raw or compiled) but wouldn't parse/select — each uid once
-    /// even when several SQL rules hit the same failure. Sorted by the
-    /// `BTreeSet`; `forbidden_patterns` (a raw-text rule) never
-    /// contributes, and neither do models that simply HAVE no SQL.
-    pub unparsed: BTreeSet<String>,
+    /// exists (raw or compiled) but wouldn't parse/resolve — each uid
+    /// once, mapped to the [`UnparsedReason`] the analysis recorded (the
+    /// depth bound or a parser rejection). Sorted by the `BTreeMap`;
+    /// `forbidden_patterns` (a raw-text rule) never contributes, and
+    /// neither do models that simply HAVE no SQL.
+    pub unparsed: BTreeMap<String, UnparsedReason>,
+    /// `.dbtl.yml` `lint.rules.<id>.exclude` entries declaring no reason
+    /// — counted during the suppression pass (an exclude is a config
+    /// declaration, not a node, so `suppressions_without_reason` can
+    /// never make one a finding; the summary counts them instead).
+    pub reasonless_excludes: usize,
     /// Evaluation-time warnings — selector-deprecation notes (the `path:`
     /// legacy resource-relative form through a rule's `exclude:` or a
     /// selector parameter) and `unresolved_references`' unverifiable-call
@@ -182,8 +188,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     let mut out = Vec::new();
     let mut skipped = Vec::new();
     // Models whose SQL exists but wouldn't parse for a `Requires::Sql`
-    // rule — one uid per model regardless of how many SQL rules asked.
-    let mut unparsed = BTreeSet::new();
+    // rule — one uid per model regardless of how many SQL rules asked,
+    // each carrying the reason the analysis recorded.
+    let mut unparsed = BTreeMap::new();
     // Selector deprecation notes — a `BTreeSet` dedupes the same
     // `path:`-form warning across rules/excludes and sorts the result.
     let mut notes = BTreeSet::new();
@@ -394,6 +401,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
             LintRule::UnresolvedReferences => {
                 modeling::unresolved_references(dag, &uids, &in_scope, &sites, &mut out, &mut notes)
             }
+            LintRule::SuppressionsWithoutReason => {
+                governance::suppressions_without_reason(dag, &uids, &in_scope, &mut out)
+            }
         }
     }
     // The envelope fields are filled in ONE place — the severity the config
@@ -402,12 +412,13 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     for f in &mut out {
         envelope(dag, config, f);
     }
-    let suppressed = suppress(dag, config, &mut out, &mut notes);
+    let (suppressed, reasonless_excludes) = suppress(dag, config, &mut out, &mut notes);
     LintOutcome {
         findings: out,
         suppressed,
         skipped,
         unparsed,
+        reasonless_excludes,
         warnings: notes.into_iter().collect(),
     }
 }
@@ -477,15 +488,20 @@ type ExcludedSet = (BTreeSet<String>, Option<String>);
 /// matching spec in declared order records. Each `exclude:` spec's
 /// evaluation notes (the `path:` legacy form) join `notes` for the
 /// outcome's warning channel.
+///
+/// Returns the suppressed findings plus the count of `exclude:` entries
+/// declaring no reason — the tally `suppressions_without_reason` reports
+/// in the summary since a config declaration can never be its finding.
 fn suppress(
     dag: &Dag,
     config: &LintConfig,
     out: &mut Vec<Finding>,
     notes: &mut BTreeSet<String>,
-) -> Vec<Finding> {
+) -> (Vec<Finding>, usize) {
     // Each rule's exclude spec evaluates ONCE into a uid set (the strings
     // are a union — `exclude: [a, b]` drops nodes matching a OR b) — kept
     // in declared order so the first matching spec's `reason` wins.
+    let mut reasonless_excludes = 0usize;
     let excluded: BTreeMap<LintRule, Vec<ExcludedSet>> = LintRule::ALL
         .iter()
         .filter_map(|rule| {
@@ -496,6 +512,9 @@ fn suppress(
                 let mut sets = Vec::with_capacity(specs.len());
                 for spec in specs {
                     let (matched, spec_notes) = select_report(dag, None, &spec.select);
+                    if spec.reason.is_none() {
+                        reasonless_excludes += 1;
+                    }
                     sets.push((matched, spec.reason.clone()));
                     notes.extend(spec_notes);
                 }
@@ -506,21 +525,28 @@ fn suppress(
     let mut suppressed = Vec::new();
     let mut kept = Vec::with_capacity(out.len());
     for mut f in std::mem::take(out) {
-        let suppression = meta_suppression(dag, &f.node_uid, f.rule)
-            .map(|reason| Suppression {
-                by: SuppressionSource::Meta,
-                reason,
-            })
-            .or_else(|| {
-                excluded.get(&f.rule).and_then(|sets| {
-                    sets.iter()
-                        .find(|(set, _)| set.contains(&f.node_uid))
-                        .map(|(_, reason)| Suppression {
-                            by: SuppressionSource::Exclude,
-                            reason: reason.clone(),
+        // `suppressions_without_reason` audits the suppression machinery
+        // itself: neither `meta.dbtl.ignore` (including `all`) nor an
+        // `exclude:` spec may erase its own audit.
+        let suppression = (f.rule != LintRule::SuppressionsWithoutReason)
+            .then(|| {
+                meta_suppression(dag, &f.node_uid, f.rule)
+                    .map(|reason| Suppression {
+                        by: SuppressionSource::Meta,
+                        reason,
+                    })
+                    .or_else(|| {
+                        excluded.get(&f.rule).and_then(|sets| {
+                            sets.iter().find(|(set, _)| set.contains(&f.node_uid)).map(
+                                |(_, reason)| Suppression {
+                                    by: SuppressionSource::Exclude,
+                                    reason: reason.clone(),
+                                },
+                            )
                         })
-                })
-            });
+                    })
+            })
+            .flatten();
         match suppression {
             Some(s) => {
                 f.suppression = Some(s);
@@ -530,7 +556,7 @@ fn suppress(
         }
     }
     *out = kept;
-    suppressed
+    (suppressed, reasonless_excludes)
 }
 
 /// The `meta.dbtl` object's `ignore` member — `Absent` (no `ignore` key;

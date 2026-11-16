@@ -8,6 +8,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- An opt-in `suppressions_without_reason` lint rule (off under
+  `standard`, on under `strict`) audits `meta.dbtl` suppressions that
+  record no reason — one finding per node listing the suppressed rule
+  ids, pointed at the node's metadata declaration. Because it judges
+  the suppression machinery itself, `meta.dbtl.ignore` (including
+  `ignore: all`) and `.dbtl.yml` `exclude:` can never suppress it;
+  while it runs, the summary counts `exclude:` entries without a reason
+  (`N exclude entries in .dbtl.yml without a reason`, JSON
+  `summary.exclude_entries_without_reason`).
+- The lint summary now says WHY a model's SQL rules were skipped: the
+  `N models skipped SQL rules (unparsable SQL)` line names each model
+  with its reason — `parse error at L:C: …`, `depth limit exceeded`,
+  `no query statement`, `dependency cycle` — and JSON carries the same
+  map under `summary.unparsed_models.reasons` (`count`/`names`
+  unchanged).
 - `dbtl lint --fix` / `--fix-dry-run` now list every edit the run
   refused, not just warn on stderr. The text summary ends with a
   `N fix edits refused:` line followed by one `file: rule — reason`

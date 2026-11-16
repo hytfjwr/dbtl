@@ -51,6 +51,7 @@ use super::jinja::{
     block_comment_end, dollar_quote_close, dollar_quote_open, line_comment_end, q_quote_end,
     quoted_end, word_byte, Lex,
 };
+use super::UnparsedReason;
 
 /// The deepest a text may parse and still be traversed — sized for the
 /// smallest stack the shipped binary meets. Measured on this codebase:
@@ -331,14 +332,131 @@ impl Level {
     }
 }
 
-/// `Parser::parse_sql` behind the depth bound — text too deep to walk
-/// comes back `None` like a parse error, so the caller degrades per
-/// model instead of aborting the process.
-pub(super) fn parse_statements(dialect: SqlDialect, sql: &str) -> Option<Vec<Statement>> {
-    if too_deep(sql, dialect) {
-        return None;
+/// Why `parse_statements` refused a text — the two failure kinds the
+/// lint `unparsed` tally reports differently: the depth bound tripping
+/// (the text would build a tree too deep to walk safely) and the parser
+/// rejecting the text outright.
+#[derive(Debug)]
+pub(super) enum ParseFailure {
+    /// The lexical pre-parse bound tripped, or `sqlparser`'s own
+    /// recursion budget gave out on nesting — either way the text was
+    /// too deep to walk.
+    DepthLimit,
+    /// `sqlparser` rejected the text — its error text, which ends with
+    /// the position (` at Line: N, Column: M`) when the error has one.
+    Error(String),
+}
+
+impl ParseFailure {
+    /// The lint-facing [`UnparsedReason`] this failure reports: the
+    /// parser's ` at Line: N, Column: M` tail split off into structured
+    /// position fields so the summary can phrase it `parse error at
+    /// N:M`, and its `sql parser error:` variant prefix dropped — the
+    /// reason already says it was a parse error. `__dbtl_` markers the
+    /// Jinja render generated are internal names — the message names the
+    /// tag that stood there instead.
+    pub(super) fn into_reason(self) -> UnparsedReason {
+        match self {
+            ParseFailure::DepthLimit => UnparsedReason::DepthLimit,
+            ParseFailure::Error(message) => {
+                let message = message
+                    .strip_prefix("sql parser error: ")
+                    .unwrap_or(&message)
+                    .to_string();
+                let (line, column, message) = split_error_position(message);
+                let message = unmark_generated_names(&message);
+                UnparsedReason::ParseError {
+                    line,
+                    column,
+                    message,
+                }
+            }
+        }
     }
-    Parser::parse_sql(&*dialect.sqlparser(), sql).ok()
+}
+
+/// `{{ }}` renders carry a `__dbtl_` mark the parser can see — an error
+/// message quoting one (`found: "__dbtl_jinja_0__"`) names the tag it
+/// stood for, not the internal identifier.
+fn unmark_generated_names(message: &str) -> String {
+    const MARK: &str = "__dbtl_";
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(i) = rest.find(MARK) {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i + MARK.len()..];
+        let len = marker_len(tail);
+        if len == 0 {
+            out.push_str(MARK);
+            rest = tail;
+            continue;
+        }
+        out.push_str("{{…}}");
+        rest = &tail[len..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Bytes of the generated name at `tail`'s start (`tail` follows a
+/// `__dbtl_` mark) — `0` when the mark isn't a generated name:
+///
+/// - `this__` — the `{{ this }}` render.
+/// - `jinja_<n>__` — an unclassified `{{ }}`; `<n>` digits close it.
+/// - `ref__<name>` / `src__<name>` — the Marked `ref`/`source` render;
+///   the call's name runs to the identifier's end.
+fn marker_len(tail: &str) -> usize {
+    if tail.starts_with("this__") {
+        return "this__".len();
+    }
+    if let Some(t) = tail.strip_prefix("jinja_") {
+        let digits = t.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && t[digits..].starts_with("__") {
+            return "jinja_".len() + digits + 2;
+        }
+    }
+    for kw in ["ref__", "src__"] {
+        if let Some(t) = tail.strip_prefix(kw) {
+            let name = t
+                .bytes()
+                .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                .count();
+            return kw.len() + name;
+        }
+    }
+    0
+}
+
+/// `sqlparser` errors end ` at Line: <N>, Column: <M>` when they carry
+/// a position — split that tail into fields; a message without one
+/// (a tokenizer error) keeps whole with no position.
+fn split_error_position(message: String) -> (Option<u32>, Option<u32>, String) {
+    let Some((head, tail)) = message.rsplit_once(" at Line: ") else {
+        return (None, None, message);
+    };
+    let Some((l, c)) = tail.split_once(", Column: ") else {
+        return (None, None, message);
+    };
+    match (l.trim().parse::<u32>(), c.trim().parse::<u32>()) {
+        (Ok(line), Ok(column)) => (Some(line), Some(column), head.to_string()),
+        _ => (None, None, message),
+    }
+}
+
+/// `Parser::parse_sql` behind the depth bound — text too deep to walk
+/// and text the parser rejects both come back `Err`, so the caller
+/// degrades per model instead of aborting the process.
+pub(super) fn parse_statements(
+    dialect: SqlDialect,
+    sql: &str,
+) -> Result<Vec<Statement>, ParseFailure> {
+    if too_deep(sql, dialect) {
+        return Err(ParseFailure::DepthLimit);
+    }
+    Parser::parse_sql(&*dialect.sqlparser(), sql).map_err(|e| match e {
+        sqlparser::parser::ParserError::RecursionLimitExceeded => ParseFailure::DepthLimit,
+        e => ParseFailure::Error(e.to_string()),
+    })
 }
 
 /// Does `sql` exceed [`MAX_DEPTH`] — the lexical estimate described at
@@ -671,11 +789,11 @@ mod tests {
         // parser and come back as a statement, pinning the margin the
         // gate leaves real SQL.
         let sql = format!("select a from t where {}", vec!["x"; 400].join(" and "));
-        assert!(parse_statements(SqlDialect::Generic, &sql).is_some());
+        assert!(parse_statements(SqlDialect::Generic, &sql).is_ok());
         let sql = format!("select {}", vec!["y"; 400].join(" || "));
-        assert!(parse_statements(SqlDialect::Generic, &sql).is_some());
+        assert!(parse_statements(SqlDialect::Generic, &sql).is_ok());
         let sql = vec!["select 1"; 400].join(" union all ");
-        assert!(parse_statements(SqlDialect::Generic, &sql).is_some());
+        assert!(parse_statements(SqlDialect::Generic, &sql).is_ok());
     }
 
     #[test]
@@ -709,5 +827,38 @@ mod tests {
             &format!("select [a{filler}b] from t"),
             SqlDialect::MsSql
         ));
+    }
+
+    #[test]
+    fn parse_error_reason_names_the_tag_not_the_marker() {
+        // A rejected render quotes its generated names — the reason
+        // hands the user the `{{ }}` that stood there, not `__dbtl_`
+        // internals (manifest mode's Jinja-rendered SQL is where this
+        // bites).
+        assert_eq!(
+            ParseFailure::Error(
+                "Expected: an SQL statement, found: \"__dbtl_jinja_0__\"".to_string()
+            )
+            .into_reason()
+            .to_string(),
+            "parse error: Expected: an SQL statement, found: \"{{…}}\""
+        );
+        // A `{{ ref('…') }}`/`{{ this }}` render and a name fused
+        // against the marker (`total___dbtl_jinja_0___sum`) sanitize
+        // just the generated part.
+        assert_eq!(
+            ParseFailure::Error(
+                "expected t near \"__dbtl_ref__stg\" and __dbtl_this__".to_string()
+            )
+            .into_reason()
+            .to_string(),
+            "parse error: expected t near \"{{…}}\" and {{…}}"
+        );
+        assert_eq!(
+            unmark_generated_names("x\"__dbtl_jinja_12__y\" __dbtl_src__src.t"),
+            "x\"{{…}}y\" {{…}}.t"
+        );
+        // `__dbtl_` that isn't a generated name is left alone.
+        assert_eq!(unmark_generated_names("my__dbtl_table"), "my__dbtl_table");
     }
 }
