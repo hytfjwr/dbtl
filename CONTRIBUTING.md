@@ -54,12 +54,18 @@ Useful `xtask` tasks:
   `tests/fixtures/sample_manifest.json` with real `dbt` (needs `uv`).
 - `cargo xtask gen-fixture-manifest --project tests/fixtures/logistics_project`
   — regenerate `tests/fixtures/logistics_manifest.json` the same way. This
-  is the general form: `--project` picks any fixture project dir,
-  `--out`/`--profile` override the defaults, and `--dbt-version X.Y.Z` pins
-  a release (otherwise `uvx` resolves the latest). Projects with a
+  is the general form for any fixture project. Projects with a
   `packages.yml` may only declare `local:` packages. Both commands are
   deterministic: rerunning the same project and dbt version is
-  byte-identical — see `tests/fixtures/README.md`.
+  byte-identical — see `tests/fixtures/README.md`. Its options:
+
+  | Option | Effect |
+  | ------ | ------ |
+  | `--project <DIR>` | The fixture project directory. |
+  | `--out <FILE>` | Where to write the manifest. Default: `tests/fixtures/<name>_manifest.json` for a `<name>_project` directory. |
+  | `--profile <NAME>` | The profile name for the throwaway `profiles.yml`. Default: the `profile:` key of `dbt_project.yml`. |
+  | `--dbt-version <X.Y.Z>` | Pin a dbt-core release. Default: `uvx` resolves the latest. |
+  | `--vars <YAML\|JSON>` | Passed to `dbt compile --vars` as given, so the manifest records the values `dbtl --vars` produces from source. |
 - `cargo xtask gen-docs` — regenerate `docs/reference/` and `schema/` from
   the CLI/config definitions. These files are generated; edit the
   generators, not the output. `gen-docs --check` runs in CI and fails on
@@ -94,18 +100,11 @@ a job it needs fails or is cancelled; a skipped job passes.
 A `changes` job first classifies the pull request's diff into scopes, and
 each job runs only when its scope changed:
 
-- **code** — anything outside the docs/site buckets (Rust sources,
-  `Cargo.*`, `tests/`, `crates/`, `xtask/`, `benches/`, `action/`, `demo/`,
-  `.github/` except a `docs-site.yml`-only change, config files). Runs
-  everything: `Lint`, `Build & Test` on Linux/Windows/macOS, `MSRV`,
-  `Hygiene`, `Docs reference`, `Coverage (report)`, `TUI E2E`, the shared
-  `Release build` the Action self-test and Dogfood E2E run against.
-- **docs** — repository prose: top-level `*.md`, one level of `.github/*.md`,
-  `docs/**`, `schema/**` (site content docs also set `site`). Runs
-  `Markdown tests` (the suites that read repository Markdown), the spell
-  check, and `Docs reference` when `docs/` or `schema/` changed.
-- **site** — `site/**` and `docs-site.yml`. Runs the spell check and the
-  security jobs; the site build lives in the docs-site workflow.
+| Scope | What counts | What runs |
+| ----- | ----------- | --------- |
+| code | Anything outside the docs and site buckets: Rust sources, `Cargo.*`, `tests/`, `crates/`, `xtask/`, `benches/`, `action/`, `demo/`, `.github/` (except a change to `docs-site.yml` alone), and config files. | Everything: `Lint`, `Build & Test` on Linux, Windows, and macOS, `MSRV`, `Hygiene`, `Docs reference`, `Coverage (report)`, `TUI E2E`, and the shared `Release build` that the Action self-test and Dogfood E2E run against. |
+| docs | Repository prose: top-level `*.md`, one level of `.github/*.md`, `docs/**`, and `schema/**`. Site content docs also set `site`. | `Markdown tests` (the suites that read repository Markdown), the spell check, and `Docs reference` when `docs/` or `schema/` changed. |
+| site | `site/**` and `docs-site.yml`. | The spell check and the security jobs. The site build lives in the docs-site workflow. |
 
 The security jobs always run. When classification cannot produce a diff it
 reports every scope changed, so an ambiguous pull request runs everything.
@@ -114,8 +113,12 @@ If you add a job that must gate merges, add it to the aggregate's `needs` —
 `tests/ci_scripts.rs` fails when a job sits outside every aggregate's
 `needs` without being declared report-only.
 
-Shell scripts are linted in CI — `bash .github/scripts/run-shellcheck.sh`
-reproduces the job locally (needs `shellcheck` on PATH).
+Shell scripts are linted by the `shellcheck` job in `security.yml`, pinned to
+shellcheck v0.11.0. The job also checks every one-line `run:` value in the
+composite action file, so a multi-line `run:` block must move into a script.
+`bash .github/scripts/run-shellcheck.sh` reproduces the job locally (needs
+`shellcheck` on PATH).
+
 
 ## Testing notes
 
@@ -148,8 +151,6 @@ The documentation site lives in `site/`.
 - `site/src/nav.json` sets the sidebar order.
 - The reference pages are read from `docs/reference/`, which
   `cargo xtask gen-docs` generates.
-- To preview locally, run `cd site && pnpm install && pnpm run dev`. To check
-  search as well, run `pnpm run build && pnpm run preview`.
 - Sources are formatted and linted: run `pnpm run format` to fix formatting,
   `pnpm run format:check` and `pnpm run lint` to check, and `pnpm run check`
   for the type check. All of them run in CI.
@@ -157,13 +158,18 @@ The documentation site lives in `site/`.
   search dialog. To run them locally, install the browser once with
   `pnpm exec playwright install chromium`, then `pnpm run build` and
   `pnpm run test:e2e`. They run in CI on pull requests only.
-
 - The site is published only when a release is cut —
   [RELEASING.md](RELEASING.md) describes that flow. A pull request builds
   the site to check it, and nothing is deployed.
 - In examples, write the release version as `@DBTL_TAG@` (for example `v1.2.3`) or
   `@DBTL_VERSION@` (`1.2.3`). The build replaces them with the version in
   `Cargo.toml`, and an unknown `@DBTL_...@` token fails the build.
+
+To preview the site locally:
+
+1. Run `cd site && pnpm install`.
+2. Run `pnpm run dev` to serve the site with live reload.
+3. To check search as well, run `pnpm run build && pnpm run preview`.
 
 ### The WebAssembly engine
 

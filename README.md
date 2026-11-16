@@ -60,7 +60,7 @@ If `target/manifest.json` exists, `dbtl` uses it. Otherwise it parses the projec
 In CI, without a terminal:
 
 - [Gates and impact reports](https://hytfjwr.github.io/dbtl/cli/check-and-impact/): `dbtl check` fails a pull request on rules you set, such as coverage minimums or breaking column changes, and `dbtl impact` prints the blast radius — the models downstream of a change.
-- [Lint](https://hytfjwr.github.io/dbtl/cli/lint/): `dbtl lint` runs a static best-practice rule set over the project graph, with no warehouse connection and no `dbt run`.
+- [Lint](https://hytfjwr.github.io/dbtl/cli/lint/): `dbtl lint` runs a static best-practice rule set over the project graph, with no warehouse connection and no `dbt run`. `dbtl lint --fix` applies the repairs that have exactly one correct form.
 - [Docs generator](https://hytfjwr.github.io/dbtl/cli/docs/): `dbtl docs` writes a deterministic Markdown tree with a page per node, so a docs-drift gate can compare regenerated output.
 - [Selectors](https://hytfjwr.github.io/dbtl/cli/selectors/): `dbtl ls` prints the nodes a dbt selector spec matches, and `dbtl columns` prints column-level lineage.
 - CI recipes: a [GitHub Action](https://hytfjwr.github.io/dbtl/ci/github-action/) and a [pre-commit hook](https://hytfjwr.github.io/dbtl/ci/pre-commit/).

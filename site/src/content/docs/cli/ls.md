@@ -22,7 +22,7 @@ dbtl ls 'config.materialized:table,path:models/marts' --output selector
 fct_orders fct_sessions
 ```
 
-The `selector` output is ready to paste into `dbt build --select`.
+The `selector` output is ready to paste into `dbt build --select`. A versioned model appears once per version, as `fct_orders.v1`, `fct_orders.v2`, and so on.
 
 ```sh
 dbtl ls 'state:modified+' --diff git:main          # a branch's blast radius

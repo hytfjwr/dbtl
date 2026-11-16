@@ -15,7 +15,9 @@ Start `dbtl` with `--diff` to answer "what does my branch change?". The TUI mark
 | A dbt project directory, such as another worktree | `--diff /path/to/main-checkout` |
 | A git revision | `--diff git:main` |
 
-A project directory uses its `target/manifest.json` if it is compiled, and is parsed from source otherwise.
+A project directory uses its `target/manifest.json` if it is compiled, and is parsed from source otherwise. When a baseline is parsed from source, `--vars` applies to it as well, and that includes a `git:` revision.
+
+`--diff` pairs with `--select`. Start with `dbtl --diff git:main --select 'state:modified'` to open the first changed model. The `state:` atoms read the baseline, so `--diff` must come with them.
 
 ```sh
 dbtl --diff /path/to/main-checkout

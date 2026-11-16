@@ -11,8 +11,8 @@ description: Gate pull requests with dbtl check, report their blast radius with 
 
 - diff listings: added, removed, and modified nodes, and edge changes
 - a **Column changes** section that shows which downstream columns, models, marts, and exposures each changed column reaches
-- the blast radius
-- affected hubs, exposures, and owners
+- the blast radius: the models downstream of the changed nodes
+- affected hubs (models with many downstream models), exposures, and owners
 - `dbt build --select` suggestions
 - risk flags
 
@@ -44,7 +44,7 @@ SKIP lint warehouse_type_drift: requires graph + catalog input
 SKIP lint columns_missing_in_warehouse: requires graph + catalog input
 …
 SKIP lint undeclared_warehouse_columns: requires graph + catalog input
-PASS lint: 20 rules clean
+PASS lint: 21 rules clean
 
 Found 10 errors and 38 warnings in 21 files
 17 rules reported findings; 3 skipped (need --catalog)
@@ -64,21 +64,27 @@ dbtl check --diff git:main --max-blast-radius 10                # + a ceiling on
 dbtl check --gate changed_hubs=error --gate blast_radius=warn   # per-gate severity overrides
 ```
 
-Key flags:
+Gate flags:
 
 | Flag | Effect |
 | ---- | ------ |
 | `--coverage-min`, `--column-coverage-min`, `--doc-coverage-min` | Percent thresholds. Setting one enables an `off` gate at `error` severity. |
 | `--max-blast-radius <N>` | Ceiling on the affected models. Needs `--diff`. |
 | `--no-breaking` | Fail on breaking column changes that downstream columns still reference. Needs `--diff`. |
-| `--lint`, `--rules <A,B>` | Add one gate per lint rule. `--rules` selects a subset and implies `--lint`. |
-| `--preset minimal\|standard\|strict` | The base lint rule set — overrides `.dbtl.yml`'s `lint.preset` and implies `--lint`. `lint.categories`/`lint.rules` layers still sit above it. |
-| `--gate <ID>=error\|warn\|off` | Override one gate's severity. Repeatable. |
-| `--fail-on error\|warn\|never` | The minimum severity that fails the run. With `never`, a tripped gate prints `WARN` and never counts. |
-| `--select <SELECTOR>` | Scope every gate to matching nodes. `docs_drift` is never scoped, because it compares whole doc sets. |
 | `--docs-dir <DIR>` | Gate on generated-docs freshness. |
-| `--show-suppressed` | List the lint findings `lint.rules.<id>.exclude` and `meta.dbtl.ignore` suppressed, with the mechanism and reason. Reporting only — suppressed findings never gate. See [Suppressed findings](lint.md#suppressed-findings). |
-| `--format`, `--color`, `--report`, `--step-summary`, `--path-prefix`, `--quiet` | Control the report. See [Report formats](#report-formats). |
+| `--gate <ID>=error\|warn\|off` | Override one gate's severity. Repeatable. |
+| `--select <SELECTOR>` | Scope every gate to matching nodes. `docs_drift` is never scoped, because it compares whole doc sets. |
+| `--fail-on error\|warn\|never` | The minimum severity that fails the run. With `never`, a tripped gate prints `WARN` and never counts. |
+
+Lint flags:
+
+| Flag | Effect |
+| ---- | ------ |
+| `--lint`, `--rules <A,B>` | Add one gate per lint rule. `--rules` selects a subset and implies `--lint`. |
+| `--preset minimal\|standard\|strict` | The base lint rule set. It overrides `.dbtl.yml`'s `lint.preset` and implies `--lint`. `lint.categories` and `lint.rules` layers still sit above it. |
+| `--show-suppressed` | List the lint findings that `lint.rules.<id>.exclude` and `meta.dbtl.ignore` suppressed, with the mechanism and reason. Suppressed findings never gate. See [Suppressed findings](lint.md#suppressed-findings). |
+
+Output flags: `--format`, `--color`, `--report`, `--step-summary`, `--path-prefix`, and `--quiet`. See [Report formats](#report-formats).
 
 `check` accepts `--select` with the full [selector grammar](selectors.md). `--diff` takes a manifest file, a project directory, or a git revision. See [Git diffs and baselines](#git-diffs-and-baselines).
 
@@ -145,13 +151,11 @@ Only breaking changes trip `--no-breaking`. Partial-breaking changes show up in 
 
 The `github` format emits `::error` and `::warning` annotations per finding in severity order. GitHub caps how many a step shows.
 
-Findings suppressed by `lint.rules.<id>.exclude` or `meta.dbtl.ignore` never reach the `sarif`, `junit`, `codeclimate`, or `github` formats, even under `--show-suppressed` — a finding CI annotates is always a counted one. The `json` summary still reports them under `summary.suppressed` and names SQL-unparsable models under `summary.unparsed_models`.
+Findings that lint suppresses never reach the `sarif`, `junit`, `codeclimate`, `github`, or `markdown` formats, even under `--show-suppressed`. A finding that CI annotates is always a counted one. See [Suppressed findings](lint.md#suppressed-findings) for the rules and the JSON summary keys.
 
 ## Git diffs and baselines
 
-`--diff git:<rev>` compares the working tree against the project as committed at any revision that `git rev-parse` resolves: a branch (`git:main`), a tag, a sha, or `git:HEAD~3`. `dbtl` reads the files through `git ls-tree` and `git cat-file` into a scratch directory. It makes no checkout and no index writes. Only source files are read: models, schema YAML, seeds, docs, and `dbt_project.yml`. `target/` and `dbt_packages/` stay out.
-
-Because the baseline is parsed from source, the current side is parsed from source too, even when `target/manifest.json` exists. Comparing a compiler's output with a parser's output would read loader differences as changes. An explicit `--manifest` still wins, with a warning that the two loaders may disagree on the margins. Your uncommitted changes count, because the current side is your live working tree.
+`--diff git:<rev>` compares the working tree against the project as committed at any revision `git rev-parse` resolves: a branch (`git:main`), a tag, a sha, or `git:HEAD~3`. `dbtl` reads the revision's source files into a scratch directory and never touches your checkout or index. The current side is parsed from source as well, so your uncommitted changes count. [Diff in the TUI](../tui/diff.md#baseline-from-a-git-revision) explains how the revision is read.
 
 In CI, give the checkout the history the revision needs. Use `fetch-depth: 0`, or fetch a single base commit:
 

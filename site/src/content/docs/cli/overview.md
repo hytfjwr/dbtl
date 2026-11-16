@@ -30,7 +30,7 @@ Every subcommand that reads a project resolves its data source the same way:
 | Flag | Effect |
 | ---- | ------ |
 | `--manifest <PATH>` | Read a compiled `manifest.json`. Forces manifest mode. |
-| `--source <DIR>` | Parse a dbt project directory from source, with no compile. Forces source mode. |
+| `--source <DIR>` | Parse a dbt project directory from source, with no compile. Forces source mode. See [Source mode](../configuration/source-mode.md). |
 | `--project <DIR>` | Auto-detect inside this directory. Default: `.`. |
 
 With neither `--manifest` nor `--source`, `dbtl` uses `<project>/target/manifest.json` if it exists and parses the project source otherwise.
@@ -52,7 +52,7 @@ These flags work on either side of the subcommand. `dbtl --manifest m.json check
 | ---- | ------- |
 | `--manifest`, `--source`, `--project` | Choose the data source (above). |
 | `--diff <BASELINE>` | Compare against a baseline: a `manifest.json`, a dbt project directory, or `git:<rev>`. |
-| `--vars '<YAML\|JSON>'` | Variables for source-mode parsing, spelled like dbt's `--vars` — a YAML or JSON dict such as `{my_var: my_value}`. The map outranks `vars.yml` and `dbt_project.yml`'s `vars:` everywhere `enabled` renders: the project's `+enabled` keys, in-file `config()`, and schema files. It applies to every source-mode load in the run — the graph, a source-parsed `--diff` baseline, and TUI reloads. Manifest mode warns and ignores it (the manifest already carries dbt's rendered values). |
+| `--vars '<YAML\|JSON>'` | Variables for source-mode parsing, as a YAML or JSON dict such as `{my_var: my_value}`. It applies to every source-mode load in the run. Manifest mode ignores it with a warning. See [Enabled expressions and `--vars`](../configuration/source-mode.md#enabled-expressions-and---vars). |
 | `--run-results <PATH>` | Use this `run_results.json` instead of the one found next to the data source. |
 | `--catalog <PATH>` | Use this `catalog.json` instead of the one found next to the data source. |
 | `--include-packages` | Include nodes installed from dbt packages in the graph. |

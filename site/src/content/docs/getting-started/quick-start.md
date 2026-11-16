@@ -39,7 +39,7 @@ dbtl --source /path/to/dbt-project
 
 ### Source mode
 
-Source mode infers lineage from the raw SQL without rendering Jinja, so a compiled manifest is always more accurate.
+Source mode reads the project files directly and never runs `dbt`. It approximates dbt: it finds `ref()` and `source()` calls by scanning, and it does not execute Jinja in general. See [Source mode](../configuration/source-mode.md) for what it reads and where it differs from a manifest.
 
 If `dbt` is on your `PATH`, press `P` inside the app to run `dbt parse` and switch to the generated manifest in place.
 
@@ -61,12 +61,6 @@ dbtl --select 'tag:nightly'
 dbtl --select 'meta:domain=sales'
 ```
 
-Add `--watch` to reload automatically when the data source changes on disk.
-
-```sh
-dbtl --select stg_orders --watch
-```
-
 The selector grammar is covered in [selector syntax](../cli/selectors.md).
 
 ## Package scope
@@ -77,6 +71,7 @@ By default the graph contains the root project only; `--include-packages` widens
 
 | Flag | Effect |
 |---|---|
+| `--watch` | Reload automatically when the data source changes on disk. |
 | `--diff <baseline>` | Compare against a baseline. See [Diff](../tui/diff.md). |
 | `--run-results <path>` | Load a specific `run_results.json`. See [Run results and catalog](../tui/run-results-and-catalog.md). |
 | `--catalog <path>` | Load a specific `catalog.json`. See [Run results and catalog](../tui/run-results-and-catalog.md). |

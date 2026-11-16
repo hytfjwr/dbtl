@@ -158,8 +158,9 @@ pub struct Cli {
     /// SQL dialect for parser-based column lineage: `auto` reads the manifest's
     /// adapter_type (source mode has none → generic); any other value pins the
     /// dialect for every model (`generic`, `postgres`, `snowflake`, `bigquery`,
-    /// `mysql`, `sqlite`, `duckdb`, `spark`, …). `global` so `dbtl columns`
-    /// and `dbtl docs` accept it too.
+    /// `mysql`, `sqlite`, `duckdb`, `spark`, …). `global` so every
+    /// subcommand that parses SQL accepts it (`check`, `lint`, `impact`,
+    /// `columns`, `docs`).
     #[arg(long, global = true, value_name = "DIALECT", value_parser = parse_sql_dialect)]
     pub sql_dialect: Option<dbtl::SqlDialect>,
     /// A non-interactive subcommand. Omitted = launch the TUI (the default,
@@ -383,8 +384,8 @@ pub enum Commands {
     /// the baseline file freezes known violations; `--diff` narrows the gate
     /// to violations the baseline doesn't already carry. Findings suppress
     /// per rule via `lint.rules.<id>.exclude` (dbt-selector specs) and per
-    /// node via `meta.dbtl.ignore` (rule ids, or `all`) — both live in the
-    /// project, not on this command line.
+    /// node via `meta.dbtl.ignore` (rule ids, `all`, or a {rule-id|all: reason}
+    /// map) — both live in the project, not on this command line.
     Lint {
         /// Restrict linting to these rules (comma-separated rule names).
         /// The flag is the authoritative rule selector — the file still
@@ -438,8 +439,9 @@ pub enum Commands {
         path_prefix: Option<String>,
         /// Freeze every current finding into a lint baseline file and exit
         /// (PATH defaults to `lint.baseline`, else `.dbtl-baseline.json` at
-        /// the project root). Writes always exit 0 and cannot combine with
-        /// `--diff`.
+        /// the project root). Writes always exit 0. Cannot combine with
+        /// `--diff` or `--select`. With `--rules`, only the rows of the
+        /// rules that ran are rewritten and the other frozen rows are kept.
         #[arg(long, num_args = 0..=1, value_name = "PATH",
                conflicts_with_all = ["list_rules", "explain", "fail_on", "format", "color", "no_baseline", "report", "step_summary", "path_prefix"])]
         write_baseline: Option<Option<String>>,
