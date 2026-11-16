@@ -1863,6 +1863,12 @@ pub(super) fn jinja_parse(
         for arms in [RenderArms::Union, RenderArms::Collapse] {
             for strip in [false, true] {
                 for elide in [true, false] {
+                    if loose && !elide {
+                        // The value shape never consults the boundary
+                        // — the loose flag can't change this text, so
+                        // it is already in `tried` and its parse failed.
+                        break;
+                    }
                     let mut rendered = render_arms(sql, mark, dialect, arms, elide, loose);
                     if strip {
                         strip_dangling(&mut rendered, &lex);

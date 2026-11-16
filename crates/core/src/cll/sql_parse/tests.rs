@@ -3825,6 +3825,9 @@ fn the_loose_pass_keeps_the_value_shape_where_the_operand_waits() {
         "select id from t where ts - interval {{ var('n') }} > '2020-01-01'",
         "select id from t where ts = date {{ var('d') }}",
         "select id from t where name like any {{ var('p') }}",
+        // A `=` right-hand side is a value position outright — the tag
+        // renders ` NULL ` and parses, no boundary judgment involved.
+        "select id from t where x = {{ var('v') }}",
     ] {
         let r = render_jinja_mapped(sql, JinjaMark::Plain, SqlDialect::Generic);
         assert!(r.text.contains(" NULL "), "{sql:?} -> {}", r.text);
@@ -3870,6 +3873,28 @@ fn a_loose_rescued_model_empties_the_absence_facts() {
     assert!(!facts.unlimited_order_by);
     let _ = r.resolve(&dag, "model.t.m");
     assert!(r.is_fallback("model.t.m"));
+}
+
+#[test]
+fn a_loose_rescued_model_still_reports_select_star() {
+    // The mark empties only facts that would prove an ABSENCE — a
+    // written `*` is a positive fact the parse can see, so the
+    // wildcard verdict stands on a rescued model.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "select * from {{ ref('a') }} where v = status {{ m() }}",
+                &[],
+            ),
+        ],
+        &[("model.t.a", "model.t.m")],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert!(facts.elided_clauses);
+    assert!(facts.unbounded_wildcard, "the written `*` still reports");
 }
 
 #[test]
