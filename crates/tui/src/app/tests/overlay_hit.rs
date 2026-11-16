@@ -79,7 +79,7 @@ fn menu_rect_anchors_at_the_pointer_and_flips_inside_the_screen() {
     let a = sample_app();
     let entries = a.menu_entries("model.sample.stg_orders");
     let ms = crate::action::MenuState {
-        target: "model.sample.stg_orders".to_string(),
+        target: MenuTarget::Node("model.sample.stg_orders".to_string()),
         name: "stg_orders".to_string(),
         items: entries,
         selected: 0,

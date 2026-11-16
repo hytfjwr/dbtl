@@ -35,8 +35,9 @@ use std::rc::Rc;
 use anyhow::Result;
 
 use crate::action::{
-    menu_slot_label, menu_slot_mark, MenuAnchor, MenuEntry, MenuSlot, MenuState, Mode, NoticeLevel,
-    NotificationEntry, NotificationsView, SearchTarget, NODE_MENU_LAYOUT,
+    menu_slot_label, menu_slot_mark, MenuAnchor, MenuEntry, MenuSlot, MenuState, MenuTarget, Mode,
+    NoticeLevel, NotificationEntry, NotificationsView, SearchTarget, NODE_MENU_LAYOUT,
+    TAB_MENU_LAYOUT,
 };
 use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};

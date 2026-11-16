@@ -42,13 +42,23 @@ pub enum MenuAnchor {
     Node,
 }
 
-/// The node context menu's state (the `Mode::Menu` payload). Everything the
+/// The thing a context menu was opened on: `Node` carries the node's
+/// `unique_id` (the DAG-backed menu), `Tab` the tab's index (the tab-strip
+/// menu — a plain index suffices because its actions all act on the ACTIVE
+/// tab, and opening the menu activates its tab).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuTarget {
+    Node(String),
+    Tab(usize),
+}
+
+/// The context menu's state (the `Mode::Menu` payload). Everything the
 /// renderer needs is snapshotted here — the render layer never consults a
 /// `Dag`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuState {
-    /// The `unique_id` every item acts on (the clicked / cursored node).
-    pub target: String,
+    /// The node / tab every item acts on (the clicked / cursored target).
+    pub target: MenuTarget,
     /// The node's display name — the box's title.
     pub name: String,
     /// The rows (items + separators), already filtered for availability —
@@ -98,6 +108,17 @@ pub static NODE_MENU_LAYOUT: &[MenuSlot] = &[
     MenuSlot::Item(ModeKind::Selection, Action::PathToggle),
 ];
 
+/// The tab context menu's layout — the same three closes the strip offers:
+/// close it, close its siblings, close everything to its right. The home
+/// tab drops the first row at open (it can't be closed); a rightmost tab
+/// drops the third.
+pub static TAB_MENU_LAYOUT: &[MenuSlot] = &[
+    MenuSlot::Item(ModeKind::Selection, Action::TabClose),
+    MenuSlot::Separator,
+    MenuSlot::Item(ModeKind::Selection, Action::TabCloseOthers),
+    MenuSlot::Item(ModeKind::Selection, Action::TabCloseRight),
+];
+
 /// The display label a menu slot resolves to — `re_roots` is whether the
 /// target differs from the current re-rooted node (see
 /// [`MenuMark::EnterContext`]).
@@ -128,6 +149,9 @@ pub(crate) fn menu_slot_mark(action: Action) -> MenuMark {
         Action::YankSelector => MenuMark::Label("Copy dbt selector"),
         Action::BookmarkToggle => MenuMark::Label("Bookmark"),
         Action::PathToggle => MenuMark::Label("Path anchor here"),
+        Action::TabClose => MenuMark::Label("Close tab"),
+        Action::TabCloseOthers => MenuMark::Label("Close other tabs"),
+        Action::TabCloseRight => MenuMark::Label("Close tabs to the right"),
         other => panic!("menu_slot_mark: no label for {other:?}"),
     }
 }

@@ -353,6 +353,56 @@ impl App {
         }
     }
 
+    /// Drag a tab to a new position: move the WHOLE `TabState` (root, view,
+    /// cursor, history — the identity bundle) from `from` to `to`, and track
+    /// the active tab through the slide. The home tab is pinned to index 0
+    /// on both ends: it can't be dragged and nothing can land left of it.
+    /// `to` past either edge clamps into the strip.
+    pub fn move_tab(&mut self, from: usize, to: usize) {
+        let n = self.tabs.len();
+        if from == 0 || from >= n || n <= 1 {
+            return; // the home tab is unmovable; a stale index is inert
+        }
+        let to = to.clamp(1, n - 1);
+        if to == from {
+            return;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        // The move shifted every tab between `from` and `to` by one — follow
+        // the active one wherever it slid (identity over index, like
+        // `close_tab`; no switch semantics — the live tab keeps running).
+        if self.active == from {
+            self.active = to;
+        } else if from < to && (from + 1..=to).contains(&self.active) {
+            self.active -= 1;
+        } else if to < from && (to..from).contains(&self.active) {
+            self.active += 1;
+        }
+    }
+
+    /// `W` / the tab menu's "close other tabs": close every model tab but
+    /// `keep` (the home tab always survives — the strip can't end empty).
+    /// Iterating high→low keeps `keep`'s index valid until it is passed.
+    pub(crate) fn close_other_tabs(&mut self, keep: usize) {
+        if keep >= self.tabs.len() {
+            return;
+        }
+        for i in (1..self.tabs.len()).rev() {
+            if i != keep && !self.tabs[i].home {
+                self.close_tab(i);
+            }
+        }
+    }
+
+    /// `R` / the tab menu's "close tabs to the right": close every tab right
+    /// of `idx`. A rightmost (or stale) `idx` is a no-op.
+    pub(crate) fn close_tabs_right_of(&mut self, idx: usize) {
+        while self.tabs.len() > idx + 1 {
+            self.close_tab(self.tabs.len() - 1);
+        }
+    }
+
     /// `{` / `}`: previous / next tab, wrapping at both ends.
     pub(crate) fn cycle_tab(&mut self, next: bool) {
         let n = self.tabs.len();

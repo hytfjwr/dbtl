@@ -74,14 +74,23 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
                 return Arm::Early(Outcome::cont());
             };
             app.mode = back.map(|b| *b).unwrap_or_else(|| app.idle_mode());
-            app.move_selection_to(&target);
-            // Arm the overlay target stash for exactly this dispatch: the
-            // selection move above can't land on a non-model node (the list
-            // holds models only), so every producer that reads the selection
-            // — the yanks, bookmark/path, the editor open, `Enter`/`s` —
-            // must see the MENU's target instead or the item would act on
-            // whatever happened to be selected.
-            app.pending_node = Some(target);
+            match target {
+                MenuTarget::Node(uid) => {
+                    app.move_selection_to(&uid);
+                    // Arm the overlay target stash for exactly this dispatch:
+                    // the selection move above can't land on a non-model node
+                    // (the list holds models only), so every producer that
+                    // reads the selection — the yanks, bookmark/path, the
+                    // editor open, `Enter`/`s` — must see the MENU's target
+                    // instead or the item would act on whatever happened to
+                    // be selected.
+                    app.pending_node = Some(uid);
+                }
+                // A tab menu's items are the active-tab closes — re-assert
+                // the clicked tab as active so the item acts on the tab the
+                // menu opened for, never on a tab that slid in later.
+                MenuTarget::Tab(idx) => app.activate_tab(idx),
+            }
             let mut out = apply_action(app, action);
             app.pending_node = None;
             // Same re-anchor contract as the palette confirm below: the loop

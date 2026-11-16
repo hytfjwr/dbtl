@@ -19,6 +19,19 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             app.close_tab(app.active_tab());
             Outcome::cont()
         }
+        // `W`/`R`: the multi-close twins — every model tab but the active
+        // one / every tab right of it (home always survives; each close
+        // follows the `X` handoff rules inside `close_tab`).
+        Action::TabCloseOthers => {
+            let keep = app.active_tab();
+            app.close_other_tabs(keep);
+            Outcome::cont()
+        }
+        Action::TabCloseRight => {
+            let idx = app.active_tab();
+            app.close_tabs_right_of(idx);
+            Outcome::cont()
+        }
         // `{`/`}`: cycle one tab, wrapping at both ends.
         Action::TabPrev | Action::TabNext => {
             app.cycle_tab(matches!(action, Action::TabNext));

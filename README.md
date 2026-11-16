@@ -98,7 +98,7 @@ Press `?` in the app for every key in the current mode, or read the [keybindings
 | `b` `f` | Go back or forward in the re-root history |
 | `z` | Send the lineage cursor home and re-center |
 | `v` `w` `M` | Toggle compact nodes, the whole-graph overview, the minimap |
-| `O` `X` | Open the cursor's node in a new tab, close the active tab |
+| `O` `X` `W` `R` | Open a node in a new tab, close the active / other / right-hand tabs |
 | `{` `}` `~` | Previous tab, next tab, the home tab |
 | `Space` `'` `"` | Bookmark the model, cycle bookmarks forward or backward |
 | `T` `*` `F` | Filter the list to untested, bookmarked, or lint-finding models |

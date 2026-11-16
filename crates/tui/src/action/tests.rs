@@ -61,7 +61,7 @@ fn yank_mode() -> Mode {
 }
 fn menu_mode() -> Mode {
     Mode::Menu(MenuState {
-        target: "m".into(),
+        target: MenuTarget::Node("m".into()),
         name: "m".into(),
         items: vec![MenuEntry::Item {
             binding: 0,
@@ -389,6 +389,8 @@ fn is_key_bound(a: &Action) -> bool {
         | Action::MenuConfirm
         | Action::TabOpen
         | Action::TabClose
+        | Action::TabCloseOthers
+        | Action::TabCloseRight
         | Action::TabPrev
         | Action::TabNext
         | Action::TabActivate(_)
@@ -775,7 +777,7 @@ fn help_lines_cover_every_binding() {
 
 fn menu_mode_with(items: Vec<MenuEntry>) -> Mode {
     Mode::Menu(MenuState {
-        target: "m".into(),
+        target: MenuTarget::Node("m".into()),
         name: "m".into(),
         items,
         selected: 0,
@@ -826,6 +828,36 @@ fn menu_layout_has_no_orphaned_separators() {
         Some(MenuSlot::Separator)
     ));
     for w in NODE_MENU_LAYOUT.windows(2) {
+        assert!(
+            !(matches!(w[0], MenuSlot::Separator) && matches!(w[1], MenuSlot::Separator)),
+            "adjacent separators"
+        );
+    }
+}
+
+#[test]
+fn tab_menu_layout_slots_resolve_to_real_bindings() {
+    // The same layout↔keymap drift guard for the tab context menu — every
+    // item slot names a live `(mode, action)` BINDINGS row.
+    for slot in TAB_MENU_LAYOUT {
+        let MenuSlot::Item(mode, action) = slot else {
+            continue;
+        };
+        let idx = slot_binding(*mode, *action)
+            .unwrap_or_else(|| panic!("no BINDINGS row for {mode:?}/{action:?}"));
+        assert_eq!(BINDINGS[idx].action, *action);
+        let _ = menu_slot_mark(*action);
+    }
+}
+
+#[test]
+fn tab_menu_layout_has_no_orphaned_separators() {
+    assert!(!matches!(
+        TAB_MENU_LAYOUT.first(),
+        Some(MenuSlot::Separator)
+    ));
+    assert!(!matches!(TAB_MENU_LAYOUT.last(), Some(MenuSlot::Separator)));
+    for w in TAB_MENU_LAYOUT.windows(2) {
         assert!(
             !(matches!(w[0], MenuSlot::Separator) && matches!(w[1], MenuSlot::Separator)),
             "adjacent separators"

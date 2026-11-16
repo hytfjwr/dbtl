@@ -127,7 +127,7 @@ static DYNAMIC_HELP: &[(ModeKind, &str, &str)] = &[
     (
         ModeKind::Selection,
         "right click",
-        "node actions menu (list row / lineage node)",
+        "node actions menu (list row / lineage node) · tab menu (tab strip)",
     ),
     (
         ModeKind::Selection,
@@ -137,7 +137,7 @@ static DYNAMIC_HELP: &[(ModeKind, &str, &str)] = &[
     (
         ModeKind::Selection,
         "drag",
-        "pan lineage · resize a pane border · scrub the minimap",
+        "pan lineage · resize a pane border · scrub the minimap · reorder tabs",
     ),
     (
         ModeKind::Selection,

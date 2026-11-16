@@ -12,7 +12,10 @@ fn menu_open_from_selection_targets_the_focus_node() {
     a.select_by_unique_id("model.sample.stg_orders");
     apply_action(&mut a, Action::MenuOpen);
     let ms = menu_state(&a);
-    assert_eq!(ms.target, "model.sample.stg_orders");
+    assert_eq!(
+        ms.target,
+        MenuTarget::Node("model.sample.stg_orders".to_string())
+    );
     assert_eq!(ms.anchor, crate::action::MenuAnchor::Node);
     assert!(ms.back.is_none(), "nothing stacked under a Selection menu");
     // The first selectable row is highlighted on open.
@@ -32,7 +35,8 @@ fn menu_open_over_detail_and_sql_targets_the_modal_node() {
     apply_action(&mut a, Action::MenuOpen);
     let ms = menu_state(&a);
     assert_eq!(
-        ms.target, "model.sample.stg_orders",
+        ms.target,
+        MenuTarget::Node("model.sample.stg_orders".to_string()),
         "the menu acts on the modal's node, not the list selection"
     );
     assert!(
@@ -55,7 +59,10 @@ fn menu_open_over_detail_and_sql_targets_the_modal_node() {
     assert!(matches!(a.mode, Mode::Sql(_)), "s opens the SQL modal");
     a.select_by_unique_id("model.sample.fct_orders");
     apply_action(&mut a, Action::MenuOpen);
-    assert_eq!(menu_state(&a).target, "model.sample.stg_orders");
+    assert_eq!(
+        menu_state(&a).target,
+        MenuTarget::Node("model.sample.stg_orders".to_string())
+    );
     apply_action(&mut a, Action::DetailClose);
     assert!(
         matches!(a.mode, Mode::Sql(_)),

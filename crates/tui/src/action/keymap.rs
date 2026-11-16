@@ -385,6 +385,8 @@ pub static BINDINGS: &[KeyBinding] = &[
     // `X`/Ctrl-w closes, `{`/`}` cycle, `1`-`9` jump straight to a tab. ----
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('O'))], action: A::TabOpen, help: "open node in new tab", hints: &[Hint::list(40, "new tab"), Hint::lineage(30, "new tab")], home: false },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('X')), Ctrl('w')], action: A::TabClose, help: "close tab", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('W'))], action: A::TabCloseOthers, help: "close other tabs", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('R'))], action: A::TabCloseRight, help: "close tabs to the right", hints: &[], home: false },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('{'))], action: A::TabPrev, help: "previous tab", hints: &[], home: false },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('}'))], action: A::TabNext, help: "next tab", hints: &[], home: false },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('1'))], action: A::TabActivate(1), help: "go to tab 1", hints: &[Hint::overview(40, "tabs")], home: false },
@@ -545,6 +547,8 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Home, triggers: &[Key(Char('}'))], action: A::TabNext, help: "next tab", hints: &[], home: false },
     KeyBinding { mode: M::Home, triggers: &[Key(Char('~'))], action: A::HomeGo, help: "go to home tab", hints: &[], home: false },
     KeyBinding { mode: M::Home, triggers: &[Key(Char('X')), Ctrl('w')], action: A::TabClose, help: "close tab", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('W'))], action: A::TabCloseOthers, help: "close other tabs", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('R'))], action: A::TabCloseRight, help: "close tabs to the right", hints: &[], home: false },
     KeyBinding { mode: M::Home, triggers: &[Key(Char('w'))], action: A::ToggleOverview, help: "toggle whole-graph overview", hints: &[], home: false },
     KeyBinding { mode: M::Home, triggers: &[Key(Char('S'))], action: A::StatsOpen, help: "stats dashboard", hints: &[], home: false },
     KeyBinding { mode: M::Home, triggers: &[Key(Char('D'))], action: A::DiffOpen, help: "diff vs baseline (--diff)", hints: &[], home: false },

@@ -91,9 +91,13 @@ fn menu_anchors(
         crate::action::MenuAnchor::Cell { col, row } => ((col, row), (col, row)),
         crate::action::MenuAnchor::Node => {
             // The target's drawn box, mapped grid → screen through the same
-            // content-rect origin + scroll the hit-test uses.
+            // content-rect origin + scroll the hit-test uses. Only a node
+            // target has a drawn box — a tab menu always anchors `Cell`.
             let node = layout.and_then(|lay| {
-                let r = lay.rects.get(&ms.target)?;
+                let crate::action::MenuTarget::Node(uid) = &ms.target else {
+                    return None;
+                };
+                let r = lay.rects.get(uid)?;
                 let content = lineage_content_rect(lin_inner, lay.grid.width(), lay.grid.height());
                 let sx = (content.x as usize + r.x).saturating_sub(scroll_x);
                 let sy = (content.y as usize + r.y).saturating_sub(scroll_y);

@@ -4,8 +4,8 @@
 
 pub use super::*;
 pub use crate::action::{
-    palette_candidates, Action, DetailView, DiffView, Direction, HelpView, Mode, ModeKind,
-    NoticeLevel, NotificationEntry, PaletteRow, SearchTarget,
+    palette_candidates, Action, DetailView, DiffView, Direction, HelpView, MenuTarget, Mode,
+    ModeKind, NoticeLevel, NotificationEntry, PaletteRow, SearchTarget,
 };
 pub use crate::effect::Effect;
 pub use crate::ui::{
@@ -382,6 +382,15 @@ fn hit_geom<'a>(a: &'a App, lay: Option<&'a Layout>, area: Rect) -> HitGeometry<
 fn three_models(a: &App) -> (String, String, String) {
     let m = |i| a.active_list().model_at(i).unwrap().unique_id.clone();
     (m(0), m(1), m(2))
+}
+
+/// The strip's roots in order (`""` for the rootless home tab) — the
+/// reorder/close tests' one-line shape assertion.
+fn tab_roots(a: &App) -> Vec<&str> {
+    a.tabs()
+        .iter()
+        .map(|t| t.root.as_deref().unwrap_or(""))
+        .collect()
 }
 
 mod catalog;
