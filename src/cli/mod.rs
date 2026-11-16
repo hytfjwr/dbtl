@@ -475,7 +475,9 @@ pub enum Commands {
         /// and reports what remains. Edits refuse Jinja-covered text,
         /// overlapping ranges, stale manifest/disk drift, and anything
         /// that would introduce a new finding — those findings simply
-        /// stay. Writes are atomic; LF/CRLF and a missing final newline
+        /// stay, and each refused edit is listed (file, rule, reason)
+        /// in the summary and under `summary.fix_refused` in JSON.
+        /// Writes are atomic; LF/CRLF and a missing final newline
         /// are preserved byte for byte. Cannot combine with
         /// `--write-baseline`, `--list-rules`, `--explain`, or
         /// `--fix-dry-run`.

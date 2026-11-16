@@ -2527,10 +2527,138 @@ fn lint_fix_stale_manifest_is_warned_not_patched() {
         "the drift warning: {}",
         stderr(&out)
     );
+    // …and the report lists the refused edit — file, rule, reason.
+    assert!(
+        stdout(&out).contains(
+            "models/m.sql: trailing_semicolon — file on disk differs from the manifest's raw_code"
+        ),
+        "the drift refusal row: {}",
+        stdout(&out)
+    );
     assert_eq!(
         std::fs::read_to_string(root.join("models/m.sql")).unwrap(),
         "select 999 as x;\n",
         "a drifted file is never written"
+    );
+}
+
+#[test]
+fn lint_fix_refused_edits_are_listed_with_file_rule_reason() {
+    // Two refusals, two causes: a `;` inside Jinja the planner won't
+    // cut, and an `unused_cte` delete that would orphan `m`'s only
+    // parent edge — the list must name file, rule, and reason for each.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/base.sql", "select 1 as id\n"),
+            (
+                "models/m.sql",
+                "with dead as (select * from {{ ref('base') }})\nselect 2\n",
+            ),
+            ("models/j.sql", "select 1\n{% if x %};{% endif %}\n"),
+        ],
+    );
+    let out = lint_src(
+        &root,
+        &[
+            "--rules",
+            "trailing_semicolon,unused_cte,unused_models",
+            "--fix",
+        ],
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains("2 fix edits refused:"),
+        "the refusal header: {text}"
+    );
+    assert!(
+        text.contains(
+            "models/j.sql: trailing_semicolon — the `;` sits inside a Jinja tag or block"
+        ),
+        "the planner refusal row: {text}"
+    );
+    assert!(
+        text.contains("models/m.sql: unused_cte — the edit would introduce a new"),
+        "the introduced-finding refusal row: {text}"
+    );
+    // A refused edit leaves its file untouched and its finding standing.
+    assert_eq!(
+        std::fs::read_to_string(root.join("models/j.sql")).unwrap(),
+        "select 1\n{% if x %};{% endif %}\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("models/m.sql")).unwrap(),
+        "with dead as (select * from {{ ref('base') }})\nselect 2\n"
+    );
+    // A run with no fix flags never prints the list.
+    let out = lint_src(&root, &["--rules", "trailing_semicolon"]);
+    assert!(
+        !stdout(&out).contains("refused"),
+        "no refusal list without --fix: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn lint_fix_dry_run_lists_refusals_in_text_and_json() {
+    // The refusal rows are report data, not stderr-only warnings: the
+    // dry-run text run lists them and `--format json` carries them on
+    // `summary.fix_refused`.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/j.sql", "select 1\n{% if x %};{% endif %}\n"),
+        ],
+    );
+    let out = lint_src(&root, &["--rules", "trailing_semicolon", "--fix-dry-run"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains("1 fix edit refused:"),
+        "the dry-run refusal header: {text}"
+    );
+    assert!(
+        text.contains("models/j.sql: trailing_semicolon"),
+        "the dry-run refusal row: {text}"
+    );
+    let out = lint_src(
+        &root,
+        &[
+            "--rules",
+            "trailing_semicolon",
+            "--fix-dry-run",
+            "--format",
+            "json",
+        ],
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let refused = json["summary"]["fix_refused"].as_array().unwrap();
+    assert_eq!(refused.len(), 1, "summary.fix_refused: {refused:?}");
+    assert_eq!(refused[0]["file"], "models/j.sql");
+    assert_eq!(refused[0]["rule"], "trailing_semicolon");
+    assert_eq!(
+        refused[0]["reason"],
+        "the `;` sits inside a Jinja tag or block"
+    );
+    // And a no-fix JSON run omits the field entirely.
+    let out = lint_src(
+        &root,
+        &["--rules", "trailing_semicolon", "--format", "json"],
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert!(
+        json["summary"]["fix_refused"].is_null(),
+        "no fix_refused key without --fix: {}",
+        json["summary"]
     );
 }
 

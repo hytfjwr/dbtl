@@ -353,8 +353,10 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     // in-memory overlay, re-lint to a fixpoint, then write (or, for
     // `--fix-dry-run`, print the would-be diffs). The report below lints
     // the post-fix dag — its findings are exactly what the user still
-    // owns, and `summary.fixed` carries the resolved count.
+    // owns, `summary.fixed` carries the resolved count, and
+    // `summary.fix_refused` lists the edits that didn't land.
     let mut fixed: Option<FixedSummary> = None;
+    let mut fix_refused: Vec<FixRefusal> = Vec::new();
     let mut fix_dag: Option<dbtl::Dag> = None;
     let mut fix_resolver: Option<dbtl::SqlParseResolver> = None;
     if args.fix || args.fix_dry_run {
@@ -405,6 +407,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
                 sql_resolver.dialect(),
             ));
         }
+        fix_refused = outcome.refused;
     }
     let dag = fix_dag.as_ref().unwrap_or(&resolved.dag);
     let sql_for_report = fix_resolver.as_ref().unwrap_or(&sql_resolver);
@@ -429,9 +432,12 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
             read_text: &read_text,
         },
     );
-    if let Some(f) = fixed {
+    if fixed.is_some() || !fix_refused.is_empty() {
         if let Some(lint) = &mut run.report.lint {
-            lint.fixed = Some(f);
+            if let Some(f) = fixed {
+                lint.fixed = Some(f);
+            }
+            lint.fix_refused = fix_refused;
             run.report.lift_lint_summary();
         }
     }

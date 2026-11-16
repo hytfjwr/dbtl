@@ -34,7 +34,9 @@ pub use registry::{
 mod call_sites;
 pub use call_sites::{display_name, display_names, name_list};
 mod fixes;
-pub use fixes::{apply_fixes, manifest_patched, plan_node_edits, FixEdit};
+pub use fixes::{
+    apply_fixes, manifest_patched, plan_node_edits, ApplyRefusal, FixEdit, NodeFixPlan,
+};
 mod location;
 pub use location::{
     byte_span_position, fill_finding_lines, fill_finding_lines_with, yaml_name_line,
