@@ -12,19 +12,14 @@ on:
 
 permissions: {}
 
-env:
-  # One pin for every job that runs shellcheck — the lint job and
-  # jactionlint, which shells out to `shellcheck` for workflow `run:` bodies.
-  SHELLCHECK_VERSION: v0.11.0
-  # SHA-256 of shellcheck-v0.11.0.linux.x86_64.tar.xz. Upstream publishes no
-  # checksums file, so the digest is pinned here and verified on install.
-  SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Kept out of `checks`: its SARIF upload needs `security-events: write` and
+  # `actions: read`, which would widen the token every other check (pinact
+  # included) runs with.
   zizmor:
     name: zizmor
     runs-on: ubuntu-latest
@@ -52,10 +47,16 @@ jobs:
           # SARIF upload would always fail there; fall back to plain output.
           advanced-security: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
-  # jactionlint rather than rhysd/actionlint: actionlint reports parallel and
-  # background steps as syntax errors.
-  jactionlint:
-    name: jactionlint
+  # The four small, independent checks share one job: each is a few seconds of
+  # work, so separate jobs mostly paid runner start-up and checkout. The
+  # steps run in order and each one runs even when an earlier check failed
+  # (`!cancelled()`), so a single run reports every finding. Every tool comes
+  # from an action pinned by SHA, so Dependabot moves the tool's version with
+  # the pin. They are not `parallel:` steps — concurrent `uses:` steps race
+  # in the runner (shared action downloads, composite-action state, the
+  # event payload file).
+  checks:
+    name: Security checks
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     timeout-minutes: 10
@@ -67,125 +68,52 @@ jobs:
         with:
           persist-credentials: false
 
-      # jactionlint lints workflow `run:` bodies through the `shellcheck` it
-      # finds on PATH — put the pinned one first so both jobs lint with the
-      # same version.
-      - name: Restore cached shellcheck
-        id: cache-shellcheck
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/dbtl-shellcheck
-          key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}
-
+      # No version given: the install-action pin decides it (0.11.0 at this
+      # pin), and the download is verified against the checksum in its
+      # manifest. jactionlint lints workflow `run:` bodies through the
+      # `shellcheck` it finds on PATH, and the script lint runs it directly,
+      # so both use this one install — it comes before both.
       - name: Install shellcheck
-        if: steps.cache-shellcheck.outputs.cache-hit != 'true'
-        run: bash .github/scripts/install-shellcheck.sh "$HOME/.cache/dbtl-shellcheck"
-
-      - name: Add shellcheck to PATH
-        run: echo "$HOME/.cache/dbtl-shellcheck" >> "$GITHUB_PATH"
-
-      # The SHA pin also pins the jactionlint release the action downloads
-      # (its `version` input defaults to the release it was published with),
-      # and findings land as annotations on the pull request.
-      - name: Run jactionlint
-        uses: jdx/jactionlint@72c00452809bcca05b8bc12acdcf15dd7a9c1c5e # v2.6.0
-
-  shellcheck:
-    name: shellcheck
-    runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          persist-credentials: false
-
-      - name: Restore cached shellcheck
-        id: cache-shellcheck
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/dbtl-shellcheck
-          key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}
-
-      - name: Install shellcheck
-        if: steps.cache-shellcheck.outputs.cache-hit != 'true'
-        run: bash .github/scripts/install-shellcheck.sh "$HOME/.cache/dbtl-shellcheck"
-
-      - name: Add shellcheck to PATH
-        run: echo "$HOME/.cache/dbtl-shellcheck" >> "$GITHUB_PATH"
+          tool: shellcheck
 
       - name: Lint shell scripts
         run: bash .github/scripts/run-shellcheck.sh
 
-  pinact:
-    name: pinact
-    runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      PINACT_VERSION: v4.1.0
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+      # jactionlint rather than rhysd/actionlint: actionlint reports parallel
+      # and background steps as syntax errors. The SHA pin also pins the
+      # release the action downloads, and findings land as pull request
+      # annotations.
+      - name: Lint workflows
+        if: ${{ !cancelled() }}
+        uses: jdx/jactionlint@72c00452809bcca05b8bc12acdcf15dd7a9c1c5e # v2.6.0
 
-      - name: Restore cached pinact
-        id: cache-pinact
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/go/bin/pinact
-          key: pinact-${{ runner.os }}-${{ env.PINACT_VERSION }}
-
-      # Built from source so the Go module checksum database verifies the
-      # binary's provenance (no curl|bash, no unpinned third-party action).
-      - name: Install pinact
-        if: steps.cache-pinact.outputs.cache-hit != 'true'
-        run: go install "github.com/suzuki-shunsuke/pinact/v4/cmd/pinact@${PINACT_VERSION}"
-
-      - name: Add Go bin to PATH
-        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      # --verify also checks each pinned SHA matches its trailing version
-      # comment (catches a lying `# vX.Y.Z` next to a malicious SHA).
+      # `fix: false` is `pinact run --check` (the default would try to push a
+      # fix); `verify` also checks each pinned SHA matches its trailing
+      # version comment (catches a lying `# vX.Y.Z` next to a malicious SHA).
       - name: Verify all actions are SHA-pinned
-        run: pinact run --check --verify
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  cargo-deny:
-    name: cargo-deny
-    runs-on: ubuntu-latest
-    # Advisory state moves independently of the code, so bans/licenses/sources
-    # stay on push + pull_request only; advisories run on every trigger below.
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ !cancelled() }}
+        uses: suzuki-shunsuke/pinact-action@b1a1f46bb10f2908950d95f626ca8cc109e2cf7d # v3.1.0
         with:
-          persist-credentials: false
+          fix: "false"
+          verify: "true"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: cargo-deny@0.20.2
-
+      # Advisory state moves independently of the code, so bans/licenses/
+      # sources stay on push + pull_request only (never a manual run);
+      # advisories run on every trigger in their own job below. The action's
+      # image carries cargo-deny; `arguments` is emptied because its default
+      # (`--all-features`) is not what the workspace has been checked with.
       - name: Check bans, licenses, and sources
-        run: cargo deny check bans licenses sources
+        if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'pull_request') }}
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: ""
+          command-arguments: bans licenses sources
 
+  # Kept out of `checks` and out of the aggregate: report-only, and it runs
+  # on the daily schedule too, which `checks` skips.
   advisories:
     name: advisories
     runs-on: ubuntu-latest
@@ -198,18 +126,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: cargo-deny@0.20.2
-
       - name: Check security advisories
-        run: cargo deny check advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: ""
+          command-arguments: advisories
 
   # The single required check for this workflow: fails when any needed job
   # failed or was cancelled. `advisories` stays out of `needs` — new
@@ -219,10 +141,7 @@ jobs:
     name: Security result
     needs:
       - zizmor
-      - jactionlint
-      - shellcheck
-      - pinact
-      - cargo-deny
+      - checks
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

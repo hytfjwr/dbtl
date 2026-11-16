@@ -741,21 +741,52 @@ fn scoped_jobs_skip_on_the_right_scope() {
     );
 
     let dogfood = workflow("dogfood.yml");
-    for id in ["release-build", "action-self-test", "dogfood-e2e"] {
-        assert!(
-            needs(&dogfood, id).contains("changes"),
-            "{id} needs changes"
-        );
-        assert_eq!(job(&dogfood, id)["if"].as_str(), Some(code_only), "{id}");
-    }
-    // The shared release binary fans out: both consumers must wait on the
-    // job that produces it.
-    for id in ["action-self-test", "dogfood-e2e"] {
-        assert!(
-            needs(&dogfood, id).contains("release-build"),
-            "{id} must wait on the shared release build"
-        );
-    }
+    assert!(
+        needs(&dogfood, "dogfood").contains("changes"),
+        "dogfood needs changes"
+    );
+    assert_eq!(
+        job(&dogfood, "dogfood")["if"].as_str(),
+        Some(code_only),
+        "dogfood"
+    );
+}
+
+/// The build and both consumers of its binary share one job, so the order of
+/// its steps is the contract the old job graph (`needs: release-build`)
+/// used to carry: the binary exists and is on PATH before anything runs it,
+/// and the action self-test comes before the E2E.
+#[test]
+fn dogfood_job_builds_before_it_runs_the_binary() {
+    let wf = workflow("dogfood.yml");
+    let steps = job(&wf, "dogfood")["steps"]
+        .as_sequence()
+        .expect("dogfood steps");
+    let pos = |name: &str| {
+        steps
+            .iter()
+            .position(|s| s["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("dogfood has no step named {name:?}"))
+    };
+    let order = [
+        "Build dbtl (release)",
+        "Put dbtl on PATH",
+        "Run the action (passing check)",
+        "Run the action (failing check)",
+        "Run the full check report",
+        "Exercise the git-revision baseline",
+    ];
+    let positions: Vec<usize> = order.iter().map(|n| pos(n)).collect();
+    assert!(
+        positions.windows(2).all(|w| w[0] < w[1]),
+        "dogfood steps must run in this order: {order:?} (got positions {positions:?})"
+    );
+    assert!(
+        steps
+            .iter()
+            .all(|s| s["parallel"].is_null() && s["background"].is_null()),
+        "the self-test runs a composite action — the dogfood steps stay sequential"
+    );
 }
 
 #[test]
@@ -784,7 +815,7 @@ fn cache_prune_jobs_wait_for_their_writers() {
             "ci.yml",
             &["changes", "lint", "build-test", "msrv", "hygiene"][..],
         ),
-        ("dogfood.yml", &["changes", "release-build"][..]),
+        ("dogfood.yml", &["changes", "dogfood"][..]),
         ("perf.yml", &["perf-prebuild"][..]),
         ("wasm-cache.yml", &["engine-build"][..]),
     ] {
@@ -806,6 +837,93 @@ fn cache_prune_jobs_wait_for_their_writers() {
             "{wf_name}:cache-prune needs actions: write to delete cache entries"
         );
     }
+}
+
+/// `uses:` steps that would run concurrently with another step: every child
+/// of a `parallel:` group and every `background: true` step. The runner races
+/// concurrent `uses:` steps (shared action downloads, composite-action state,
+/// the event payload file), so only `run:` steps may run concurrently. Each
+/// returned entry names the offending step.
+fn concurrent_uses_steps(wf: &serde_norway::Value) -> Vec<String> {
+    let mut bad = Vec::new();
+    let Some(jobs) = wf["jobs"].as_mapping() else {
+        return bad;
+    };
+    for (id, job) in jobs {
+        let id = id.as_str().unwrap_or("?");
+        let Some(steps) = job["steps"].as_sequence() else {
+            continue;
+        };
+        for step in steps {
+            let mut concurrent: Vec<&serde_norway::Value> = Vec::new();
+            if let Some(group) = step["parallel"].as_sequence() {
+                concurrent.extend(group);
+            }
+            if step["background"].as_bool() == Some(true) {
+                concurrent.push(step);
+            }
+            for s in concurrent {
+                if !s["uses"].is_null() {
+                    let name = s["name"].as_str().unwrap_or("<unnamed>");
+                    bad.push(format!("{id}: {name}"));
+                }
+            }
+        }
+    }
+    bad
+}
+
+#[test]
+fn concurrent_steps_are_run_steps_only() {
+    let dir = Path::new(ROOT).join(".github/workflows");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("read .github/workflows") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yml") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        let bad = concurrent_uses_steps(&workflow(&name));
+        assert!(
+            bad.is_empty(),
+            "{name}: `uses:` steps must not sit in a `parallel:` group or run with `background: true`: {bad:?}"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no workflows were checked");
+}
+
+#[test]
+fn concurrent_uses_steps_are_detected() {
+    let wf: serde_norway::Value = serde_norway::from_str(
+        r#"
+jobs:
+  a:
+    steps:
+      - parallel:
+          - name: fine
+            run: echo ok
+          - name: grouped action
+            uses: actions/checkout@v1
+      - name: background action
+        background: true
+        uses: ./
+      - name: background script
+        background: true
+        run: echo ok
+      - name: plain action
+        uses: actions/checkout@v1
+      - wait-all:
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        concurrent_uses_steps(&wf),
+        vec![
+            "a: grouped action".to_string(),
+            "a: background action".to_string()
+        ]
+    );
 }
 
 #[test]

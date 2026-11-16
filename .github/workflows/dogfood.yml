@@ -44,13 +44,13 @@ jobs:
         shell: bash
         run: bash .github/scripts/changed-paths.sh "$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
 
-  # The one `cargo build --release --locked` of the pull request — the
-  # binary is shared with the jobs below as an artifact, so the release
-  # profile's LTO cost is paid once per run. The same job is the sole
-  # writer of the shared release cache the reusable release pipelines
-  # restore.
-  release-build:
-    name: Release build
+  # One `cargo build --release --locked` per run, then the two checks that
+  # exercise the binary run as steps of the same job — the binary never
+  # leaves the runner, so there is no artifact handoff and no second runner
+  # start-up. The job is also the sole writer of the shared release cache
+  # the reusable release pipelines restore.
+  dogfood:
+    name: Build and dogfood
     needs: changes
     if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
@@ -62,6 +62,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Deliberately shallow: a depth-1 checkout lacks the pull
+          # request's base commit, so the Action self-test below exercises
+          # the action's base-fetch path on every pull request run (the E2E
+          # fetches the base itself when it is missing).
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -78,45 +82,12 @@ jobs:
       - name: Build dbtl (release)
         run: cargo build --release --locked
 
-      - name: Upload the release binary
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: dbtl-release
-          path: target/release/dbtl
-          if-no-files-found: error
-          # Same-run handoff only — kept long enough for a failed-job rerun.
-          retention-days: 7
-
-  action-self-test:
-    name: Action self-test
-    needs:
-      - changes
-      - release-build
-    if: needs.changes.outputs.code != 'false'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          # Deliberately shallow: a depth-1 checkout lacks the pull
-          # request's base commit, so this exercises the action's
-          # base-fetch path on every pull request run.
-
-      - name: Download the release binary
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: dbtl-release
-          path: target/release
-
       - name: Put dbtl on PATH
-        run: |
-          chmod +x target/release/dbtl
-          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
+        run: echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
 
+      # Sequential on purpose: the self-test runs the composite action
+      # (`uses: ./`), and it comes first so the E2E's clean-tree check also
+      # covers whatever the action leaves behind.
       - name: Run the action (passing check)
         id: passing
         uses: ./
@@ -186,33 +157,6 @@ jobs:
           out="$(bash "$GITHUB_WORKSPACE/action/sarif_dry_run.sh")"
           echo "$out"
           echo "$out" | grep -qF 'codeql-action/upload-sarif' || { echo "::error::the dry-run plan does not describe the SARIF upload"; exit 1; }
-
-  dogfood-e2e:
-    name: Dogfood E2E
-    needs:
-      - changes
-      - release-build
-    if: needs.changes.outputs.code != 'false'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Download the release binary
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: dbtl-release
-          path: target/release
-
-      - name: Put dbtl on PATH
-        run: |
-          chmod +x target/release/dbtl
-          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
 
       # The committed jaffle_finance fixture trips the error-severity lint
       # rules that still gate by default (missing_primary_key_tests), so
@@ -453,14 +397,14 @@ jobs:
             ${{ runner.temp }}/dogfood/impact.md
           if-no-files-found: warn
 
-  # Housekeeping, never a gate: once Release build has saved its fresh
+  # Housekeeping, never a gate: once the dogfood job has saved its fresh
   # generation on a main push, drop every older generation of the `release`
   # series so the Actions cache stays inside its budget.
   cache-prune:
     name: Prune old cache generations
     needs:
       - changes
-      - release-build
+      - dogfood
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -485,9 +429,7 @@ jobs:
     name: Dogfood result
     needs:
       - changes
-      - release-build
-      - action-self-test
-      - dogfood-e2e
+      - dogfood
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
