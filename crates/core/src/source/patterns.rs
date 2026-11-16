@@ -281,11 +281,13 @@ impl Patterns {
     /// whether the call provably executes — see [`EnabledScan`]. The
     /// value goes through the shared expression evaluator
     /// (`Vars::node_enabled`) — literals, `var()`, comparisons,
-    /// `and`/`or`/`not`, `in`, `is` tests, parens, `| as_bool` — with
-    /// the file's bound-name table marking `{% set %}`-bound and
-    /// parse-context names unprovable. An unresolvable `enabled=` on a
-    /// call that always runs is a boolean-validation error in dbt —
-    /// reported once (`ctx` names the file) as before; on an
+    /// `and`/`or`/`not`, `in`, `is` tests, parens, `| as_bool`, and
+    /// value-shaped project-macro calls — with the file's bound-name
+    /// table marking `{% set %}`-bound and parse-context names
+    /// unprovable. An unresolvable `enabled=` on a call that always
+    /// runs is a boolean-validation error in dbt — its line lands in
+    /// `warnings` now and an [`EvalWarn`] records it so
+    /// [`merge_eval_warnings`] can fold the repeats later; on an
     /// unselectable-arm call it stays silent inside the scan (the arm
     /// may never run — [`EnabledScan::resolve`] weighs it instead).
     pub(super) fn enabled(
@@ -293,6 +295,7 @@ impl Patterns {
         sql: &str,
         scope: &JinjaScope,
         warnings: &mut Vec<String>,
+        evals: &mut Vec<EvalWarn>,
         ctx: &str,
     ) -> EnabledScan {
         // `config()` only exists inside Jinja tags — `{{ }}` AND
@@ -306,23 +309,31 @@ impl Patterns {
             let Some(expr) = config_arg(call.args, "enabled") else {
                 continue;
             };
-            let verdict = match scope.vars.node_enabled(expr, scope.branches.bound_names()) {
-                Some(b) => {
-                    if b {
-                        Enabled::On
-                    } else {
-                        Enabled::Off
+            let verdict =
+                match scope
+                    .vars
+                    .node_enabled(expr, scope.branches.bound_names(), scope.macros)
+                {
+                    Some(b) => {
+                        if b {
+                            Enabled::On
+                        } else {
+                            Enabled::Off
+                        }
                     }
-                }
-                None => {
-                    if call.gate.is_none() {
-                        warnings.push(format!(
-                            "{ctx}: config(enabled={expr}) could not be evaluated as a boolean; the resource stays enabled"
-                        ));
+                    None => {
+                        if call.gate.is_none() {
+                            evals.push(EvalWarn {
+                                expr: expr.to_string(),
+                                ctx: ctx.to_string(),
+                                pos: warnings.len(),
+                                kind: EvalWarnKind::Expr,
+                            });
+                            warnings.push(eval_warn_line(EvalWarnKind::Expr, expr, ctx));
+                        }
+                        Enabled::Unproven
                     }
-                    Enabled::Unproven
-                }
-            };
+                };
             match call.gate {
                 None => {
                     scan.readable = Some(verdict);
@@ -440,23 +451,28 @@ fn site_head_re() -> &'static Regex {
 /// The Jinja-level context every `config_*` reader shares for one file —
 /// the branch index [`jinja_branches`] built (arm paths, per-arm
 /// conditions, bound names, deferred definition bodies) plus the node's
-/// `var()` scope for condition evaluation. Building it once per file
-/// keeps the readers a pure map over [`config_calls`].
+/// `var()` scope and the project macro table for condition evaluation.
+/// Building it once per file keeps the readers a pure map over
+/// [`config_calls`].
 pub(super) struct JinjaScope<'v> {
     /// The file's arm/bound-name/deferred-body index.
     branches: JinjaBranches,
     /// The node's `var()` scope — `Vars::node_condition` resolves an
     /// arm's condition through it.
     vars: &'v Vars,
+    /// The project's macro table — `Vars::node_condition`'s
+    /// `name(…)`/`ns.name(…)` evaluation resolves through it.
+    macros: &'v Macros,
 }
 
 impl<'v> JinjaScope<'v> {
     /// Index `text` (the Jinja-comment-masked file body) once for every
     /// `config_*` reader of the file.
-    pub(super) fn new(text: &str, vars: &'v Vars) -> Self {
+    pub(super) fn new(text: &str, vars: &'v Vars, macros: &'v Macros) -> Self {
         JinjaScope {
             branches: jinja_branches(text),
             vars,
+            macros,
         }
     }
 
@@ -474,9 +490,9 @@ impl<'v> JinjaScope<'v> {
                 .any(|(k, r)| k > 0 && r.contains(&off))
         });
         let verdict = if boundary {
-            exec_arm_boundary(text, &self.branches, self.vars, off)
+            exec_arm_boundary(text, &self.branches, self.vars, self.macros, off)
         } else {
-            exec_at(text, &self.branches, self.vars, off)
+            exec_at(text, &self.branches, self.vars, self.macros, off)
         };
         matches!(verdict, Exec::Inactive)
     }
@@ -521,6 +537,7 @@ fn exec_arm_boundary<'a>(
     text: &'a str,
     branches: &JinjaBranches,
     vars: &Vars,
+    macros: &Macros,
     off: usize,
 ) -> Exec<'a> {
     if branches.in_deferred(off) {
@@ -534,7 +551,7 @@ fn exec_arm_boundary<'a>(
     };
     let mut gate = None;
     for step in rest {
-        match step_exec(text, branches, vars, step) {
+        match step_exec(text, branches, vars, macros, step) {
             Exec::Inactive => return Exec::Inactive,
             Exec::Gated(cond) => gate = gate.or(Some(cond)),
             Exec::Active => {}
@@ -547,7 +564,7 @@ fn exec_arm_boundary<'a>(
         gate = gate.or(Some(&text[chain.header.clone()]));
     } else {
         for r in &chain.conds[..(last.arm as usize + 1).min(chain.conds.len())] {
-            match vars.node_condition(&text[r.clone()], &branches.bound) {
+            match vars.node_condition(&text[r.clone()], &branches.bound, macros) {
                 Some(true) => return Exec::Inactive,
                 Some(false) => {}
                 None => gate = gate.or(Some(&text[r.clone()])),
@@ -569,13 +586,19 @@ fn exec_arm_boundary<'a>(
 /// cond gates it — the FIRST unprovable one names the gate. A `{% for %}`
 /// chain's arms can never be selected from source — the loop header
 /// (`x in expr`) is the gate text.
-fn exec_at<'a>(text: &'a str, branches: &JinjaBranches, vars: &Vars, off: usize) -> Exec<'a> {
+fn exec_at<'a>(
+    text: &'a str,
+    branches: &JinjaBranches,
+    vars: &Vars,
+    macros: &Macros,
+    off: usize,
+) -> Exec<'a> {
     if branches.in_deferred(off) {
         return Exec::Inactive;
     }
     let mut gate = None;
     for step in branches.arm_path(off) {
-        match step_exec(text, branches, vars, step) {
+        match step_exec(text, branches, vars, macros, step) {
             Exec::Inactive => return Exec::Inactive,
             Exec::Gated(cond) => gate = gate.or(Some(cond)),
             Exec::Active => {}
@@ -590,14 +613,20 @@ fn exec_at<'a>(text: &'a str, branches: &JinjaBranches, vars: &Vars, off: usize)
 /// One arm step's contribution to [`exec_at`]/[`exec_arm_boundary`]:
 /// `Inactive` when the arm can never be selected, `Gated` carrying the
 /// first unprovable condition text when selection is open but unproven.
-fn step_exec<'a>(text: &'a str, branches: &JinjaBranches, vars: &Vars, step: &ArmStep) -> Exec<'a> {
+fn step_exec<'a>(
+    text: &'a str,
+    branches: &JinjaBranches,
+    vars: &Vars,
+    macros: &Macros,
+    step: &ArmStep,
+) -> Exec<'a> {
     let chain = &branches.chains[step.chain as usize];
     if chain.kind == ArmKind::For {
         return Exec::Gated(&text[chain.header.clone()]);
     }
     let mut gate = None;
     for r in &chain.conds[..(step.arm as usize).min(chain.conds.len())] {
-        match vars.node_condition(&text[r.clone()], &branches.bound) {
+        match vars.node_condition(&text[r.clone()], &branches.bound, macros) {
             Some(true) => return Exec::Inactive,
             Some(false) => {}
             None => gate = gate.or(Some(&text[r.clone()])),
@@ -607,6 +636,7 @@ fn step_exec<'a>(text: &'a str, branches: &JinjaBranches, vars: &Vars, step: &Ar
         match vars.node_condition(
             &text[chain.conds[step.arm as usize].clone()],
             &branches.bound,
+            macros,
         ) {
             Some(false) => return Exec::Inactive,
             Some(true) => {}
@@ -657,9 +687,15 @@ fn config_calls<'a>(sql: &'a str, scope: &JinjaScope) -> Vec<ConfigCall<'a>> {
                             // index and deferred ranges are keyed on it.
                             let head = i + 2 + m.start();
                             let verdict = if boundary {
-                                exec_arm_boundary(sql, &scope.branches, scope.vars, head)
+                                exec_arm_boundary(
+                                    sql,
+                                    &scope.branches,
+                                    scope.vars,
+                                    scope.macros,
+                                    head,
+                                )
                             } else {
-                                exec_at(sql, &scope.branches, scope.vars, head)
+                                exec_at(sql, &scope.branches, scope.vars, scope.macros, head)
                             };
                             match verdict {
                                 Exec::Active => out.push(ConfigCall { args, gate: None }),
@@ -747,21 +783,27 @@ impl EnabledScan {
     /// whose verdict differs from the unconditional outcome can be the
     /// effective last call on some render, so the verdict is
     /// [`Enabled::Unproven`] — the node stays enabled and marked, never
-    /// silently disabled — and one warning names that call's unprovable
-    /// condition (`ctx` names the file the branch lives in).
+    /// silently disabled — and a [`EvalWarn`] names that call's
+    /// unprovable condition (`ctx` names the file the branch lives in)
+    /// so [`merge_eval_warnings`] can fold the repeats later.
     pub(super) fn resolve(
         &self,
         fallback: Option<Enabled>,
         warnings: &mut Vec<String>,
+        evals: &mut Vec<EvalWarn>,
         ctx: &str,
     ) -> Option<Enabled> {
         let without = self.readable.or(fallback);
         let base = verdict_value(without);
         for (v, gate) in &self.gated {
             if *v != base {
-                warnings.push(format!(
-                    "{ctx}: config(enabled=…) sits in a Jinja branch whose condition cannot be evaluated ({gate}); the resource stays enabled"
-                ));
+                evals.push(EvalWarn {
+                    expr: gate.clone(),
+                    ctx: ctx.to_string(),
+                    pos: warnings.len(),
+                    kind: EvalWarnKind::Gate,
+                });
+                warnings.push(eval_warn_line(EvalWarnKind::Gate, gate, ctx));
                 return Some(Enabled::Unproven);
             }
         }
@@ -769,6 +811,116 @@ impl EnabledScan {
         // outcome, so its declaration still counts as the file's verdict.
         without.or_else(|| self.gated.first().map(|(v, _)| *v))
     }
+}
+
+/// One "cannot be evaluated" report at its file — the record
+/// [`merge_eval_warnings`] folds so the same expression across N files
+/// lands as one line. The report's own line is pushed to the warnings
+/// vec at record time (`pos` marks it); the fold rewrites the group's
+/// first line and drops the rest.
+pub(super) struct EvalWarn {
+    /// The raw expression text — the `enabled=` argument for
+    /// [`EvalWarnKind::Expr`], the branch gate condition for
+    /// [`EvalWarnKind::Gate`].
+    pub(super) expr: String,
+    /// The file the evaluation ran in — the single-file message's
+    /// subject and the folded line's `(first: …)`.
+    pub(super) ctx: String,
+    /// The report's line's index in the warnings vec — where the folded
+    /// line lands (the warnings-order contract keeps first position).
+    pub(super) pos: usize,
+    /// Which "cannot be evaluated" wording this record folds into.
+    pub(super) kind: EvalWarnKind,
+}
+
+/// The two "cannot be evaluated" wordings [`merge_eval_warnings`]
+/// folds — they never share a line.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum EvalWarnKind {
+    /// `config(enabled={expr}) could not be evaluated as a boolean`.
+    Expr,
+    /// `… sits in a Jinja branch whose condition cannot be evaluated
+    /// ({expr})`.
+    Gate,
+}
+
+/// The single-file spelling an [`EvalWarn`]'s own line takes — what a
+/// lone report keeps.
+pub(super) fn eval_warn_line(kind: EvalWarnKind, expr: &str, ctx: &str) -> String {
+    match kind {
+        EvalWarnKind::Expr => format!(
+            "{ctx}: config(enabled={expr}) could not be evaluated as a boolean; the resource stays enabled"
+        ),
+        EvalWarnKind::Gate => format!(
+            "{ctx}: config(enabled=…) sits in a Jinja branch whose condition cannot be evaluated ({expr}); the resource stays enabled"
+        ),
+    }
+}
+
+/// Fold the "cannot be evaluated" reports by (wording, whitespace-
+/// normalized expression): DISTINCT files carrying the same expression
+/// land as ONE line — `… in {N} files (first: {first})` — while a
+/// report group in one file keeps its per-file wording (repeats drop
+/// like the exact-dedup did before). The folded line sits where its
+/// first report did, so first-seen order survives (the warnings-order
+/// contract).
+pub(super) fn merge_eval_warnings(warnings: &mut Vec<String>, evals: &[EvalWarn]) {
+    // (wording, normalized expression) -> its reports, in push order
+    let mut slots: HashMap<(EvalWarnKind, String), usize> = HashMap::new();
+    let mut groups: Vec<((EvalWarnKind, String), Vec<&EvalWarn>)> = Vec::new();
+    for e in evals {
+        let key = (e.kind, normalize_ws(&e.expr));
+        match slots.get(&key) {
+            Some(&i) => groups[i].1.push(e),
+            None => {
+                slots.insert(key.clone(), groups.len());
+                groups.push((key, vec![e]));
+            }
+        }
+    }
+    let mut drop: BTreeSet<usize> = BTreeSet::new();
+    let mut rewrite: HashMap<usize, String> = HashMap::new();
+    for ((kind, expr), members) in groups {
+        // Every report after the first folds away — what the first
+        // becomes depends on whether the group spans files.
+        drop.extend(members[1..].iter().map(|e| e.pos));
+        let n = members
+            .iter()
+            .map(|e| e.ctx.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        if n == 1 {
+            continue; // same file — the first keeps its per-file line
+        }
+        let first = &members[0].ctx;
+        let line = match kind {
+            EvalWarnKind::Expr => format!(
+                "config(enabled={expr}) could not be evaluated as a boolean in {n} files (first: {first}); those resources stay enabled"
+            ),
+            EvalWarnKind::Gate => format!(
+                "config(enabled=…) sits in a Jinja branch whose condition cannot be evaluated ({expr}) in {n} files (first: {first}); those resources stay enabled"
+            ),
+        };
+        rewrite.insert(members[0].pos, line);
+    }
+    if drop.is_empty() {
+        return;
+    }
+    let mut i = 0usize;
+    warnings.retain_mut(|w| {
+        let cur = i;
+        i += 1;
+        if let Some(line) = rewrite.get(&cur) {
+            *w = line.clone();
+        }
+        !drop.contains(&cur)
+    });
+}
+
+/// Whitespace-collapsed spelling for the warning-fold key — every run
+/// of whitespace (newlines included) becomes one space, edges trimmed.
+fn normalize_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The outcome an `enabled` verdict leaves on the node — an absent

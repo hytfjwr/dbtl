@@ -32,6 +32,7 @@ fn synthesizes_nodes_and_sources() {
         "model.sample.fct_customer_history",
         "model.sample.fct_line_items",
         "model.sample.fct_daily_orders",
+        "model.sample.stg_macro_enabled",
         "seed.sample.country_codes",
         "snapshot.sample.orders_snapshot",
         "snapshot.sample.customers_snapshot",
@@ -46,14 +47,16 @@ fn synthesizes_nodes_and_sources() {
 
 #[test]
 fn disabled_models_are_dropped_like_dbt_parks_them() {
-    // All three disable channels park the node under dbt's `disabled` (not
+    // All four disable channels park the node under dbt's `disabled` (not
     // `nodes`), so the source loader must drop them too:
     //   stg_disabled        in-file `config(enabled=false)`
+    //   stg_macro_disabled  in-file `config(enabled=sample.bool_var(…))` → false
     //   stg_schema_disabled schema.yml `config: enabled: false`
     //   old_model           dbt_project.yml tree `legacy: +enabled: false`
     let m = manifest_from_source(PROJECT).unwrap();
     for uid in [
         "model.sample.stg_disabled",
+        "model.sample.stg_macro_disabled",
         "model.sample.stg_schema_disabled",
         "model.sample.old_model",
     ] {
@@ -70,6 +73,11 @@ fn disabled_models_are_dropped_like_dbt_parks_them() {
             .all(|x| !x.contains("disabled") && !x.contains("old_model")),
         "no DAG edge into a disabled model"
     );
+    // The macro call that evaluates `true` keeps its model — and its
+    // `ref('stg_orders')` edge — in both modes.
+    assert!(dag
+        .downstream("model.sample.stg_orders")
+        .contains("model.sample.stg_macro_enabled"));
 }
 
 #[test]
@@ -204,7 +212,7 @@ fn schema_tests_are_captured_but_never_dag_nodes() {
 #[test]
 fn builds_dag_with_expected_counts_and_lineage() {
     let dag = load_dag_from_source(PROJECT).unwrap();
-    assert_eq!(dag.count_by_resource_type("model"), 23, "model count");
+    assert_eq!(dag.count_by_resource_type("model"), 24, "model count");
     assert_eq!(dag.count_by_resource_type("source"), 6, "source count");
     assert_eq!(dag.count_by_resource_type("seed"), 2, "seed count");
     assert_eq!(dag.count_by_resource_type("snapshot"), 3, "snapshot count");

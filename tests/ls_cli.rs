@@ -144,6 +144,7 @@ fn ls_method_atoms_match_their_domains() {
             "stg_branch_target",
             "stg_branch_var",
             "stg_dup_probe",
+            "stg_macro_enabled",
             "stg_orders",
             "stg_two_configs",
         ]
@@ -168,6 +169,7 @@ fn ls_legacy_path_form_warns_once_on_stderr() {
             "stg_branch_target",
             "stg_branch_var",
             "stg_dup_probe",
+            "stg_macro_enabled",
             "stg_orders",
             "stg_two_configs",
         ]
@@ -228,6 +230,7 @@ fn ls_exclude_subtracts_after_the_union() {
             "fct_line_items",
             "orders_snapshot",
             "stg_branch_var",
+            "stg_macro_enabled",
             "stg_orders",
         ]
     );
@@ -243,6 +246,7 @@ fn ls_exclude_subtracts_after_the_union() {
             "fct_line_items",
             "orders_snapshot",
             "stg_branch_var",
+            "stg_macro_enabled",
             "stg_orders",
         ]
     );
@@ -268,6 +272,7 @@ fn ls_exclude_takes_one_spec_per_occurrence() {
             "fct_line_items",
             "orders_snapshot",
             "stg_branch_var",
+            "stg_macro_enabled",
             "stg_orders",
         ]
     );
@@ -284,6 +289,7 @@ fn ls_exclude_takes_one_spec_per_occurrence() {
             "fct_line_items",
             "orders_snapshot",
             "stg_branch_var",
+            "stg_macro_enabled",
             "stg_orders",
         ]
     );
@@ -307,7 +313,7 @@ fn ls_selector_prints_one_buildable_line() {
     assert_eq!(
         stdout(&out),
         "agg_country_orders cll_demo cll_syntax extra_snapshot fct_daily_orders \
-         fct_line_items fct_orders orders_snapshot stg_branch_var stg_orders\n"
+         fct_line_items fct_orders orders_snapshot stg_branch_var stg_macro_enabled stg_orders\n"
     );
 }
 

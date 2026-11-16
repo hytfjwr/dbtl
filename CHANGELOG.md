@@ -42,6 +42,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that counts literals and column-named non-reserved words as
   completing the expression, and the rescued parse stays marked so
   absence-proving rules report nothing.
+- Source mode now evaluates the value-returning project macros dbt
+  resolves in `config(enabled=…)` and in `{% if %}` gate conditions —
+  `my_macro(…)` and `<project>.my_macro(…)` calls whose bodies are
+  straight-line `{% set %}` assignments, raise/log-only `{% if %}`
+  blocks, and a final return (positional and keyword arguments,
+  signature defaults, and nested project macros included, up to a
+  depth cap) — so a project like `{{ config(enabled=acme.bool_var('x',
+  false)) }}` disables the model just like real dbt instead of
+  warning unprovable. Macro calls outside that shape, package macros,
+  `adapter.dispatch`, and calls past the depth limit still keep the
+  resource enabled and marked unverifiable, and the "could not be
+  evaluated" warnings now fold by expression — the same call across
+  many files reports as one line naming the file count and the first
+  occurrence, while distinct expressions still warn separately.
 
 ## [0.7.2] - 2026-11-16
 

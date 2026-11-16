@@ -101,12 +101,12 @@ fn check_gates_param_only_entry_enables_a_default_off_gate() {
     ]);
     assert!(
         out.status.success(),
-        "7 affected <= max 25, stderr: {}",
+        "8 affected <= max 25, stderr: {}",
         stderr(&out)
     );
     let stdout = stdout(&out);
     assert!(
-        stdout.contains("PASS blast radius: 7 affected model(s) (max 25)"),
+        stdout.contains("PASS blast radius: 8 affected model(s) (max 25)"),
         "the configured ceiling reports, got: {stdout:?}"
     );
 }
@@ -240,7 +240,7 @@ fn check_named_param_flags_enable_gates_and_override_config() {
 
 #[test]
 fn check_doc_coverage_min_flag_reports_and_gates() {
-    // The sample project documents 13 of its 17 models: a 90% floor fails.
+    // The sample project documents 13 of its 24 models: a 90% floor fails.
     let m = sample_manifest();
     let out = run(&[
         "check",
@@ -252,7 +252,7 @@ fn check_doc_coverage_min_flag_reports_and_gates() {
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
     let stdout = stdout(&out);
     assert!(
-        stdout.contains("FAIL doc coverage 56% below the 90% minimum (13/23)"),
+        stdout.contains("FAIL doc coverage 54% below the 90% minimum (13/24)"),
         "got: {stdout:?}"
     );
 }
@@ -298,7 +298,7 @@ fn check_explicitly_enabled_diff_gate_skips_without_diff() {
 
 #[test]
 fn check_blast_radius_and_diff_gates_evaluate() {
-    // stg_orders changes → 7-model blast radius, a 9-downstream hub, and
+    // stg_orders changes → 8-model blast radius, a 10-downstream hub, and
     // the orders_dashboard exposure: every diff gate fires on real data.
     let tmp = tempfile::tempdir().unwrap();
     let changed = changed_manifest(&tmp, "model.sample.stg_orders");
@@ -317,9 +317,9 @@ fn check_blast_radius_and_diff_gates_evaluate() {
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
     let stdout = stdout(&out);
     for needle in [
-        "WARN 1 changed hub(s) (>= 5 downstream): stg_orders (9)",
+        "WARN 1 changed hub(s) (>= 5 downstream): stg_orders (10)",
         "FAIL 1 affected exposure(s): orders_dashboard",
-        "FAIL blast radius 7 affected model(s) exceeds max 0",
+        "FAIL blast radius 8 affected model(s) exceeds max 0",
     ] {
         assert!(stdout.contains(needle), "missing {needle:?} in:\n{stdout}");
     }
@@ -349,11 +349,11 @@ fn check_untested_changes_gates_on_a_changed_leaf() {
 
 #[test]
 fn check_max_blast_radius_flag_boundary() {
-    // 7 affected models: `--max-blast-radius 7` passes (<=), `6` fails.
+    // 8 affected models: `--max-blast-radius 8` passes (<=), `7` fails.
     let tmp = tempfile::tempdir().unwrap();
     let changed = changed_manifest(&tmp, "model.sample.stg_orders");
     let base = sample_manifest();
-    for (max, code, expect) in [("7", 0, "PASS"), ("6", 1, "FAIL")] {
+    for (max, code, expect) in [("8", 0, "PASS"), ("7", 1, "FAIL")] {
         let out = run(&[
             "check",
             "--manifest",
@@ -380,11 +380,11 @@ fn check_max_blast_radius_flag_boundary() {
 #[test]
 fn check_changed_hubs_threshold_matches_the_impact_report() {
     // The gate's `min_downstream` is the SAME number the report's hub list
-    // uses — set it above stg_orders's 8 and BOTH must drop the hub.
+    // uses — set it above stg_orders's 10 and BOTH must drop the hub.
     let tmp = tempfile::tempdir().unwrap();
     staged(
         &tmp,
-        "check:\n  gates:\n    changed_hubs:\n      min_downstream: 10\n",
+        "check:\n  gates:\n    changed_hubs:\n      min_downstream: 11\n",
     );
     let changed = changed_manifest(&tmp, "model.sample.stg_orders");
     let base = sample_manifest();
@@ -405,7 +405,7 @@ fn check_changed_hubs_threshold_matches_the_impact_report() {
             .as_array()
             .unwrap()
             .is_empty(),
-        "min_downstream 10 hides a 9-fanout hub everywhere: {v}"
+        "min_downstream 11 hides a 10-fanout hub everywhere: {v}"
     );
     let hubs = v["gates"]
         .as_array()
@@ -583,6 +583,6 @@ fn check_json_report_serializes_gates_and_impact() {
     assert_eq!(gates["changed_hubs"]["status"], "warn");
     assert_eq!(gates["affected_exposures"]["severity"], "warn");
     // The impact block IS `dbtl impact`'s DiffReport — same numbers.
-    assert_eq!(v["impact"]["pr"]["affected_models"], 7);
+    assert_eq!(v["impact"]["pr"]["affected_models"], 8);
     assert_eq!(v["impact"]["baseline"], base.to_str().unwrap());
 }

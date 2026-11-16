@@ -649,7 +649,7 @@ fn concise_is_one_greppable_line_per_finding() {
     );
     assert!(!stdout.contains(".sql:1"), "no invented :1: {stdout}");
     // …and the same summary the text report ends with.
-    assert!(stdout.contains("Found 14 errors and 0 warnings in 10 files"));
+    assert!(stdout.contains("Found 15 errors and 0 warnings in 11 files"));
     assert!(stdout.contains("1 rule reported findings"));
 }
 

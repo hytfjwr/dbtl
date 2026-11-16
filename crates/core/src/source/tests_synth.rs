@@ -53,6 +53,10 @@ pub(super) fn apply_meta(
     // `yml_tags` is that last channel).
     yml_tags: &mut HashMap<String, Vec<String>>,
     warnings: &mut Vec<String>,
+    // The "cannot be evaluated" records behind `warnings`'s enabled
+    // lines — [`EnabledScan::resolve`]'s gate reports land here so the
+    // caller's final fold can group a shared condition across files.
+    evals: &mut Vec<EvalWarn>,
 ) {
     for entry in entries {
         let uid = format!("{type_prefix}.{}.{}", ctx.proj, entry.name);
@@ -84,7 +88,7 @@ pub(super) fn apply_meta(
                     .get(&uid)
                     .and_then(|n| n.original_file_path.clone())
                     .unwrap_or_else(|| uid.clone());
-                scan.resolve(fallback, warnings, &ctx)
+                scan.resolve(fallback, warnings, evals, &ctx)
             }
             None => fallback,
         };

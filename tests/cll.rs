@@ -188,6 +188,7 @@ fn downstream_closure_of_stg_id_is_the_blast_radius() {
         ("snapshot.sample.orders_snapshot".to_string(), "id"),
         ("snapshot.sample.extra_snapshot".to_string(), "id"),
         (model("stg_branch_var"), "id"),
+        (model("stg_macro_enabled"), "id"),
     ]
     .into_iter()
     .map(|(n, c)| format!("{n}.{c}"))
@@ -450,8 +451,8 @@ fn columns_prints_the_downstream_markdown_report() {
     );
     // v1: the FOJ fans of `o.id = f.id` reach EVERY cll_demo output and
     // cll_syntax's own fans reach its seven outputs — the parser's precise
-    // blast radius is 17 (name-match reported 5).
-    assert!(stdout.contains("## Downstream columns (17)"), "row count");
+    // blast radius is 18 (name-match reported 5).
+    assert!(stdout.contains("## Downstream columns (18)"), "row count");
     for row in [
         "`fct_orders.id` | `stg_orders.id` | passthrough",
         "`cll_demo.order_id`",
@@ -504,7 +505,7 @@ fn columns_json_is_a_serializable_report() {
     assert_eq!(v["confidence"], "exact");
     assert_eq!(v["unique_id"], model("stg_orders"));
     let cols = v["columns"].as_array().expect("columns array");
-    assert_eq!(cols.len(), 17);
+    assert_eq!(cols.len(), 18);
     assert!(
         cols.iter()
             .any(|r| r["column"] == "fct_orders.id"
@@ -559,7 +560,7 @@ fn columns_works_in_source_mode() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("## Downstream columns (17)"), "{stdout:?}");
+    assert!(stdout.contains("## Downstream columns (18)"), "{stdout:?}");
 }
 
 // ---- performance ------------------------------------------------------------

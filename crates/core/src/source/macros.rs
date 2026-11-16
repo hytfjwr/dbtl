@@ -209,12 +209,12 @@ struct BodyCall {
     args: CallArgs,
 }
 
-/// One `{% macro %}` parameter — the name, plus its default expression
-/// (itself classified against the parameters declared before it, the only
-/// scope Jinja lets a default reference).
-struct Param {
-    name: String,
-    default: Option<ArgExpr>,
+/// One `{% macro %}` parameter — the name, plus its default expression's
+/// raw text (evaluated inside the callee frame against the parameters
+/// bound before it, the only scope Jinja lets a default reference).
+pub(super) struct Param {
+    pub(super) name: String,
+    pub(super) default: Option<String>,
 }
 
 /// One collected `{% macro %}`: its signature and the dependency-relevant
@@ -222,7 +222,7 @@ struct Param {
 pub(super) struct MacroDef {
     /// The declared parameters in order (variadics like `*args`/`**kwargs`
     /// are not named parameters — an arg landing there binds nothing).
-    params: Vec<Param>,
+    pub(super) params: Vec<Param>,
     /// The body's `ref()`/`source()` calls.
     deps: Vec<BodyDep>,
     /// The body's every other call (`config` excluded — a context call,
@@ -230,6 +230,23 @@ pub(super) struct MacroDef {
     calls: Vec<BodyCall>,
     /// The macro's body text — `RawMacro.macro_sql`'s source-mode value.
     sql: String,
+    /// The body reduced to the shape the `enabled` evaluator can run —
+    /// [`value_shape`]'s `Some`, or `None` when the body does anything
+    /// else (a value call on it stays unprovable).
+    pub(super) shape: Option<ValueShape>,
+}
+
+/// A macro body reduced to the only form the `enabled` evaluator can run
+/// for a value: straight-line `{% set <name> = <expr> %}`s and `{% if %}`
+/// guards whose bodies only raise/log, in any order, then one final
+/// `return(<expr>)` — the call answers exactly what that expression
+/// evaluates to.
+pub(super) struct ValueShape {
+    /// `(name, expression text)` per straight-line `{% set %}`, in
+    /// declaration order.
+    pub(super) sets: Vec<(String, String)>,
+    /// The final `return(…)`'s argument expression.
+    pub(super) ret: String,
 }
 
 /// Evaluate one argument expression through a binding frame — `None` is
@@ -267,7 +284,7 @@ fn classify_expr(expr: &str, scope: &[String]) -> ArgExpr {
 /// `name = expr` at top level → `Some((name, expr))`. The name must be a
 /// bare identifier and the `=` a single assignment — `==`/`!=`/`<=`/`>=`
 /// are comparisons, a parenthesized/subscripted name is not a kwarg.
-fn split_kwarg(seg: &str) -> Option<(&str, &str)> {
+pub(super) fn split_kwarg(seg: &str) -> Option<(&str, &str)> {
     let b = seg.as_bytes();
     let (mut depth, mut quote) = (0usize, 0u8);
     let mut i = 0;
@@ -333,6 +350,47 @@ fn arg_value(args: &CallArgs, i: usize, name: &str, bound: &[Option<String>]) ->
         .get(i)
         .or_else(|| kw_value(args, name))
         .and_then(|e| eval(e, bound))
+}
+
+/// Which expression fills a parameter slot — the shared
+/// positional/keyword/default binding rule the edge pass's string binding
+/// and the `enabled` evaluator's value binding both follow.
+#[derive(Clone, Copy)]
+pub(super) enum SlotSource<'a, A> {
+    /// The call's own argument — evaluated in the caller's frame.
+    Arg(&'a A),
+    /// The parameter's declared default — evaluated in the callee frame
+    /// (Jinja binds a default against the params bound before it).
+    Default(&'a str),
+}
+
+/// Map a call's arguments onto `def`'s parameter slots: positionals by
+/// index, keywords by name (overriding a positional at the same slot), a
+/// declared default filling whatever is left, `None` for a param the call
+/// supplies nothing for. Variadic `*args`/`**kwargs` aren't in `params`,
+/// so an arg landing there binds nothing.
+pub(super) fn bind_slots<'a, A>(
+    def: &'a MacroDef,
+    pos: &'a [A],
+    kw: &'a [(String, A)],
+) -> Vec<Option<SlotSource<'a, A>>> {
+    let mut slots: Vec<Option<SlotSource<'a, A>>> = (0..def.params.len()).map(|_| None).collect();
+    for (i, arg) in pos.iter().enumerate() {
+        if let Some(slot) = slots.get_mut(i) {
+            *slot = Some(SlotSource::Arg(arg));
+        }
+    }
+    for (name, arg) in kw {
+        if let Some(i) = def.params.iter().position(|p| p.name == *name) {
+            slots[i] = Some(SlotSource::Arg(arg));
+        }
+    }
+    for (i, p) in def.params.iter().enumerate() {
+        if slots[i].is_none() {
+            slots[i] = p.default.as_deref().map(SlotSource::Default);
+        }
+    }
+    slots
 }
 
 /// The resolved shape of one `ref`/`source` body dep under `bound` —
@@ -428,6 +486,7 @@ pub(super) enum Callee<'a> {
 }
 
 /// Every `{% macro %}` under the project's `macro-paths`, keyed by name.
+#[derive(Default)]
 pub(super) struct Macros {
     /// Macro name → definition. `BTreeMap` so the `macros` manifest map
     /// (and its diff output) is deterministically ordered.
@@ -555,18 +614,15 @@ impl Macros {
     }
 
     /// Evaluate a call's args against the caller `frame` and bind them to
-    /// `def`'s parameters: positional by index, keyword by name, defaults
-    /// filling the leftovers.
+    /// `def`'s parameters through [`bind_slots`]'s shared
+    /// positional/keyword/default rule.
     fn bind(def: &MacroDef, args: &CallArgs, frame: &[Option<String>]) -> Vec<Option<String>> {
+        let slots = bind_slots(def, &args.pos, &args.kw);
+        let names: Vec<String> = def.params.iter().map(|p| p.name.clone()).collect();
         let mut bound: Vec<Option<String>> = vec![None; def.params.len()];
-        for (i, expr) in args.pos.iter().enumerate() {
-            if let Some(slot) = bound.get_mut(i) {
-                *slot = eval(expr, frame);
-            }
-        }
-        for (name, expr) in &args.kw {
-            if let Some(i) = def.params.iter().position(|p| p.name == *name) {
-                bound[i] = eval(expr, frame);
+        for (i, slot) in slots.iter().enumerate() {
+            if let Some(SlotSource::Arg(e)) = slot {
+                bound[i] = eval(e, frame);
             }
         }
         // Defaults are evaluated inside the callee frame (Jinja semantics):
@@ -574,9 +630,9 @@ impl Macros {
         // so it must read `bound` — the slots already filled above — not
         // the caller's frame, which would fabricate an edge from the wrong
         // argument.
-        for (i, p) in def.params.iter().enumerate() {
-            if bound[i].is_none() {
-                bound[i] = p.default.as_ref().and_then(|d| eval(d, &bound));
+        for (i, slot) in slots.iter().enumerate() {
+            if let Some(SlotSource::Default(d)) = slot {
+                bound[i] = eval(&classify_expr(d, &names), &bound);
             }
         }
         bound
@@ -808,32 +864,152 @@ fn macro_def(body: &str, params: Vec<Param>) -> MacroDef {
         deps,
         calls,
         sql: body.to_string(),
+        shape: value_shape(body),
     }
 }
 
 /// Parse a `{% macro %}` signature — `name` parameters in order, each
-/// optional `= expr` default classified against the names declared so
-/// far.
+/// optional `= expr` default kept as raw text (the binding passes
+/// classify/evaluate it inside the callee frame).
 fn parse_params(sig: &str) -> Vec<Param> {
-    let mut raw: Vec<(String, Option<&str>)> = Vec::new();
+    let mut params = Vec::new();
     for seg in top_level_segments(sig) {
         let seg = seg.trim();
         if seg.is_empty() {
             continue;
         }
         match split_kwarg(seg) {
-            Some((name, def)) if is_ident(name) => raw.push((name.to_string(), Some(def))),
-            None if is_ident(seg) => raw.push((seg.to_string(), None)),
+            Some((name, default)) if is_ident(name) => params.push(Param {
+                name: name.to_string(),
+                default: Some(default.to_string()),
+            }),
+            None if is_ident(seg) => params.push(Param {
+                name: seg.to_string(),
+                default: None,
+            }),
             _ => {} // `*args`/`**kwargs` — not named parameters
         }
     }
-    let names: Vec<String> = raw.iter().map(|(n, _)| n.clone()).collect();
-    raw.into_iter()
-        .map(|(name, default)| Param {
-            name,
-            default: default.map(|e| classify_expr(e, &names)),
-        })
-        .collect()
+    params
+}
+
+/// The calls an `{% if %}` guard may make inside [`value_shape`]'s shape —
+/// `exceptions.raise_compiler_error`/`exceptions.warn`/`log` (raised or
+/// printed, never a value). Any other statement or call puts the body
+/// outside the shape.
+const GUARD_CALLS: &[&str] = &["exceptions.raise_compiler_error", "exceptions.warn", "log"];
+
+/// Reduce a macro body to the [`ValueShape`] the `enabled` evaluator runs
+/// — `None` when the body does anything else. Between the tags only
+/// whitespace may sit (text is an output the shape doesn't model); a tag
+/// may be a straight-line `{% set <ident> = <expr> %}` or an `{% if %}`
+/// block [`skip_guarded`] accepts, in any order, and the body must end on
+/// exactly one `{{ return(<expr>) }}`/`{% do return(<expr>) %}`.
+fn value_shape(body: &str) -> Option<ValueShape> {
+    let bytes = body.as_bytes();
+    let mut sets = Vec::new();
+    let mut i = 0usize;
+    loop {
+        // Whatever sits between tags must be whitespace — output text
+        // makes the body more than the shape (a `{{ }}` that isn't the
+        // return writes to the caller).
+        let open = find_subslice(bytes, i, b"{")?;
+        if !body[i..open].trim().is_empty() || !matches!(bytes.get(open + 1), Some(b'{' | b'%')) {
+            return None;
+        }
+        let close = jinja_tag_close(bytes, open)?;
+        let inner = &body[open + 2..close];
+        i = close + 2;
+        let ret = if bytes[open + 1] == b'{' {
+            Some(return_expr(inner)?)
+        } else {
+            let (word, rest) = tag_word(inner);
+            match word {
+                "set" => {
+                    let (name, expr) = split_kwarg(rest)?;
+                    sets.push((name.to_string(), expr.to_string()));
+                    continue;
+                }
+                "if" => {
+                    i = skip_guarded(body, i)?;
+                    continue;
+                }
+                "do" => Some(return_expr(rest)?),
+                _ => return None,
+            }
+        };
+        // The return is the body's last act — only whitespace may follow.
+        if !body[i..].trim().is_empty() {
+            return None;
+        }
+        return Some(ValueShape { sets, ret: ret? });
+    }
+}
+
+/// Skip the `{% if %}` block whose open tag ended just before `i`: every
+/// tag inside must call an allowed [`GUARD_CALLS`] name (`{% do %}` or
+/// `{{ }}`), and the block must close on `{% endif %}` — the guard either
+/// aborts the render or logs, so the body's value never depends on the
+/// condition. The condition itself is never evaluated: when it would have
+/// fired, dbt's render raises and no verdict exists at all — skipping it
+/// answers the call's value for every render that survives, which is the
+/// only render the `enabled` verdict can describe. Returns the index past
+/// `endif`; anything else (a nested `{% if %}`, `{% else %}`/`{% elif %}`,
+/// a `{% set %}` inside) fails.
+fn skip_guarded(body: &str, mut i: usize) -> Option<usize> {
+    let bytes = body.as_bytes();
+    loop {
+        let open = find_subslice(bytes, i, b"{")?;
+        if !body[i..open].trim().is_empty() || !matches!(bytes.get(open + 1), Some(b'{' | b'%')) {
+            return None;
+        }
+        let close = jinja_tag_close(bytes, open)?;
+        let inner = &body[open + 2..close];
+        i = close + 2;
+        match bytes[open + 1] {
+            b'{' => guard_call(inner).then_some(())?,
+            b'%' => match tag_word(inner) {
+                ("do", rest) => guard_call(rest).then_some(())?,
+                ("endif", _) => return Some(i),
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+}
+
+/// `inner` — a `{{ }}` body or a `{% do %}`'s rest, whitespace-control
+/// dashes and padding stripped — is exactly one call to a [`GUARD_CALLS`]
+/// name.
+fn guard_call(inner: &str) -> bool {
+    let inner = inner.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '+');
+    let Some(paren) = inner.find('(') else {
+        return false;
+    };
+    if !GUARD_CALLS.contains(&inner[..paren].trim_end()) {
+        return false;
+    }
+    match scan_call_args(&inner[paren..], 1) {
+        Some((_, end)) => inner[paren + end..].trim().is_empty(),
+        None => false,
+    }
+}
+
+/// The `return(<expr>)` call's argument text — `inner` is a `{{ }}` tag
+/// body or a `{% do %}`'s rest and the whole thing must be the one call.
+/// `None` for anything else — `return()` with no argument included (dbt
+/// returns `none`, which fails `enabled` validation anyway).
+fn return_expr(inner: &str) -> Option<String> {
+    let inner = inner.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '+');
+    let rest = inner.strip_prefix("return")?.trim_start();
+    if !rest.starts_with('(') {
+        return None;
+    }
+    let (args, end) = scan_call_args(rest, 1)?;
+    if !rest[end..].trim().is_empty() || args.trim().is_empty() {
+        return None;
+    }
+    Some(args.to_string())
 }
 
 /// The unresolvable-call record `resolve_edges` fills: how many calls on

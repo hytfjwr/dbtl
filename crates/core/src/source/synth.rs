@@ -121,6 +121,10 @@ pub(super) struct Synthesis {
     /// `config.enabled:` level under it the way [`EnabledScan::resolve`]
     /// specifies.
     in_file_enabled: HashMap<String, EnabledScan>,
+    /// The "cannot be evaluated" records behind the warnings lines —
+    /// kept alongside so `finish` can fold the same normalized
+    /// expression across files into one `in N files (first: …)` line.
+    eval_warns: Vec<EvalWarn>,
     /// uids whose `enabled` stayed [`Enabled::Unproven`] after every
     /// declared channel folded — kept in the graph (a guess either way
     /// could drop a live node dbt keeps… or a dead one) but recorded so
@@ -386,6 +390,7 @@ impl Synthesis {
             disabled_names: BTreeMap::new(),
             disabled_sources: BTreeSet::new(),
             in_file_enabled: HashMap::new(),
+            eval_warns: Vec::new(),
             enabled_unverifiable: BTreeSet::new(),
             assumed_names: BTreeSet::new(),
             installed,
@@ -432,11 +437,12 @@ impl Synthesis {
             // resource doesn't answer a name claim either). A verdict
             // leaning on an unselectable arm is never proven — the file
             // claims the stem and the verdict resolves at materialize.
-            let scope = JinjaScope::new(&masked, &self.vars);
+            let scope = JinjaScope::new(&masked, &self.vars, &self.macros);
             let in_file = self.pat.enabled(
                 &masked,
                 &scope,
                 &mut self.warnings,
+                &mut self.eval_warns,
                 &rel_path(&self.dir, &file),
             );
             config_shape_warnings(
@@ -628,8 +634,14 @@ impl Synthesis {
             // An in-file `enabled` scan applies to every block in the
             // file (rare) — a proven `false` parks them all like dbt's
             // `disabled`; an unproven one marks each block it covers.
-            let scope = JinjaScope::new(&masked, &self.vars);
-            let in_file = self.pat.enabled(&masked, &scope, &mut self.warnings, &ofp);
+            let scope = JinjaScope::new(&masked, &self.vars, &self.macros);
+            let in_file = self.pat.enabled(
+                &masked,
+                &scope,
+                &mut self.warnings,
+                &mut self.eval_warns,
+                &ofp,
+            );
             config_shape_warnings(&masked, &scope, &mut self.warnings, &ofp);
             if in_file.proven_off() {
                 for name in self.pat.snapshots(&masked) {
@@ -658,7 +670,12 @@ impl Synthesis {
                     &mut self.warnings,
                     Some(&self.vars),
                 );
-                let verdict = in_file.resolve(tree.enabled_verdict(), &mut self.warnings, &ofp);
+                let verdict = in_file.resolve(
+                    tree.enabled_verdict(),
+                    &mut self.warnings,
+                    &mut self.eval_warns,
+                    &ofp,
+                );
                 if verdict == Some(Enabled::Off) {
                     self.disabled_names
                         .entry(name.clone())
@@ -1115,6 +1132,7 @@ impl Synthesis {
         let verdict = pending.in_file.resolve(
             schema_v.or(schema_m).or_else(|| tree.enabled_verdict()),
             &mut self.warnings,
+            &mut self.eval_warns,
             &rel_path(&self.dir, &pending.file),
         );
         if verdict == Some(Enabled::Off) {
@@ -1158,7 +1176,7 @@ impl Synthesis {
                 // The in-file `config(…)` spellings — the highest
                 // precedence level over the version's and model's
                 // `config:` blocks, same chain as an unversioned file.
-                let scope = JinjaScope::new(&masked, &self.vars);
+                let scope = JinjaScope::new(&masked, &self.vars, &self.macros);
                 let gov = config_governance(&masked, &scope);
                 node.config = RawConfig {
                     materialized: self.pat.materialized(&masked, &scope),
@@ -1224,9 +1242,12 @@ impl Synthesis {
             Some(&self.vars),
         );
         let uid = format!("model.{}.{}", self.proj, pending.name);
-        let verdict = pending
-            .in_file
-            .resolve(tree.enabled_verdict(), &mut self.warnings, &ofp);
+        let verdict = pending.in_file.resolve(
+            tree.enabled_verdict(),
+            &mut self.warnings,
+            &mut self.eval_warns,
+            &ofp,
+        );
         if verdict == Some(Enabled::Off) {
             self.disabled_names
                 .entry(pending.name)
@@ -1260,7 +1281,7 @@ impl Synthesis {
                 // The in-file `config(…)` spellings of the model governance
                 // fields — each the highest level of the same precedence
                 // chain `materialized` follows.
-                let scope = JinjaScope::new(&masked, &self.vars);
+                let scope = JinjaScope::new(&masked, &self.vars, &self.macros);
                 let gov = config_governance(&masked, &scope);
                 node.config = RawConfig {
                     materialized: self.pat.materialized(&masked, &scope),
@@ -1518,7 +1539,7 @@ impl Synthesis {
             // refs too — verified: a `ref` behind `{% if var('off') %}`
             // earns no edge in the real manifest). An UNPROVABLE arm is
             // not dead — its calls stay as edges either way.
-            let scope = JinjaScope::new(sql, &self.vars);
+            let scope = JinjaScope::new(sql, &self.vars, &self.macros);
             for site in self.pat.call_sites_masked(sql) {
                 if scope.dead(sql, site.span.start) {
                     continue;
@@ -2139,6 +2160,7 @@ impl Synthesis {
                         &mut self.enabled_unverifiable,
                         &mut self.yml_tags,
                         &mut self.warnings,
+                        &mut self.eval_warns,
                     );
                 } else if let Some(family) = self.versioned.get(&entry.name) {
                     // The first declaration alone expands (a
@@ -2172,6 +2194,7 @@ impl Synthesis {
                 &mut self.enabled_unverifiable,
                 &mut self.yml_tags,
                 &mut self.warnings,
+                &mut self.eval_warns,
             );
             apply_meta(
                 &mut self.nodes,
@@ -2186,6 +2209,7 @@ impl Synthesis {
                 &mut self.enabled_unverifiable,
                 &mut self.yml_tags,
                 &mut self.warnings,
+                &mut self.eval_warns,
             );
 
             // `unit_tests:` — dbt ≥1.8 unit tests, synthesized into the
@@ -2323,6 +2347,11 @@ impl Synthesis {
         manifest_docs: HashMap<String, RawDoc>,
         extras: EdgeExtras,
     ) -> (RawManifest, Vec<String>) {
+        // The "cannot be evaluated" reports fold by (wording, normalized
+        // expression): the same `enabled=`/gate expression across N
+        // files lands as one `in N files (first: …)` line at its first
+        // report's position.
+        merge_eval_warnings(&mut self.warnings, &self.eval_warns);
         let mut seen_warnings = HashSet::new();
         self.warnings.retain(|w| seen_warnings.insert(w.clone()));
 
