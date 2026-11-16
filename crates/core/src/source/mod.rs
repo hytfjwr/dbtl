@@ -239,6 +239,7 @@ mod config_tree;
 mod docs;
 mod macros;
 mod packages;
+mod paths;
 mod patterns;
 mod python;
 mod schema;
@@ -254,6 +255,7 @@ use config_tree::*;
 use docs::*;
 use macros::*;
 use packages::*;
+use paths::*;
 use patterns::*;
 use python::*;
 use schema::*;
@@ -265,6 +267,7 @@ use yaml::*;
 // The span-carrying call extractors lint uses for finding positions — same
 // machinery as the loaders' own pass, not a second implementation.
 pub use collect::mask_jinja_comments;
+pub use paths::project_resource_dirs;
 pub use patterns::{
     arms_exclusive, call_sites_masked, jinja_branches, ArmKind, ArmStep, CallKind, CallSite,
     JinjaBranches,

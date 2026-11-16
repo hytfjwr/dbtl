@@ -138,8 +138,8 @@ Single keys copy the lineage, SQL, and reports to the clipboard, and `e` writes 
 Start with `--watch` to reload automatically when the data source changes. The poller scans at most every two seconds, and a change counts once it confirms a newer stamp.
 
 - In manifest mode it watches the manifest file's modification time.
-- In source mode it watches the `.sql`, `.py`, `.yml`, `.yaml`, and `.csv` files under the project.
-- It skips dot-directories and `target/`, except `target/compiled/`. A `dbt compile` therefore refreshes the compiled-SQL view.
+- In source mode it watches the same files `dbt parse` reads: the resource files (`.sql`, `.py`, `.yml`, `.yaml`, `.csv`, `.md`) under the project's configured `*-paths`, plus the `.yml`/`.yaml` files and `.dbtignore` at the project root.
+- It skips the generated trees — dot-directories, `logs/`, `dbt_packages/`, `dbt_internal_packages/`, and `target/`, except `target/compiled/`. A `dbt compile` therefore refreshes the compiled-SQL view.
 
 ## Status line
 
