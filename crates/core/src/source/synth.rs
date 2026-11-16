@@ -267,7 +267,7 @@ impl Synthesis {
         // dbt's YAML is PyYAML's: the project file parses through the same
         // style-aware loader the schema files do (a quoted `"yes"` stays a
         // string; a bare `yes` is the bool dbt records).
-        let mut project: DbtProject = yaml_to_json(&proj_str, &mut warnings)
+        let project: DbtProject = yaml_to_json(&proj_str, &mut warnings)
             .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
             .map_err(|e| {
                 anyhow::anyhow!(
@@ -283,62 +283,18 @@ impl Synthesis {
         let vars = Vars::load(dir, &project, cli_vars, &mut warnings);
 
         let proj = project.name.clone();
-        // `source-paths` is the pre-0.17 alias for `model-paths`, `data-paths`
-        // the pre-1.0 alias for `seed-paths`. All three lists are filtered
-        // through `contained_resource_paths`: every later join site
-        // (the .sql/.csv collectors AND the schema.yml scan) trusts them to stay
-        // under the project root.
-        let model_paths = contained_resource_paths(
-            project
-                .model_paths
-                .clone()
-                .or(project.source_paths.clone())
-                .unwrap_or_else(|| vec!["models".to_string()]),
-        );
-        // `data-paths` alone still emits dbt's deprecation warning — the
-        // message dbt itself prints (verified on 1.12.6), recorded here so
-        // source mode's warning surface reads the same.
-        if project.data_paths.is_some() {
-            warnings.push(
-                "The data-paths config has been renamed to seed-paths. Please update your dbt_project.yml configuration to reflect this change."
-                    .to_string(),
-            );
-        }
-        // Declaring both spellings is a dbt error — degraded to a warning
-        // here like every other recoverable oddity, `seed-paths` winning.
-        if project.seed_paths.is_some() && project.data_paths.is_some() {
-            warnings.push(
-                "dbt_project.yml declares both 'seed-paths' and 'data-paths' (a dbt error); 'seed-paths' wins"
-                    .to_string(),
-            );
-        }
-        let seed_paths = contained_resource_paths(
-            project
-                .seed_paths
-                .clone()
-                .or(project.data_paths.clone())
-                .unwrap_or_else(|| vec!["seeds".to_string()]),
-        );
-        let snapshot_paths = contained_resource_paths(
-            project
-                .snapshot_paths
-                .clone()
-                .unwrap_or_else(|| vec!["snapshots".to_string()]),
-        );
-        // `macro-paths` feeds two consumers: the `{% macro %}` table the
-        // edge pass resolves invocations against, and the docs-paths
-        // default (an unset `docs-paths` scans every resource dir).
-        let macro_paths = contained_resource_paths(
-            project
-                .macro_paths
-                .clone()
-                .unwrap_or_else(|| vec!["macros".to_string()]),
-        );
+        // The resource-path lists resolve through the ONE shared resolver
+        // (`paths.rs`): `source-paths`/`data-paths` aliases, per-key dbt
+        // defaults, `contained_resource_paths` containment, and the
+        // docs-paths union — so every later join site (the .sql/.csv
+        // collectors AND the schema.yml scan) and the staleness/watch
+        // scans agree on which directories are dbt inputs.
+        let paths = resolve_resource_paths(&project, &mut warnings);
 
         // Every `{% macro %}` under `macro-paths` — collected up front
         // like the docs blocks so the edge pass resolves `{{ name(…) }}`
         // calls in model/snapshot SQL against the project's own table.
-        let macros = Macros::load(dir, &macro_paths, &mut warnings);
+        let macros = Macros::load(dir, &paths.macro_paths, &mut warnings);
 
         let pat = Patterns::new();
 
@@ -348,31 +304,9 @@ impl Synthesis {
         // resource path (models/seeds/snapshots/macros/analyses/tests, verified
         // against real dbt). Collect them up front so every description intake
         // below renders through the one resolver.
-        let doc_paths: Vec<String> = match project.docs_paths.take() {
-            Some(paths) => contained_resource_paths(paths),
-            None => [
-                model_paths.clone(),
-                seed_paths.clone(),
-                snapshot_paths.clone(),
-                macro_paths.clone(),
-                contained_resource_paths(
-                    project
-                        .analysis_paths
-                        .clone()
-                        .unwrap_or_else(|| vec!["analyses".to_string()]),
-                ),
-                contained_resource_paths(
-                    project
-                        .test_paths
-                        .clone()
-                        .unwrap_or_else(|| vec!["tests".to_string()]),
-                ),
-            ]
-            .concat(),
-        };
         let docs = DocBlocks::new(
             proj.clone(),
-            collect_doc_blocks(dir, &doc_paths, &pat, &mut warnings),
+            collect_doc_blocks(dir, &paths.doc_paths, &pat, &mut warnings),
         );
 
         Ok(Synthesis {
@@ -380,9 +314,9 @@ impl Synthesis {
             proj,
             project,
             vars,
-            model_paths,
-            seed_paths,
-            snapshot_paths,
+            model_paths: paths.model_paths,
+            seed_paths: paths.seed_paths,
+            snapshot_paths: paths.snapshot_paths,
             macros,
             pat,
             docs,
