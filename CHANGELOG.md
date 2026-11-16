@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- An opt-in `unparsable_sql` lint rule (off under `standard`, on under
+  `strict` or via `--rules`/`rules:`) turns each model the SQL rules had
+  to skip into a finding — `<model> was skipped by SQL rules: <reason>`,
+  anchored at the model file — while the `unparsed_models` summary tally
+  keeps counting it exactly as before.
+
 ### Changed
 
 - `cartesian_join` findings now spell `ref()`/`source()` calls in the

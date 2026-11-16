@@ -143,7 +143,7 @@ fn default_config_enables_the_registry_default_set() {
         );
     }
     // The opt-in set the registry ships today — a pinned list so adding a
-    // sixth default-off rule is a deliberate edit, not drift.
+    // seventh default-off rule is a deliberate edit, not drift.
     assert_eq!(
         LintRule::ALL
             .iter()
@@ -155,7 +155,8 @@ fn default_config_enables_the_registry_default_set() {
             "model_too_long",
             "layer_materializations",
             "models_without_unit_tests",
-            "suppressions_without_reason"
+            "suppressions_without_reason",
+            "unparsable_sql"
         ]
     );
     assert_eq!(
@@ -1207,7 +1208,7 @@ fn registry_rows_match_all_one_for_one_in_order() {
 
 #[test]
 fn registry_rows_carry_the_fixed_metadata() {
-    // The 46 ids are a fixed contract — config keys, --rules args and the
+    // The 47 ids are a fixed contract — config keys, --rules args and the
     // baseline format all rely on them. The original structure rules lead;
     // rules added later append in the registry's order so the emitted
     // sequence stays stable.
@@ -1261,6 +1262,7 @@ fn registry_rows_carry_the_fixed_metadata() {
             "models_without_unit_tests",
             "unresolved_references",
             "suppressions_without_reason",
+            "unparsable_sql",
         ]
     );
     // Only rules that represent a broken guarantee or a build failure
@@ -1285,6 +1287,7 @@ fn registry_rows_carry_the_fixed_metadata() {
         "duplicate_output_columns",
         "unused_cte",
         "order_by_without_limit",
+        "unparsable_sql",
     ];
     let catalog_rules = [
         "warehouse_type_drift",
@@ -8584,6 +8587,7 @@ fn presets_define_the_base_rule_set() {
         LintRule::LayerMaterializations,
         LintRule::ModelsWithoutUnitTests,
         LintRule::SuppressionsWithoutReason,
+        LintRule::UnparsableSql,
     ] {
         assert!(!LintPreset::Minimal.enables(opt_in.info()));
         assert!(!LintPreset::Standard.enables(opt_in.info()));
@@ -8850,6 +8854,170 @@ fn unparsed_records_no_query_statement_for_non_select_sql() {
     assert!(
         !out.unparsed.contains_key("model.p.clean"),
         "an ordinary select still analyzes"
+    );
+}
+
+// ---- unparsable_sql (opt-in) --------------------------------------------------
+//
+// The rule surfaces the `unparsed` set as findings — one per skipped
+// model, file-only — and feeds that set itself, so running it alone
+// still fills the summary tally.
+
+#[test]
+fn unparsable_sql_flags_each_skipped_model_with_its_reason() {
+    // `broken` fails to parse and `ddl` parses but carries no query —
+    // both are "skipped by SQL rules"; `clean` analyzes, `no_sql` has
+    // nothing to skip, and `py` is out of scope entirely.
+    let mut py = model_lang("py", "python", "def model(dbt, session):\n    x = 1");
+    py.1.original_file_path = Some("models/py.py".into());
+    let m = manifest(
+        vec![
+            model_sql("broken", "select from where or"),
+            model_sql("ddl", "create table t (a int)"),
+            model_sql("clean", "select 1"),
+            model("no_sql", "staging/no_sql.sql"),
+            py,
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only_opt_in(
+        LintRule::UnparsableSql,
+        "lint:\n  rules:\n    unparsable_sql: true\n",
+    );
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnparsableSql),
+        vec!["model.p.broken", "model.p.ddl"],
+        "one finding per model the SQL rules skipped"
+    );
+    // The finding's reason IS the tally's — one UnparsedReason spells
+    // both, so the message and the summary can never disagree.
+    for uid in ["model.p.broken", "model.p.ddl"] {
+        let f = finding_on(&out.findings, LintRule::UnparsableSql, uid);
+        assert_eq!(
+            f.message,
+            format!(
+                "{} was skipped by SQL rules: {}",
+                display_name(&dag, uid),
+                out.unparsed[uid]
+            ),
+        );
+    }
+    assert_eq!(
+        out.unparsed.get("model.p.ddl"),
+        Some(&UnparsedReason::NoQueryStatement),
+        "a statementless-of-query model reports by name, not parse error"
+    );
+    assert_eq!(
+        out.unparsed.keys().collect::<Vec<_>>(),
+        vec!["model.p.broken", "model.p.ddl"],
+        "the rule alone still fills the unparsed tally"
+    );
+    // `clean` parsed and `no_sql`/`py` had nothing analyzable — none of
+    // them is a "skipped" model.
+    assert!(
+        !out.unparsed.contains_key("model.p.clean")
+            && !out.unparsed.contains_key("model.p.no_sql")
+            && !out.unparsed.contains_key("model.p.py"),
+        "only the skipped models tally: {:?}",
+        out.unparsed
+    );
+}
+
+#[test]
+fn unparsable_sql_reports_the_model_file_only() {
+    // The reason's line/column indexes into the rendered text the parser
+    // saw — a macro can shift it off the raw file, so the finding anchors
+    // at the file and never claims a source position.
+    let m = manifest(
+        vec![model_sql_pos("broken", "select from where or")],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only_opt_in(
+        LintRule::UnparsableSql,
+        "lint:\n  rules:\n    unparsable_sql: true\n",
+    );
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    let f = finding_on(&out.findings, LintRule::UnparsableSql, "model.p.broken");
+    let loc = f.location.as_ref().expect("the model file anchors");
+    assert_eq!(loc.file, "models/broken.sql");
+    assert!(
+        loc.line.is_none()
+            && loc.column.is_none()
+            && loc.end_line.is_none()
+            && loc.end_column.is_none()
+            && f.label.is_none()
+            && f.labels.is_empty(),
+        "a parse error elsewhere never becomes a guessed position: {f:?}"
+    );
+}
+
+#[test]
+fn unparsable_sql_suppresses_like_every_other_rule() {
+    // `meta.dbtl.ignore` and a config `exclude:` drop the finding into
+    // `suppressed` — but the model stays on the `unparsed` tally either
+    // way: it WAS skipped, the suppression only silences the finding.
+    let mut muted = model_sql("muted", "select from where or");
+    muted.1.meta = serde_json::json!({"dbtl": {"ignore": ["unparsable_sql"]}})
+        .as_object()
+        .cloned()
+        .unwrap();
+    let m = manifest(
+        vec![muted, model_sql("excluded", "select from where or")],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only_opt_in(
+        LintRule::UnparsableSql,
+        "lint:\n  rules:\n    unparsable_sql:\n      exclude: [excluded]\n",
+    );
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        flagged(&out.findings, LintRule::UnparsableSql).is_empty(),
+        "both mechanisms suppressed the findings: {:?}",
+        out.findings
+    );
+    assert_eq!(
+        flagged(&out.suppressed, LintRule::UnparsableSql),
+        vec!["model.p.excluded", "model.p.muted"],
+        "the suppressed list carries both, each with its mechanism"
+    );
+    assert_eq!(
+        out.unparsed.keys().collect::<Vec<_>>(),
+        vec!["model.p.excluded", "model.p.muted"],
+        "suppression never erases the skip itself"
+    );
+}
+
+#[test]
+fn unparsable_sql_never_judges_when_sql_is_absent() {
+    // `Requires::Sql`: a resolver-less run (the TUI's graph-only lint)
+    // records the rule as skipped and produces no findings — no parse
+    // ever happens, so `unparsed` stays empty too.
+    let m = manifest(
+        vec![model_sql("broken", "select from where or")],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cfg = cfg_only_opt_in(
+        LintRule::UnparsableSql,
+        "lint:\n  rules:\n    unparsable_sql: true\n",
+    );
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert!(out.findings.is_empty() && out.unparsed.is_empty());
+    assert_eq!(
+        out.skipped.iter().map(|s| s.rule).collect::<Vec<_>>(),
+        vec![LintRule::UnparsableSql],
+        "the missing sql input records the skip, not a failure"
     );
 }
 

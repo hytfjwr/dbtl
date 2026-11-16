@@ -160,6 +160,9 @@ pub enum LintRule {
     /// Audits the suppression machinery itself, so `meta.dbtl.ignore`
     /// (including `all`) and `exclude:` can never suppress it.
     SuppressionsWithoutReason,
+    /// A model's SQL exists but wouldn't parse — the SQL rules skipped
+    /// it, surfacing the `unparsed` summary entry as a finding (opt-in).
+    UnparsableSql,
 }
 
 impl LintRule {
@@ -167,7 +170,7 @@ impl LintRule {
     /// order of the enum and of [`REGISTRY`]. The original structure rules
     /// lead; rules added later append in registry order so the emitted
     /// sequence stays stable.
-    pub const ALL: [LintRule; 46] = [
+    pub const ALL: [LintRule; 47] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -214,6 +217,7 @@ impl LintRule {
         Self::ModelsWithoutUnitTests,
         Self::UnresolvedReferences,
         Self::SuppressionsWithoutReason,
+        Self::UnparsableSql,
     ];
 
     /// This rule's registry row — every rule has exactly one (drift-tested).

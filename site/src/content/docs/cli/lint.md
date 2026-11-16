@@ -84,7 +84,7 @@ One findings list feeds every surface, so the numbers cannot drift apart:
 
 The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters. Rules in the `warehouse` category run against `catalog.json` and are skipped without one.
 
-Five rules ship opt-in. `standard` skips them, and `strict` or a `rules:` entry turns them on:
+Six rules ship opt-in. `standard` skips them, and `strict` or a `rules:` entry turns them on:
 
 | Rule | Flags | Main parameter |
 | ---- | ----- | -------------- |
@@ -93,8 +93,11 @@ Five rules ship opt-in. `standard` skips them, and `strict` or a `rules:` entry 
 | `layer_materializations` | A model materialized in a way its layer's `allowed` map does not list. | `allowed` |
 | `models_without_unit_tests` | A model in a checked layer with no unit test. Python models and materialized views cannot carry one and never flag. | `layers` (default `marts`) |
 | `suppressions_without_reason` | A node's `meta.dbtl` suppression records no reason. It can never be suppressed itself, and while it runs the summary counts `exclude:` entries without a reason. | none |
+| `unparsable_sql` | A model whose SQL exists but would not parse — every SQL-backed rule skipped it. | none |
 
 `unresolved_references` flags a literal `ref()` or `source()` call that names nothing the project or its installed packages provide, such as a typo'd model name or an undeclared source table. It pins the finding to the call itself. See the [rule reference](../reference/lint-rules.md#unresolved_references) for what it skips.
+
+`unparsable_sql` turns the skipped-models tally into findings: one per model the SQL parser could not read, carrying the same reason the summary prints (`parse error at L:C: …`, `depth limit exceeded`, `no query statement`), anchored at the model file. Enable it — or run `strict` — to fail CI on an unparsable model instead of only counting it; `meta.dbtl.ignore` and `exclude:` suppress it like any other rule.
 
 ### Presets
 
