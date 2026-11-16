@@ -189,7 +189,7 @@ jobs:
         if: matrix.variant == 'defender' || matrix.variant == 'fast'
         run: |
           Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE\target"
-          Add-MpPreference -ExclusionPath "$env:CARGO_HOME"
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
 
       - name: Cache cargo
         if: matrix.os != 'windows-latest'
