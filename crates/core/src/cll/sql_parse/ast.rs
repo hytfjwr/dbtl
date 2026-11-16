@@ -257,9 +257,11 @@ pub(super) fn rename_outputs(mut res: QueryRes, cols: &[TableAliasColumnDef]) ->
     for (o, c) in res.out.iter_mut().zip(cols.iter()) {
         o.name = norm_ident(&c.name);
         // `WITH c(a, b)` / `t(a, b)` gives the output a real name — a
-        // positional placeholder it lands on becomes declared.
+        // positional placeholder it lands on becomes declared — and the
+        // name's written position moves to the alias list entry.
         o.synthetic = false;
         o.derived = false;
+        o.span = Some(c.name.span);
     }
     res
 }
@@ -278,9 +280,11 @@ pub(super) fn union_out(a: &OutCol, b: &OutCol) -> OutCol {
         },
         sources: a.sources.union(&b.sources).cloned().collect(),
         // The kept name is `a`'s — its synthetic flag answers "is this name
-        // invented?" regardless of what the right arm called the column.
+        // invented?" regardless of what the right arm called the column,
+        // and its written position is the name's occurrence.
         synthetic: a.synthetic,
         derived: a.derived,
+        span: a.span,
     }
 }
 
@@ -300,6 +304,7 @@ pub(super) fn collapse_pipe_output(res: &QueryRes) -> OutCol {
         sources,
         synthetic: true,
         derived: false,
+        span: None,
     }
 }
 

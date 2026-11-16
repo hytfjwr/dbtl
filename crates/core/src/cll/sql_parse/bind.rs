@@ -1,4 +1,5 @@
 use super::*;
+use sqlparser::tokenizer::Span;
 
 impl SqlParseResolver {
     /// Bind a `TableWithJoins`: the base relation, then each join's relation
@@ -104,6 +105,7 @@ impl SqlParseResolver {
                                 sources: BTreeSet::from([(p.uid.clone(), c.clone())]),
                                 synthetic: false,
                                 derived: false,
+                                span: None,
                             })
                             .collect();
                         TableSrc::Derived(Rc::new(rename_outputs(
@@ -121,22 +123,25 @@ impl SqlParseResolver {
                     // `unnest(x) t` as a function-like table — bind the same
                     // value-column shape: the table alias (else `unnest`)
                     // names the exploded element.
-                    let names: Vec<String> = match alias.as_ref() {
-                        Some(a) if !a.columns.is_empty() => {
-                            a.columns.iter().map(|c| norm_ident(&c.name)).collect()
-                        }
-                        Some(a) => vec![norm_ident(&a.name)],
-                        None => vec!["unnest".to_string()],
+                    let names: Vec<(String, Option<Span>)> = match alias.as_ref() {
+                        Some(a) if !a.columns.is_empty() => a
+                            .columns
+                            .iter()
+                            .map(|c| (norm_ident(&c.name), Some(c.name.span)))
+                            .collect(),
+                        Some(a) => vec![(norm_ident(&a.name), Some(a.name.span))],
+                        None => vec![("unnest".to_string(), None)],
                     };
                     TableSrc::Derived(Rc::new(QueryRes {
                         out: names
                             .into_iter()
-                            .map(|name| OutCol {
+                            .map(|(name, span)| OutCol {
                                 name,
                                 bare: false,
                                 sources: table_arg_sources.clone(),
                                 synthetic: false,
                                 derived: false,
+                                span,
                             })
                             .collect(),
                         foj: ColSources::new(),
@@ -227,39 +232,43 @@ impl SqlParseResolver {
                 }
                 res.foj.extend(elem_sources.iter().cloned());
                 let mut out: Vec<OutCol> = {
-                    let names: Vec<String> = match alias.as_ref() {
-                        Some(a) if !a.columns.is_empty() => {
-                            a.columns.iter().map(|c| norm_ident(&c.name)).collect()
-                        }
+                    let names: Vec<(String, Option<Span>)> = match alias.as_ref() {
+                        Some(a) if !a.columns.is_empty() => a
+                            .columns
+                            .iter()
+                            .map(|c| (norm_ident(&c.name), Some(c.name.span)))
+                            .collect(),
                         // `UNNEST(arr) x` names no column alias: the table
                         // alias itself is the value column's name —
                         // `select x` reads the exploded element.
-                        Some(a) => vec![norm_ident(&a.name)],
-                        None => vec!["unnest".to_string()],
+                        Some(a) => vec![(norm_ident(&a.name), Some(a.name.span))],
+                        None => vec![("unnest".to_string(), None)],
                     };
                     names
                         .into_iter()
-                        .map(|name| OutCol {
+                        .map(|(name, span)| OutCol {
                             name,
                             bare: false,
                             sources: elem_sources.clone(),
                             synthetic: false,
                             derived: false,
+                            span,
                         })
                         .collect()
                 };
                 // Offsets/ordinality are generated, not read — no sources.
-                let ord_name = with_offset_alias
+                let ord = with_offset_alias
                     .as_ref()
-                    .map(norm_ident)
-                    .or_else(|| with_ordinality.then(|| "ordinality".to_string()));
-                if let Some(name) = ord_name {
+                    .map(|i| (norm_ident(i), Some(i.span)))
+                    .or_else(|| with_ordinality.then(|| ("ordinality".to_string(), None)));
+                if let Some((name, span)) = ord {
                     out.push(OutCol {
                         name,
                         bare: false,
                         sources: ColSources::new(),
                         synthetic: false,
                         derived: false,
+                        span,
                     });
                 }
                 scope.bindings.push(Binding {
@@ -339,6 +348,7 @@ impl SqlParseResolver {
                     sources: sources.clone(),
                     synthetic: false,
                     derived: false,
+                    span: Some(value_alias.span),
                 }];
                 if let Some(a) = attribute_alias {
                     out.push(OutCol {
@@ -347,6 +357,7 @@ impl SqlParseResolver {
                         sources,
                         synthetic: false,
                         derived: false,
+                        span: Some(a.span),
                     });
                 }
                 scope.bindings.push(Binding {
@@ -368,15 +379,15 @@ impl SqlParseResolver {
                 // error-handling clauses carry no column refs).
                 let doc = self.expr_refs(ctx, ref_scope(env, scope), json_expr)?;
                 res.foj.extend(doc.iter().cloned());
-                let mut names: Vec<String> = Vec::new();
+                let mut names: Vec<(String, Option<Span>)> = Vec::new();
                 let mut stack: Vec<&sqlparser::ast::JsonTableColumn> = columns.iter().collect();
                 while let Some(c) = stack.pop() {
                     match c {
                         sqlparser::ast::JsonTableColumn::Named(n) => {
-                            names.push(norm_ident(&n.name));
+                            names.push((norm_ident(&n.name), Some(n.name.span)));
                         }
                         sqlparser::ast::JsonTableColumn::ForOrdinality(i) => {
-                            names.push(norm_ident(i));
+                            names.push((norm_ident(i), Some(i.span)));
                         }
                         sqlparser::ast::JsonTableColumn::Nested(n) => {
                             stack.extend(n.columns.iter());
@@ -385,12 +396,13 @@ impl SqlParseResolver {
                 }
                 let out = names
                     .into_iter()
-                    .map(|name| OutCol {
+                    .map(|(name, span)| OutCol {
                         name,
                         bare: false,
                         sources: doc.clone(),
                         synthetic: false,
                         derived: false,
+                        span,
                     })
                     .collect();
                 scope.bindings.push(Binding {
@@ -421,6 +433,7 @@ impl SqlParseResolver {
                         sources: doc.clone(),
                         synthetic: false,
                         derived: false,
+                        span: Some(c.name.span),
                     })
                     .collect();
                 scope.bindings.push(Binding {
@@ -517,6 +530,7 @@ impl SqlParseResolver {
                         sources: doc.clone(),
                         synthetic: false,
                         derived: false,
+                        span: Some(c.name.span),
                     })
                     .collect();
                 scope.bindings.push(Binding {

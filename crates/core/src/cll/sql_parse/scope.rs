@@ -1,4 +1,5 @@
 use super::*;
+use sqlparser::tokenizer::Span;
 
 // ---------------------------------------------------------------------------
 // Scope model
@@ -39,6 +40,16 @@ pub(super) struct OutCol {
     /// same-shaped expression can't collide with. `duplicate_output_columns`
     /// compares these names only under the dialects that produce them.
     pub(super) derived: bool,
+    /// The rendered-SQL span of the written name this output came from —
+    /// the select item's alias or derived-name position, wherever the name
+    /// was written, including inside a CTE or derived table whose outputs
+    /// a `*` later expands. `None` when no written position produced the
+    /// name: a column carried in from a parent's column list, a merged or
+    /// invented name. `compute_analyzed` maps it through the render's arm
+    /// index so same-named outputs in mutually exclusive
+    /// `{% if %}`/`{% else %}` arms never count as co-rendered duplicates;
+    /// a `None` occurrence counts as unconditional.
+    pub(super) span: Option<Span>,
 }
 
 /// What a SELECT-level construct resolved to: positional output columns
