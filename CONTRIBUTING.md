@@ -97,6 +97,10 @@ CI runs on every PR, gated by three required aggregate checks — `CI
 result`, `Security result`, and `Dogfood result`. Each aggregate fails when
 a job it needs fails or is cancelled; a skipped job passes.
 
+When jobs fail only because no hosted runner ever picked them up, a
+companion workflow re-runs the failed jobs once on its own — a real
+failure, a cancellation, or a second attempt is left for a human.
+
 A `changes` job first classifies the pull request's diff into scopes, and
 each job runs only when its scope changed:
 
