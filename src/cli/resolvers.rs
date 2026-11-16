@@ -321,6 +321,7 @@ mod tests {
     fn resolved_at(dir: &std::path::Path) -> ResolvedSource {
         let manifest = dbtl::RawManifest {
             unresolved_adjacent: Default::default(),
+            enabled_unverifiable: Default::default(),
             metadata: Default::default(),
             nodes: HashMap::new(),
             sources: HashMap::new(),

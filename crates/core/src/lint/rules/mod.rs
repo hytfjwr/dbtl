@@ -402,7 +402,19 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     for f in &mut out {
         envelope(dag, config, f);
     }
-    let suppressed = suppress(dag, config, &mut out, &mut notes);
+    let mut suppressed = suppress(dag, config, &mut out, &mut notes);
+    // A finding reported ON a node whose `enabled` state could not be
+    // verified — or one naming such a node in `related` — asserts the
+    // node's existence or adjacency, the one thing source mode couldn't
+    // establish (see `RawManifest::enabled_unverifiable`). Drop it: the
+    // claim may still be true, but it's unprovable, and under-report is
+    // the safe direction. Runs after `suppress` so both lists apply it.
+    let provable = |f: &Finding| {
+        !dag.enabled_unverifiable(&f.node_uid)
+            && !f.related.iter().any(|r| dag.enabled_unverifiable(r))
+    };
+    out.retain(provable);
+    suppressed.retain(provable);
     LintOutcome {
         findings: out,
         suppressed,

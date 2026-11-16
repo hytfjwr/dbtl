@@ -50,6 +50,7 @@ fn manifest(specs: &[(&str, &str, &[&str])], edges: &[(&str, &str)]) -> RawManif
     }
     RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         nodes,
         sources: HashMap::new(),
         exposures: HashMap::new(),

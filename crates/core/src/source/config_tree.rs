@@ -5,7 +5,12 @@ use super::*;
 #[derive(Debug, Clone, Default)]
 pub(super) struct TreeConfig {
     pub(super) materialized: Option<String>,
+    /// The deepest `+enabled` declaration's proven value.
     pub(super) enabled: Option<bool>,
+    /// The deepest `+enabled` declaration couldn't be evaluated (dbt
+    /// would hard-error; the resource stays enabled and the node is
+    /// marked `enabled`-unverifiable by the caller).
+    pub(super) enabled_unproven: bool,
     /// The `+meta` dict merged down the tree: deeper levels override per
     /// TOP-LEVEL key (a nested dict is replaced wholesale, not deep-merged —
     /// verified against real dbt).
@@ -29,6 +34,20 @@ pub(super) struct TreeConfig {
     /// `+incremental_strategy` — `append` / `merge` / `delete+insert` /
     /// `insert_overwrite` / `microbatch`.
     pub(super) incremental_strategy: Option<String>,
+}
+
+impl TreeConfig {
+    /// The `+enabled` verdict as an [`Enabled`] — [`Enabled::Unproven`]
+    /// when the deepest declaration couldn't be evaluated, `None` when
+    /// the tree declares no `+enabled` at all.
+    pub(super) fn enabled_verdict(&self) -> Option<Enabled> {
+        if self.enabled_unproven {
+            Some(Enabled::Unproven)
+        } else {
+            self.enabled
+                .map(|b| if b { Enabled::On } else { Enabled::Off })
+        }
+    }
 }
 
 /// The config-tree lookup path for a node: the project name, then each
@@ -77,15 +96,23 @@ pub(super) fn resolve_tree_config(
     if let Some(m) = tree["+materialized"].as_str() {
         out.materialized = Some(m.to_string());
     }
-    match vars.map(|v| v.tree_enabled(&tree["+enabled"])) {
-        Some(Some(e)) => out.enabled = Some(e),
-        Some(None) if !tree["+enabled"].is_null() => warnings.push(format!(
-            "dbt_project.yml '+enabled' at '{tree_path}' could not be evaluated as a boolean ({}); the resource stays enabled",
-            serde_json::to_string(&tree["+enabled"]).unwrap_or_else(|_| "?".to_string())
-        )),
-        None => out.enabled = tree["+enabled"].as_bool(),
-        _ => {}
-    }
+    // This level's `+enabled` verdict — `Some(Some(b))` a proven bool,
+    // `Some(None)` declared-but-unprovable (warned once per level), `None`
+    // not declared. The DEEPEST declaration wins, so `mine` only counts
+    // when no deeper level declared (merged below).
+    let declared = !tree["+enabled"].is_null();
+    let mine: Option<Option<bool>> = match vars.map(|v| v.tree_enabled(&tree["+enabled"])) {
+        Some(Some(e)) => Some(Some(e)),
+        Some(None) if declared => {
+            warnings.push(format!(
+                "dbt_project.yml '+enabled' at '{tree_path}' could not be evaluated as a boolean ({}); the resource stays enabled",
+                serde_json::to_string(&tree["+enabled"]).unwrap_or_else(|_| "?".to_string())
+            ));
+            Some(None)
+        }
+        Some(None) => None,
+        None => tree["+enabled"].as_bool().map(Some),
+    };
     out.meta.extend(meta_map(
         &tree["+meta"],
         warnings,
@@ -120,16 +147,34 @@ pub(super) fn resolve_tree_config(
     if let Some(s) = tree["+incremental_strategy"].as_str() {
         out.incremental_strategy = Some(s.to_string());
     }
-    if let Some((seg, rest)) = segments.split_first() {
-        let deeper = resolve_tree_config(
+    let deeper = segments.split_first().map(|(seg, rest)| {
+        resolve_tree_config(
             &tree[seg.as_str()],
             rest,
             format!("{tree_path}.{seg}"),
             warnings,
             vars,
-        );
+        )
+    });
+    // The deepest DECLARED `+enabled` wins — proven or unproven. An
+    // unproven deeper value beats a proven shallower one (dbt would
+    // hard-error on the deeper level, never reach the shallower's
+    // verdict); only when the deeper walk declared nothing does `mine`
+    // apply.
+    let deeper_verdict = deeper.as_ref().and_then(|d| {
+        if d.enabled_unproven {
+            Some(None)
+        } else {
+            d.enabled.map(Some)
+        }
+    });
+    match deeper_verdict.or(mine) {
+        Some(Some(b)) => out.enabled = Some(b),
+        Some(None) => out.enabled_unproven = true,
+        None => {}
+    }
+    if let Some(deeper) = deeper {
         out.materialized = deeper.materialized.or(out.materialized);
-        out.enabled = deeper.enabled.or(out.enabled);
         out.meta.extend(deeper.meta); // deeper keys replace same-named ones
         out.unique_key = deeper.unique_key.or(out.unique_key);
         out.freshness = deeper.freshness.or(out.freshness);

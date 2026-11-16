@@ -21,6 +21,7 @@ fn dag_with(project_name: Option<&str>, uids: &[&str]) -> Dag {
         .collect();
     Dag::build(&RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: RawMetadata {
             project_name: project_name.map(str::to_string),
             ..Default::default()

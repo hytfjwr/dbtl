@@ -164,7 +164,7 @@ pub(super) struct PyFileConfig {
     pub(super) contract: Option<RawContract>,
     pub(super) incremental_strategy: Option<String>,
     /// The LAST declared `enabled=` — `Some(None)` when it was declared
-    /// but unreadable (matching `Patterns::disabled`'s "the last
+    /// but unreadable (matching `Patterns::enabled`'s "the last
     /// `enabled=` decides" rule, which can't fall back to an earlier
     /// proven value).
     pub(super) enabled: Option<Option<serde_json::Value>>,

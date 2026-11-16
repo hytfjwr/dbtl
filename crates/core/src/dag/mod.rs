@@ -668,6 +668,18 @@ pub struct Dag {
     /// recomputes it). Empty when no package prune ever ran — source mode
     /// and `All`-scope loads among them.
     pruned_adjacent: HashMap<String, PrunedAdjacent>,
+    /// SOURCE-MODE ONLY: nodes whose `enabled` declaration could not be
+    /// evaluated (see [`RawManifest::enabled_unverifiable`]). A real parse
+    /// either resolves the expression or hard-errors — either way the
+    /// node's presence is certain — so the set is empty on every
+    /// manifest-mode Dag. Source mode keeps such a node provisionally
+    /// (dropping it would risk erasing a live one) but every lint claim
+    /// whose premise is the node's existence or its adjacency must
+    /// under-report: [`Dag::build`] also folds the node and the far side
+    /// of each of its edges into `pruned_adjacent`, and the lint runner
+    /// drops findings reported ON the node itself.
+    /// [`filtered`](Dag::filtered) carries it over, pruned to kept nodes.
+    enabled_unverifiable: BTreeSet<String>,
     /// The `ref()`/`source()` name universe the load captured pre-prune —
     /// every refable name across the root project AND installed packages,
     /// declared sources, parked `disabled` names, versioned families, and

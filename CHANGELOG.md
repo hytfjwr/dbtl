@@ -18,6 +18,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   calls become edges, `dbt.config()` applies, and a config-less Python
   model takes dbt's `table` default over the project tree's
   `+materialized`.
+- Source mode stops making lint claims it cannot prove around `enabled`
+  expressions it cannot evaluate. An `enabled` that renders outside the
+  evaluable subset — a `var()` with no value, a `target.*` read, an
+  `env_var()` call — now keeps the resource (real dbt either resolved it
+  or failed the whole parse) but marks it uncertain: findings naming the
+  node or one of its neighbors are dropped, and degree-sensitive rules
+  treat its edges as unprovable, matching how package-severed edges
+  already under-report. A proven `enabled: false` still parks the
+  resource under `disabled`. The evaluator also learned the Jinja `is`
+  tests — `defined`, `undefined`, `none`, `boolean`, `number`,
+  `string`, `sequence`, `iterable`, `mapping`, `even`, `odd`, and
+  `sameas` on a literal, plus `is not` negations — following the
+  real-dbt render semantics per scope (the project file and schema
+  positions raise on a missing `var()`, while the node render tolerates
+  it as `None`).
 
 ## [0.7.0] - 2026-11-15
 

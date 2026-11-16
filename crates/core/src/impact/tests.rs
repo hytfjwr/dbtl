@@ -31,6 +31,7 @@ fn two_model_manifest() -> RawManifest {
     nodes.get_mut("model.p.fct_x").unwrap().depends_on.nodes = vec!["model.p.stg_x".to_string()];
     RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -90,6 +91,7 @@ fn owner_manifest() -> RawManifest {
     nodes.get_mut("model.p.mart_b").unwrap().depends_on.nodes = vec!["model.p.fct_x".to_string()];
     RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),

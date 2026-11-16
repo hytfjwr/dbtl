@@ -30,28 +30,53 @@ pub(super) fn apply_meta(
     yml_path: &str,
     docs: &DocBlocks,
     disabled: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    in_file: &HashMap<String, Enabled>,
+    tree: &HashMap<String, TreeConfig>,
+    unverifiable: &mut std::collections::BTreeSet<String>,
     warnings: &mut Vec<String>,
 ) {
     for entry in entries {
         let uid = format!("{type_prefix}.{}.{}", ctx.proj, entry.name);
-        // Schema-level `config.enabled:` parks the node like dbt's `disabled`
-        // when it evaluates false: drop it (its edges are pruned by
-        // Dag::build's prune-first step) and record none of its docs/tests —
-        // but keep the NAME so `unresolved_references` reports a ref to it
-        // under its own "disabled" wording. A schema entry for a node that
-        // never existed parks nothing (name_index never saw it either).
-        if ctx.vars.schema_disabled(
+        // The node's `enabled` folds the channels in precedence order —
+        // in-file `config(enabled=)` > this schema `config.enabled:` >
+        // the tree's `+enabled`; the highest DECLARED level decides.
+        // A proven `Off` parks the node like dbt's `disabled`: drop it
+        // (its edges are pruned by Dag::build's prune-first step) and
+        // record none of its docs/tests — but keep the NAME so
+        // `unresolved_references` reports a ref to it under its own
+        // "disabled" wording. A schema entry for a node that never
+        // existed parks nothing (name_index never saw it either). An
+        // `Unproven` final verdict keeps the node and marks it — and a
+        // PROVEN level above can clear a mark a lower level recorded at
+        // collection (a schema `config.enabled: true` outranks the
+        // tree's unproven `+enabled`).
+        let schema = Enabled::from_schema(ctx.vars.schema_enabled_state(
             entry.config.enabled.as_ref(),
             &format!("{yml_path}: {type_prefix} '{}' config.enabled", entry.name),
             warnings,
-        ) {
-            if nodes.remove(&uid).is_some() {
-                disabled
-                    .entry(entry.name.clone())
-                    .or_default()
-                    .insert(type_prefix.to_string());
+        ));
+        let verdict = in_file
+            .get(&uid)
+            .copied()
+            .or(schema)
+            .or_else(|| tree.get(&uid).and_then(|t| t.enabled_verdict()));
+        match verdict {
+            Some(Enabled::Off) => {
+                unverifiable.remove(&uid);
+                if nodes.remove(&uid).is_some() {
+                    disabled
+                        .entry(entry.name.clone())
+                        .or_default()
+                        .insert(type_prefix.to_string());
+                }
+                continue;
             }
-            continue;
+            Some(Enabled::Unproven) => {
+                unverifiable.insert(uid.clone());
+            }
+            _ => {
+                unverifiable.remove(&uid);
+            }
         }
         // Skip docs for an absent node; this also gates the synth_tests calls
         // below (a documented-but-absent model contributes no tests).

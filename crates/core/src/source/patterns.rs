@@ -268,7 +268,7 @@ impl Patterns {
     }
 
     /// The materialization from `config(materialized='…')`, if present. Both
-    /// this and [`disabled`](Patterns::disabled) are scoped to `config(`
+    /// this and [`enabled`](Patterns::enabled) are scoped to `config(`
     /// calls, so a bare `materialized='x'` / `enabled=false` in SQL text, a
     /// `-- comment`, or a WHERE clause can never configure the node (dbt
     /// only honours them inside `config()`). dbt applies config() calls in
@@ -286,22 +286,24 @@ impl Patterns {
             .next_back()
     }
 
-    /// Whether the file's `{{ config() }}` calls leave it disabled — the
-    /// LAST `enabled=` decides, matching dbt's ordered config()
-    /// application (verified: `config(enabled=false)` then
-    /// `config(enabled=true)` leaves the node enabled). The value goes
-    /// through the shared expression evaluator (`Vars::node_enabled`) —
-    /// literals, `var()`, comparisons, `and`/`or`/`not`, `in`, `is` tests,
-    /// parens, `| as_bool`. An unresolvable value is a boolean-validation
-    /// error in dbt — reported once (`ctx` names the file) and the node
-    /// stays enabled; it can't fall back to an earlier `enabled=`.
-    pub(super) fn disabled(
+    /// The verdict the file's `{{ config() }}` calls leave on `enabled` —
+    /// `None` when no `enabled=` is declared; the LAST `enabled=` decides
+    /// otherwise, matching dbt's ordered config() application (verified:
+    /// `config(enabled=false)` then `config(enabled=true)` leaves the
+    /// node enabled). The value goes through the shared expression
+    /// evaluator (`Vars::node_enabled`) — literals, `var()`, comparisons,
+    /// `and`/`or`/`not`, `in`, `is` tests, parens, `| as_bool`. An
+    /// unresolvable value is a boolean-validation error in dbt — reported
+    /// once (`ctx` names the file), the verdict is
+    /// [`Enabled::Unproven`], and the resource stays enabled; it can't
+    /// fall back to an earlier `enabled=`.
+    pub(super) fn enabled(
         &self,
         sql: &str,
         vars: &Vars,
         warnings: &mut Vec<String>,
         ctx: &str,
-    ) -> bool {
+    ) -> Option<Enabled> {
         // `config()` only exists inside `{{ }}` — a bare `config(...)` in
         // SQL text or a `--`/`/* */` comment is SQL to dbt, never a call
         // (`{{ }}` inside a `--` comment DOES execute: Jinja renders first).
@@ -324,17 +326,15 @@ impl Patterns {
             }
             i += 1;
         }
-        match last {
-            Some(expr) => match vars.node_enabled(expr) {
-                Some(v) => v == serde_json::Value::Bool(false),
-                None => {
-                    warnings.push(format!(
-                        "{ctx}: config(enabled={expr}) could not be evaluated as a boolean; the resource stays enabled"
-                    ));
-                    false
-                }
-            },
-            None => false,
+        let expr = last?;
+        match vars.node_enabled(expr) {
+            Some(b) => Some(if b { Enabled::On } else { Enabled::Off }),
+            None => {
+                warnings.push(format!(
+                    "{ctx}: config(enabled={expr}) could not be evaluated as a boolean; the resource stays enabled"
+                ));
+                Some(Enabled::Unproven)
+            }
         }
     }
 }

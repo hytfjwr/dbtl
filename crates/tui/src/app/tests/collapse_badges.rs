@@ -42,6 +42,7 @@ fn collapse_dag(kids: usize, leaf_parent: Option<&str>) -> Dag {
     }
     Dag::build(&crate::RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes: node_map,
         sources: HashMap::new(),
@@ -418,6 +419,7 @@ fn nested_hub_app(threshold: usize) -> App {
     }
     let dag = Dag::build(&crate::RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes: node_map,
         sources: HashMap::new(),
@@ -525,6 +527,7 @@ fn modal_yank_ascii_does_not_inherit_the_current_roots_keep_set() {
     }
     let dag = Dag::build(&crate::RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes: node_map,
         sources: HashMap::new(),
@@ -712,6 +715,7 @@ fn pk_dag() -> Dag {
     );
     Dag::build(&RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
