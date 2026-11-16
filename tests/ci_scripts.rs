@@ -1,8 +1,8 @@
 //! The CI merge-gate plumbing: the changed-path classifier, the
-//! needs-aggregator, and the cache pruner in `.github/scripts/`, plus the
-//! workflows' contract that every gating job is reachable through an
-//! aggregate's `needs` list (a job added without `needs` coverage can
-//! never slip through).
+//! needs-aggregator, the cache pruner, and the runner-loss retry decision
+//! in `.github/scripts/`, plus the workflows' contract that every gating
+//! job is reachable through an aggregate's `needs` list (a job added
+//! without `needs` coverage can never slip through).
 //!
 //! Unix-only: the scripts target bash, like the action's helpers.
 
@@ -923,4 +923,225 @@ fn shellcheck_fails_on_a_nested_action_run() {
         "a violating nested action run: must fail the run: {}",
         stdout(&out)
     );
+}
+
+// ---- retry-runner-failures.sh ----------------------------------------------
+
+/// The annotation GitHub leaves when no hosted runner ever picks the job
+/// up — the only signal that separates a runner-acquisition loss from a
+/// cancelled-while-queued job, which shares the same zero-step shape.
+const ACQUIRED: &str =
+    "The job was not acquired by Runner of type hosted even after multiple attempts";
+
+/// A `GET /actions/runs/{id}` body carrying the fields the decision reads.
+fn run_json(conclusion: &str, attempt: u32, head_sha: &str) -> String {
+    format!(
+        r#"{{"id":123,"name":"CI","event":"pull_request","conclusion":"{conclusion}","run_attempt":{attempt},"head_sha":"{head_sha}","head_branch":"feat/x","head_repository":{{"full_name":"o/r"}},"run_number":7,"html_url":"https://example.invalid/runs/123"}}"#
+    )
+}
+
+/// A `GET /actions/runs/{id}/jobs` body from `(id, name, conclusion)` rows.
+fn jobs_json(rows: &[(u64, &str, &str)]) -> String {
+    let jobs: Vec<String> = rows
+        .iter()
+        .map(|(id, name, concl)| {
+            format!(
+                r#"{{"id":{id},"name":"{name}","conclusion":"{concl}","runner_name":"","steps":[]}}"#
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"total_count":{},"jobs":[{}]}}"#,
+        rows.len(),
+        jobs.join(",")
+    )
+}
+
+/// A `GET /check-runs/{id}/annotations` body from annotation messages.
+fn annotations_json(messages: &[&str]) -> String {
+    let rows: Vec<String> = messages
+        .iter()
+        .map(|m| format!(r#"{{"annotation_level":"failure","message":"{m}"}}"#))
+        .collect();
+    format!("[{}]", rows.join(","))
+}
+
+/// Replay the decision over recorded API payloads in the script's
+/// `--fixtures` directory layout: `run.json`, `jobs.json`, one
+/// `annotations-<job>.json` per probed candidate, and `branch-head` for
+/// the head branch's current tip (`None` = the lookup cannot resolve it).
+fn retry_decision(
+    run: &str,
+    jobs: &str,
+    annotations: &[(u64, String)],
+    branch_head: Option<&str>,
+) -> BTreeMap<String, String> {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("run.json"), run).unwrap();
+    std::fs::write(dir.path().join("jobs.json"), jobs).unwrap();
+    for (id, body) in annotations {
+        std::fs::write(dir.path().join(format!("annotations-{id}.json")), body).unwrap();
+    }
+    if let Some(sha) = branch_head {
+        std::fs::write(dir.path().join("branch-head"), format!("{sha}\n")).unwrap();
+    }
+    let out = Command::new("bash")
+        .arg(script("retry-runner-failures.sh"))
+        .arg("--fixtures")
+        .arg(dir.path())
+        .output()
+        .expect("run retry-runner-failures.sh");
+    assert!(
+        out.status.success(),
+        "a decision must always exit cleanly: {}",
+        stderr(&out)
+    );
+    kv(&out)
+}
+
+/// The run a hosted-runner loss actually leaves: the affected jobs are
+/// `cancelled` with no runner and no steps, and the aggregate check fails
+/// because it watches them. Only those runs earn the one retry.
+#[test]
+fn runner_acquisition_loss_retries_the_run_once() {
+    let map = retry_decision(
+        &run_json("failure", 1, "aaaa0000"),
+        &jobs_json(&[
+            (1, "changes", "success"),
+            (2, "Build & Test (macos-latest)", "cancelled"),
+            (3, "TUI E2E (macos-latest)", "cancelled"),
+            (4, "Markdown tests", "skipped"),
+            (5, "CI result", "failure"),
+        ]),
+        &[
+            (2, annotations_json(&[ACQUIRED])),
+            (3, annotations_json(&[ACQUIRED])),
+        ],
+        Some("aaaa0000"),
+    );
+    assert_eq!(map["rerun"], "true", "{}", map["reason"]);
+    assert_eq!(
+        map["acquired"], "Build & Test (macos-latest), TUI E2E (macos-latest)",
+        "the summary lists every lost job"
+    );
+}
+
+/// One genuine failure among the cancelled jobs vetoes the retry — a test
+/// failure is not something a re-run repairs.
+#[test]
+fn a_real_failure_mixed_in_vetoes_the_retry() {
+    let map = retry_decision(
+        &run_json("failure", 1, "aaaa0000"),
+        &jobs_json(&[
+            (1, "changes", "success"),
+            (2, "Build & Test (macos-latest)", "cancelled"),
+            (3, "Lint", "failure"),
+            (4, "CI result", "failure"),
+        ]),
+        &[
+            (2, annotations_json(&[ACQUIRED])),
+            (
+                3,
+                annotations_json(&["Process completed with exit code 1."]),
+            ),
+        ],
+        Some("aaaa0000"),
+    );
+    assert_eq!(map["rerun"], "false");
+    assert!(map["reason"].contains("Lint"), "{}", map["reason"]);
+}
+
+/// A second attempt means someone (or this automation) already retried —
+/// the run is left alone so the retry can never loop.
+#[test]
+fn a_second_attempt_is_never_retried() {
+    let map = retry_decision(
+        &run_json("failure", 2, "aaaa0000"),
+        &jobs_json(&[
+            (2, "Build & Test (macos-latest)", "cancelled"),
+            (3, "CI result", "failure"),
+        ]),
+        &[(2, annotations_json(&[ACQUIRED]))],
+        Some("aaaa0000"),
+    );
+    assert_eq!(map["rerun"], "false", "{}", map["reason"]);
+}
+
+/// Cancellations that are not a lost runner — a cancelled run outright,
+/// or queued jobs dropped by a concurrency supersede — never carry the
+/// annotation, so nothing retries them.
+#[test]
+fn cancellations_are_left_alone() {
+    // A run-level cancel (a person or the concurrency group) fails the
+    // conclusion gate before any job is even read.
+    let map = retry_decision(
+        &run_json("cancelled", 1, "aaaa0000"),
+        &jobs_json(&[]),
+        &[],
+        Some("aaaa0000"),
+    );
+    assert_eq!(map["rerun"], "false", "{}", map["reason"]);
+
+    // A superseded queued job shows the same zero-step cancelled shape as
+    // a lost runner but is annotated with the cancel reason — or with
+    // nothing at all.
+    for anns in [
+        annotations_json(&[
+            "Canceling since a higher priority waiting request for CI-refs/pull/1/merge exists",
+            "The operation was canceled.",
+        ]),
+        annotations_json(&[]),
+    ] {
+        let map = retry_decision(
+            &run_json("failure", 1, "aaaa0000"),
+            &jobs_json(&[
+                (1, "changes", "success"),
+                (2, "Build & Test (macos-latest)", "cancelled"),
+                (3, "CI result", "failure"),
+            ]),
+            &[(2, anns)],
+            Some("aaaa0000"),
+        );
+        assert_eq!(map["rerun"], "false", "{}", map["reason"]);
+    }
+}
+
+/// When the branch tip moved past the run's head commit a newer run is
+/// already covering that branch — re-running would cancel it through the
+/// shared concurrency group. An unresolvable tip (deleted branch, gone
+/// fork) proves nothing either, so it also vetoes.
+#[test]
+fn a_stale_or_unresolvable_head_vetoes_the_retry() {
+    let jobs = jobs_json(&[
+        (1, "changes", "success"),
+        (2, "Build & Test (macos-latest)", "cancelled"),
+        (3, "CI result", "failure"),
+    ]);
+    for head in [Some("bbbb1111"), None] {
+        let map = retry_decision(
+            &run_json("failure", 1, "aaaa0000"),
+            &jobs,
+            &[(2, annotations_json(&[ACQUIRED]))],
+            head,
+        );
+        assert_eq!(map["rerun"], "false", "head {head:?}: {}", map["reason"]);
+    }
+}
+
+/// A run where only the aggregate check failed has no lost runner — its
+/// failure is real output (a bug in the aggregation step, or a need that
+/// genuinely failed), so it is left for a human.
+#[test]
+fn an_aggregate_only_failure_is_not_runner_loss() {
+    let map = retry_decision(
+        &run_json("failure", 1, "aaaa0000"),
+        &jobs_json(&[
+            (1, "changes", "success"),
+            (2, "Lint", "success"),
+            (3, "CI result", "failure"),
+        ]),
+        &[],
+        Some("aaaa0000"),
+    );
+    assert_eq!(map["rerun"], "false", "{}", map["reason"]);
 }

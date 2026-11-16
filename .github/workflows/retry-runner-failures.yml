@@ -1,0 +1,76 @@
+name: Retry runner failures
+
+# Re-runs a failed CI/Dogfood/Security run once when — and only when —
+# every job that failed never received a hosted runner. GitHub marks those
+# jobs cancelled with no runner and no steps, the same shape a
+# cancelled-while-queued job has; the decision script reads each job's
+# check-run annotations for the acquisition message before it allows
+# `gh run rerun --failed`. A run that mixed in a real failure, was
+# cancelled by a person, was superseded by a newer push, or already had
+# its one retry is left alone.
+
+on:
+  # zizmor: ignore[dangerous-triggers] — workflow_run hands this job a
+  # write-capable token even for runs triggered by fork pull requests, but
+  # nothing the triggering run produced is checked out or executed: the
+  # job reads the runs/jobs/check-runs API for the finished run and its
+  # only write is re-issuing that run's own failed jobs. The tracked
+  # decision script is fetched from this workflow's own ref — the default
+  # branch — through the contents API, so no checkout ever happens.
+  workflow_run:
+    workflows: [CI, Dogfood, Security]
+    types: [completed]
+
+permissions: {}
+
+# One in-flight decision per triggering run; a second completion event for
+# the same run queues behind the first instead of racing it.
+concurrency:
+  group: retry-runner-failures-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    name: Retry runner-acquisition failures
+    # Green and cancelled runs need nothing; the decision script still
+    # re-checks the conclusion from the API so the skip stays single-
+    # sourced. A skipped job in the run log is the record for those.
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # Reading the tracked script and resolving the run's head-branch
+      # tip through the contents/branches API.
+      contents: read
+      # The per-job annotations carry the acquisition message.
+      checks: read
+      # Reading runs/jobs plus the rerun-failed-jobs call.
+      actions: write
+    steps:
+      # The script lives in this repository, but no checkout exists in a
+      # workflow_run job — $GITHUB_SHA is this workflow's own ref (the
+      # default branch), so the file fetched is always ours.
+      - name: Fetch the decision script
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh api -H "Accept: application/vnd.github.raw+json"
+          "repos/$GH_REPO/contents/.github/scripts/retry-runner-failures.sh?ref=$GITHUB_SHA"
+          > "$RUNNER_TEMP/retry-runner-failures.sh"
+
+      - name: Decide whether the run lost its runners
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: bash "$RUNNER_TEMP/retry-runner-failures.sh" --run-id "$RUN_ID" --summary "$GITHUB_STEP_SUMMARY" >> "$GITHUB_OUTPUT"
+
+      - name: Re-run the failed jobs once
+        if: steps.decide.outputs.rerun == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: gh run rerun "$RUN_ID" --failed
