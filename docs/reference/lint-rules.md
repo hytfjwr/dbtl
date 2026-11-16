@@ -2,7 +2,7 @@
 
 # Lint rules
 
-46 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
+47 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
 
 ## Rule-set presets
 
@@ -12,7 +12,7 @@
 | ------ | ----- |
 | `minimal` | only the rules whose default severity is `error` — 5 rules |
 | `standard` | every rule the registry enables by default — 41 rules |
-| `strict` | every rule, opt-in included — 46 rules |
+| `strict` | every rule, opt-in included — 47 rules |
 
 | Rule | Category | Default | `minimal` | `standard` | `strict` | Inputs | Fix | Summary |
 | ---- | -------- | ------- | --------- | ---------- | -------- | ------ | --- | ------- |
@@ -62,6 +62,7 @@
 | [`models_without_unit_tests`](#models_without_unit_tests) | testing | off (opt-in) | off | off | on | graph | - | a model in a checked layer has no unit test |
 | [`unresolved_references`](#unresolved_references) | modeling | warn | off | on | on | graph | - | a ref()/source() call resolves to no node |
 | [`suppressions_without_reason`](#suppressions_without_reason) | governance | off (opt-in) | off | off | on | graph | - | a node's meta.dbtl suppression records no reason |
+| [`unparsable_sql`](#unparsable_sql) | sql | off (opt-in) | off | off | on | graph + parsed SQL | - | a model's SQL can't be parsed — the SQL rules skipped it |
 
 ## `direct_join_to_source`
 
@@ -774,5 +775,19 @@ A node's meta.dbtl suppression records no reason.
 **Example:** stg_orders carries meta: {dbtl: {ignore: [select_star]}} with no reason. Fix: write meta: {dbtl: {ignore: {select_star: "wide staging read"}}} or meta: {dbtl: {reason: ...}}.
 
 **Fix:** record a reason on the meta.dbtl suppression (or drop it)
+
+**Parameters:** none.
+
+## `unparsable_sql`
+
+Category: `sql` · Default: `off` (opt-in — runs at `warn` when enabled) · Inputs: graph + parsed SQL · Auto-fix: no
+
+A model's SQL can't be parsed — the SQL rules skipped it.
+
+**Why:** A model whose SQL won't parse is passed over by every SQL-backed rule — its wildcards, conditionless joins, and unbounded ORDER BYs go unjudged while the run still reports green. The summary's `unparsed_models` tally already counts the skipped models; this rule turns each skip into a finding a CI gate can fail on, a report can point at, and `meta.dbtl.ignore`/`exclude:` can suppress. It asks for every model's parse itself, so running it alone still names every skipped model (and still fills the tally). Python models are never judged, and neither is a model carrying no SQL at all — there was nothing to skip. The finding anchors at the model file: the reason's own line/column indexes into the rendered text the parser saw, not the source file.
+
+**Example:** int_daily_totals renders to `select from where or` — the parser reports `parse error at 1:13`. Fix: correct the Jinja so the model renders valid SQL, suppress the model with meta.dbtl.ignore, or lint a manifest carrying compiled_code.
+
+**Fix:** fix the model's Jinja so it renders valid SQL, suppress it with meta.dbtl.ignore, or lint a manifest carrying compiled_code
 
 **Parameters:** none.

@@ -1048,6 +1048,36 @@ pub static REGISTRY: &[RuleInfo] = &[
         params: &[],
         requires: Requires::Graph,
     },
+    RuleInfo {
+        rule: LintRule::UnparsableSql,
+        id: "unparsable_sql",
+        category: Category::Sql,
+        default_severity: Severity::Warn,
+        default_enabled: false,
+        summary: "a model's SQL can't be parsed — the SQL rules skipped it",
+        rationale: "A model whose SQL won't parse is passed over by every \
+                    SQL-backed rule — its wildcards, conditionless joins, and \
+                    unbounded ORDER BYs go unjudged while the run still \
+                    reports green. The summary's `unparsed_models` tally \
+                    already counts the skipped models; this rule turns each \
+                    skip into a finding a CI gate can fail on, a report can \
+                    point at, and `meta.dbtl.ignore`/`exclude:` can suppress. \
+                    It asks for every model's parse itself, so running it \
+                    alone still names every skipped model (and still fills \
+                    the tally). Python models are never judged, and neither \
+                    is a model carrying no SQL at all — there was nothing \
+                    to skip. The finding anchors at the model file: the \
+                    reason's own line/column indexes into the rendered text \
+                    the parser saw, not the source file.",
+        example: "int_daily_totals renders to `select from where or` — the \
+                  parser reports `parse error at 1:13`. Fix: correct the \
+                  Jinja so the model renders valid SQL, suppress the model \
+                  with meta.dbtl.ignore, or lint a manifest carrying \
+                  compiled_code.",
+        help: "fix the model's Jinja so it renders valid SQL, suppress it with meta.dbtl.ignore, or lint a manifest carrying compiled_code",
+        params: &[],
+        requires: Requires::Sql,
+    },
 ];
 
 /// A rule the registry once carried and has since dropped. The id stays

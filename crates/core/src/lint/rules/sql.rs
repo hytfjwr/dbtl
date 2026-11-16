@@ -786,3 +786,49 @@ pub(super) fn order_by_without_limit(
         out.push(f);
     }
 }
+
+/// `unparsable_sql` (opt-in): a model the SQL rules had to skip — its SQL
+/// exists (raw or compiled) but wouldn't parse or resolve, so every
+/// SQL-backed judgment silently passed it. One finding per skipped model,
+/// carrying the [`UnparsedReason`] the analysis recorded — the same reason
+/// the summary's `unparsed` tally prints. The rule asks for every model's
+/// facts itself rather than reading the tally other rules filled, so
+/// running it alone (`--rules unparsable_sql`) still names every skipped
+/// model — and still feeds `unparsed`, keeping the summary count honest.
+/// Positions stay file-only: the reason's line/column indexes into the
+/// rendered text the parser saw, which a macro can shift off the raw
+/// file, so pointing at it would lie.
+pub(super) fn unparsable_sql(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sql: &SqlParseResolver,
+    unparsed: &mut BTreeMap<String, UnparsedReason>,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if !is_sql_model(dag, n) || !in_scope(n) {
+            continue;
+        }
+        // No analyzable SQL at all is "nothing to judge", not a skip —
+        // the same boundary `record_unparsed` draws for the summary.
+        if crate::resolution_sql(dag, uid).is_none() {
+            continue;
+        }
+        if sql.sql_facts(dag, uid).is_some() {
+            continue;
+        }
+        record_unparsed(dag, uid, sql, unparsed);
+        out.push(Finding::new(
+            LintRule::UnparsableSql,
+            (*uid).clone(),
+            vec![],
+            format!(
+                "{} was skipped by SQL rules: {}",
+                display_name(dag, uid),
+                unparsed_reason(sql, uid)
+            ),
+        ));
+    }
+}

@@ -406,6 +406,14 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
             LintRule::SuppressionsWithoutReason => {
                 governance::suppressions_without_reason(dag, &uids, &in_scope, &mut out)
             }
+            LintRule::UnparsableSql => sql::unparsable_sql(
+                dag,
+                &uids,
+                &in_scope,
+                sql.expect("gated"),
+                &mut unparsed,
+                &mut out,
+            ),
         }
     }
     // The envelope fields are filled in ONE place — the severity the config

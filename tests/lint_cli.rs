@@ -2075,6 +2075,194 @@ fn json_summary_names_the_unparsable_models() {
     );
 }
 
+// ---- unparsable_sql (opt-in) ------------------------------------------------
+
+/// A scratch project with one clean model, one unparsable one, and a
+/// Python model (its body isn't SQL — out of the rule's scope entirely).
+fn unparsable_project(dir: &Path) -> PathBuf {
+    common::write_project(
+        dir,
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/ok.sql", "select 1 as id\n"),
+            ("models/m_broken.sql", "select from where or\n"),
+            (
+                "models/m_py.py",
+                "def model(dbt, session):\n    return dbt.ref('ok')\n",
+            ),
+        ],
+    )
+}
+
+#[test]
+fn unparsable_sql_reports_one_finding_per_skipped_model() {
+    // `--rules unparsable_sql` alone flags the broken model once, the
+    // summary tally still counts it, and the finding anchors at the
+    // model file only — the reason's position indexes into the rendered
+    // text, never claimed back on the source.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = unparsable_project(tmp.path());
+    let lint = |extra: &[&str]| {
+        let mut args: Vec<&str> = vec![
+            "lint",
+            "--source",
+            root.to_str().unwrap(),
+            "--rules",
+            "unparsable_sql",
+        ];
+        args.extend_from_slice(extra);
+        run(&args)
+    };
+    let out = lint(&["--format", "text", "--color", "never"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains(
+            "warning[unparsable_sql]: m_broken was skipped by SQL rules: \
+             parse error at 1:13: Expected: table name, found: where"
+        ),
+        "one finding names the model and the parse reason: {text}"
+    );
+    assert!(
+        text.contains("--> models/m_broken.sql"),
+        "the position is the file alone: {text}"
+    );
+    assert!(
+        !text.contains("m_py"),
+        "the python model is out of scope: {text}"
+    );
+    // The summary line the rule feeds is the same one any SQL rule fills.
+    assert!(
+        text.contains(
+            "1 model skipped SQL rules (unparsable SQL): \
+             m_broken (parse error at 1:13: Expected: table name, found: where)"
+        ),
+        "the tally is unchanged: {text}"
+    );
+    // JSON carries the same finding — file-only — next to the same tally.
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout(&lint(&["--format", "json"]))).unwrap();
+    assert_eq!(
+        json["summary"]["unparsed_models"]["reasons"],
+        serde_json::json!({"m_broken": "parse error at 1:13: Expected: table name, found: where"}),
+        "the finding and the tally share one reason: {}",
+        json["summary"]
+    );
+    let f = json["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["findings"].as_array().into_iter().flatten())
+        .find(|f| f["rule"] == "unparsable_sql")
+        .expect("the finding lists in json");
+    assert_eq!(f["location"]["file"], "models/m_broken.sql");
+    assert!(
+        f["location"].get("line").is_none() && f["location"].get("column").is_none(),
+        "no guessed source position: {f}"
+    );
+    // SARIF lists it too — at the file, with the required startLine: 1
+    // fallback code scanning needs and no column.
+    let sarif: serde_json::Value =
+        serde_json::from_str(&stdout(&lint(&["--format", "sarif"]))).unwrap();
+    let hit = sarif["runs"][0]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["ruleId"] == "unparsable_sql")
+        .expect("sarif lists the finding");
+    let loc = &hit["locations"][0]["physicalLocation"];
+    assert_eq!(loc["artifactLocation"]["uri"], "models/m_broken.sql");
+    assert_eq!(loc["region"]["startLine"], 1);
+    assert!(
+        loc["region"].get("startColumn").is_none(),
+        "file-scope only: {loc}"
+    );
+}
+
+#[test]
+fn unparsable_sql_stays_off_under_standard_and_fires_under_strict() {
+    // The rule ships opt-in: `standard` (the default) reports the broken
+    // model only in the tally, `strict` upgrades it to a finding.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = unparsable_project(tmp.path());
+    let lint = |extra: &[&str]| {
+        let mut args: Vec<&str> = vec!["lint", "--source", root.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        run(&args)
+    };
+    let out = lint(&["--format", "text", "--color", "never"]);
+    let text = stdout(&out);
+    assert!(
+        !text.contains("unparsable_sql"),
+        "standard reports no finding: {text}"
+    );
+    assert!(
+        text.contains("1 model skipped SQL rules (unparsable SQL)"),
+        "the tally still reports the skip: {text}"
+    );
+    let out = lint(&["--preset", "strict", "--format", "text", "--color", "never"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains("warning[unparsable_sql]: m_broken was skipped by SQL rules"),
+        "strict upgrades the skip to a finding: {text}"
+    );
+}
+
+#[test]
+fn unparsable_sql_suppresses_through_meta_and_exclude() {
+    // `meta.dbtl.ignore` on the node and a config `exclude:` both drop
+    // the finding — the tally still records the skip, since the model
+    // WAS skipped.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = unparsable_project(tmp.path());
+    common::write_project(
+        &root,
+        &[(
+            "models/schema.yml",
+            "version: 2\n\nmodels:\n  - name: m_broken\n    meta:\n      dbtl:\n        ignore: [unparsable_sql]\n",
+        )],
+    );
+    let lint = |extra: &[&str]| {
+        let mut args: Vec<&str> = vec![
+            "lint",
+            "--source",
+            root.to_str().unwrap(),
+            "--rules",
+            "unparsable_sql",
+        ];
+        args.extend_from_slice(extra);
+        run(&args)
+    };
+    let out = lint(&["--format", "text", "--color", "never"]);
+    let text = stdout(&out);
+    assert!(
+        !text.contains("unparsable_sql]: m_broken"),
+        "meta.dbtl.ignore drops the finding: {text}"
+    );
+    assert!(
+        text.contains("1 model skipped SQL rules (unparsable SQL)"),
+        "the tally still records the skip: {text}"
+    );
+    std::fs::remove_file(root.join("models/schema.yml")).unwrap();
+    std::fs::write(
+        root.join(".dbtl.yml"),
+        "lint:\n  rules:\n    unparsable_sql:\n      exclude: [m_broken]\n",
+    )
+    .unwrap();
+    let out = lint(&["--format", "text", "--color", "never"]);
+    let text = stdout(&out);
+    assert!(
+        !text.contains("unparsable_sql]: m_broken"),
+        "exclude: drops the finding: {text}"
+    );
+    assert!(
+        text.contains("1 model skipped SQL rules (unparsable SQL)"),
+        "the tally still records the skip: {text}"
+    );
+}
+
 #[test]
 fn dbtl_yml_exclude_legacy_path_form_warns_once() {
     // A resource-relative `path:` in `.dbtl.yml` still suppresses (the
