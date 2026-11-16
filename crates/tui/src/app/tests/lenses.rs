@@ -312,6 +312,7 @@ fn violation_dag() -> Dag {
     parent_map.insert("model.p.it".to_string(), vec!["model.p.st".to_string()]);
     Dag::build(&RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),

@@ -142,14 +142,17 @@ fn enabled_expressions_evaluate_identically_in_both_modes() {
     let (m, s) = dags();
     for uid in [
         // `==`/`!=` on vars, `in` over a literal list, `and` mixing a bare
-        // var and a comparison, `|` as_bool on a string var, and the
-        // `and`/`not`/`or`/`==` chain on the sandbox tree `+enabled` — plus
-        // the schema `config.enabled` Jinja string whose file must keep
-        // its descriptions/tests (asserted by tests/details parity).
+        // var and a comparison, `|` as_bool on a string var, the
+        // `and`/`not`/`or`/`==` chain on the sandbox tree `+enabled`, the
+        // Jinja `is` tests (sameas/none), and the schema `config.enabled`
+        // Jinja string whose file must keep its descriptions/tests
+        // (asserted by tests/details parity).
         "model.logistics.fct_region_gate", // var('region') != 'emea'
         "model.logistics.fct_bool_chain",  // var and var == 'us'
         "model.logistics.fct_gate_report", // schema `config.enabled` jinja
         "model.logistics.sbx_probe",       // tree `+enabled` and/not/or
+        "model.logistics.fct_sameas_gate", // var('alerts_enabled') is sameas true
+        "model.logistics.fct_none_gate",   // var('none_probe', none) is none
     ] {
         assert!(m.contains(uid), "manifest mode drops {uid}");
         assert!(s.contains(uid), "source mode drops {uid}");
@@ -158,6 +161,7 @@ fn enabled_expressions_evaluate_identically_in_both_modes() {
         "model.logistics.fct_env_gate",            // var('env') == 'prod'
         "model.logistics.fct_compliance_hold",     // var('region') in [...]
         "model.logistics.fct_flag_string",         // var('fleet_flag', false)
+        "model.logistics.fct_defined_gate",        // nonexistent_flag is defined
         "source.logistics.carrier_feed.gps_pings", // `| as_bool` on a string var
     ] {
         assert!(!m.contains(uid), "manifest mode keeps {uid}");
@@ -200,6 +204,8 @@ fn cli_vars_flip_enabled_identically_in_both_modes() {
         "model.logistics.fct_region_gate",
         "model.logistics.pilot_dock_queue",
         "model.logistics.pilot_lane_estimates",
+        // `var('none_probe', none) is none` stays on — the map never sets it.
+        "model.logistics.fct_none_gate",
         "source.logistics.carrier_feed.gps_pings",
     ] {
         assert!(m.contains(uid), "manifest+vars drops {uid}");
@@ -212,6 +218,10 @@ fn cli_vars_flip_enabled_identically_in_both_modes() {
         "model.logistics.sbx_probe",
         "model.logistics.fct_compliance_hold",
         "model.logistics.fct_returns",
+        // alerts_enabled: false flips `is sameas true` off; the bare-name
+        // `is defined` gate stays off under any map.
+        "model.logistics.fct_sameas_gate",
+        "model.logistics.fct_defined_gate",
         // `--vars` never touches vars the map doesn't name.
         "source.logistics.carrier_feed.retired_rates",
     ] {
@@ -425,9 +435,11 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
     // The four enabled-expression models declare columns without
     // per-column `description:` (+4 undocumented_columns), and
     // fct_region_gate's only unique test is var-gated — under the default
-    // vars it counts as missing a primary-key pair (+1). The python models
-    // fire the same language-agnostic rules a `.sql` file would:
-    // fct_py_delivery_risk joins a source (direct_join_to_source +
+    // vars it counts as missing a primary-key pair (+1). The two kept
+    // is-test gate models (fct_sameas_gate, fct_none_gate) land in
+    // missing_primary_key_tests and undocumented_models each; the
+    // python models fire the same language-agnostic rules a `.sql` file
+    // would: fct_py_delivery_risk joins a source (direct_join_to_source +
     // marts_depend_on_source), stg_py_sensor_scores refs staging parents
     // (staging_depends_on_staging), carrier_feed.rate_cards picks up a
     // second consumer (source_fanout), and stg_py_sensor_scores itself is
@@ -438,7 +450,7 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
         expected(&[
             ("direct_join_to_source", 1),
             ("marts_depend_on_source", 1),
-            ("missing_primary_key_tests", 16),
+            ("missing_primary_key_tests", 18),
             ("model_fanout", 1),
             ("order_by_without_limit", 1),
             ("root_models", 1),
@@ -447,7 +459,7 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
             ("sources_without_freshness", 2),
             ("staging_depends_on_staging", 1),
             ("undocumented_columns", 12),
-            ("undocumented_models", 14),
+            ("undocumented_models", 16),
             ("unused_cte", 1),
             ("unused_models", 5),
             ("unused_sources", 3),
@@ -459,7 +471,7 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
         expected(&[
             ("direct_join_to_source", 1),
             ("marts_depend_on_source", 1),
-            ("missing_primary_key_tests", 16),
+            ("missing_primary_key_tests", 18),
             ("model_fanout", 1),
             ("root_models", 1),
             ("select_star", 1),
@@ -467,7 +479,7 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
             ("sources_without_freshness", 2),
             ("staging_depends_on_staging", 1),
             ("undocumented_columns", 12),
-            ("undocumented_models", 14),
+            ("undocumented_models", 16),
             ("unused_models", 5),
             ("unused_sources", 3),
         ]),

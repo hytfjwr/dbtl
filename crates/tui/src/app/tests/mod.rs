@@ -43,6 +43,7 @@ fn empty_app() -> App {
     use std::collections::HashMap;
     let dag = Dag::build(&crate::RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes: HashMap::new(),
         sources: HashMap::new(),
@@ -162,6 +163,7 @@ fn diff_base_dag() -> Dag {
     add("model.p.gone", "gone", "view");
     Dag::build(&RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -204,6 +206,7 @@ fn diff_current_dag() -> Dag {
     add("model.p.c", "c", "view"); // added vs the base
     Dag::build(&RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -285,6 +288,7 @@ fn pr_dag(
     }
     Dag::build(&crate::RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes: node_map,
         sources: HashMap::new(),

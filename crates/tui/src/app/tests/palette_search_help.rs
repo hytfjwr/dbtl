@@ -305,6 +305,7 @@ fn list_empty_reason_names_the_persistent_filter_and_scope() {
     use std::collections::HashMap;
     let empty = Dag::build(&crate::RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes: HashMap::new(),
         sources: HashMap::new(),

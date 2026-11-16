@@ -62,8 +62,9 @@ Edges come from literal `ref()` and `source()` calls found by scanning the SQL. 
 - `and`, `or`, and `not`.
 - `in` over a literal list, and parentheses.
 - The `| as_bool` filter.
+- The Jinja `is` tests — `defined`, `undefined`, `none`, `boolean`, `number`, `string`, `sequence`, `iterable`, `mapping`, `even`, `odd`, and `sameas` on a literal — with `is not` negations.
 
-A resource is dropped only when its expression evaluates to a proven `false`. An expression outside the subset, such as `target.name` or another macro call, or a `var()` with no value, keeps the resource enabled and warns once.
+A resource is dropped only when its expression evaluates to a proven `false`. An expression outside the subset, such as `target.name` or another macro call, or a `var()` with no value, keeps the resource enabled and warns once. The kept resource is marked uncertain: lint rules drop every finding that names it, and degree rules treat its edges as unprovable, so nothing reports a claim whose premise may not exist.
 
 Variables resolve in these scopes:
 

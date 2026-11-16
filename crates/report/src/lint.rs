@@ -554,6 +554,7 @@ mod tests {
         }
         dbtl_core::RawManifest {
             unresolved_adjacent: Default::default(),
+            enabled_unverifiable: Default::default(),
             metadata: Default::default(),
             nodes: nodes.into_iter().collect(),
             sources: sources.into_iter().collect(),

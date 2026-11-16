@@ -33,6 +33,7 @@ fn manifest(
     }
     RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes: nodes.into_iter().collect(),
         sources: sources.into_iter().collect(),
@@ -2055,6 +2056,134 @@ fn malformed_meta_dbtl_ignore_warns_in_source_mode() {
         meta_warnings[0].contains("model.p.stg_a") && meta_warnings[0].contains("bogus_rule"),
         "{}",
         meta_warnings[0]
+    );
+}
+
+#[test]
+fn enabled_unverifiable_suppresses_existence_dependent_findings() {
+    // An `enabled` expression source mode can't evaluate
+    // (`var('missing')` — the tolerant node render yields `None`, which
+    // fails dbt's bool validation) keeps the node PROVISIONALLY — real
+    // dbt either resolved it or hard-errored — but every lint claim
+    // whose premise is the node's existence or its edges must
+    // under-report. A provable node making the same bad call still
+    // flags; the uncertain node's neighbours get pruned-adjacency
+    // marks so degree rules can't overclaim either.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(dir.path().join("dbt_project.yml"), "name: p\n").unwrap();
+    // `uncertain`: unprovable `enabled` AND a ref to a name nothing
+    // declares — the unresolved_references shape the issue filed: a
+    // finding ON it asserts the node exists to make the call.
+    std::fs::write(
+        dir.path().join("models/uncertain.sql"),
+        "{{ config(enabled=var('missing')) }}\nselect * from {{ ref('totally_missing') }}\n",
+    )
+    .unwrap();
+    // `consumer` reads `uncertain` — an edge real dbt may not have (a
+    // dropped `uncertain` fails consumer's parse), so consumer's own
+    // degree claims are unprovable too.
+    std::fs::write(
+        dir.path().join("models/consumer.sql"),
+        "select * from {{ ref('uncertain') }}\n",
+    )
+    .unwrap();
+    // `healthy_bad`: the control — a PROVABLE node making the same bad
+    // call must still flag.
+    std::fs::write(
+        dir.path().join("models/healthy_bad.sql"),
+        "select * from {{ ref('totally_missing') }}\n",
+    )
+    .unwrap();
+    // `hub` + leaves: `leaf_unc` is unverifiable — it cannot be proven
+    // a leaf (real dbt may have dropped it), so a 3-leaf fanout count
+    // that needs it can't complete. `hub2`'s three provable leaves are
+    // the control that still flags.
+    std::fs::write(dir.path().join("models/hub.sql"), "select 1\n").unwrap();
+    std::fs::write(
+        dir.path().join("models/leaf_a.sql"),
+        "select * from {{ ref('hub') }}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/leaf_b.sql"),
+        "select * from {{ ref('hub') }}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/leaf_unc.sql"),
+        "{{ config(enabled=var('missing')) }}\nselect * from {{ ref('hub') }}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("models/hub2.sql"), "select 1\n").unwrap();
+    for leaf in ["leaf_c", "leaf_d", "leaf_e"] {
+        std::fs::write(
+            dir.path().join(format!("models/{leaf}.sql")),
+            "select * from {{ ref('hub2') }}\n",
+        )
+        .unwrap();
+    }
+    let (m, warnings) = crate::manifest_from_source_with_warnings(dir.path(), None).unwrap();
+    let dag = Dag::build(&m);
+    // The mark rode the manifest → the Dag — and the whole uncertain
+    // zone folded into the pruned-adjacency record.
+    assert!(dag.enabled_unverifiable("model.p.uncertain"));
+    assert!(dag.enabled_unverifiable("model.p.leaf_unc"));
+    assert!(!dag.enabled_unverifiable("model.p.consumer"));
+    assert_eq!(
+        dag.pruned_adjacent("model.p.uncertain"),
+        Some(&crate::PrunedAdjacent {
+            parents: 1,
+            children: 1
+        }),
+        "the uncertain node's own adjacency is unprovable both ways"
+    );
+    // consumer's one parent edge and hub's one child edge are marked —
+    // each may not exist under a real parse.
+    assert!(dag
+        .pruned_adjacent("model.p.consumer")
+        .is_some_and(|a| a.parents >= 1));
+    assert!(dag
+        .pruned_adjacent("model.p.hub")
+        .is_some_and(|a| a.children >= 1));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("config(enabled=var('missing'))")),
+        "{warnings:?}"
+    );
+    let cfg = config_from("lint:\n  model_fanout_threshold: 3\n");
+    let findings = run_rules(LintInput::new(&dag, &cfg)).findings;
+    // The unverifiable node's bad ref reports nothing — real dbt may
+    // have dropped it before the call could exist — while the healthy
+    // node's identical call still flags.
+    assert_eq!(
+        flagged(&findings, LintRule::UnresolvedReferences),
+        vec!["model.p.healthy_bad"],
+        "the uncertain node's findings drop; the control keeps its own"
+    );
+    // `consumer`'s ref to `uncertain` resolves — the node IS in the
+    // graph — so the ref rule contributes nothing on it (its other
+    // findings, like the missing PK test, don't depend on `uncertain`
+    // and correctly stay).
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.rule == LintRule::UnresolvedReferences && f.node_uid == "model.p.consumer"),
+        "consumer's ref to the uncertain node resolves: {findings:?}"
+    );
+    // root_models never claims a 0-parent uncertain node is a root —
+    // both the existence filter and the pruned-parent mark block it —
+    // while a provable root still flags.
+    let roots = flagged(&findings, LintRule::RootModels);
+    assert!(!roots.contains(&"model.p.uncertain"));
+    assert!(roots.contains(&"model.p.hub") || roots.contains(&"model.p.hub2"));
+    // hub's third leaf is unprovable — the count stops at 2 (< 3),
+    // while hub2's three provable leaves trip the same threshold.
+    assert_eq!(
+        flagged(&findings, LintRule::ModelFanout),
+        vec!["model.p.hub2"],
+        "the unverifiable leaf can't complete hub's fanout claim"
     );
 }
 

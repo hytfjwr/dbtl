@@ -34,10 +34,11 @@ fn no_vars() -> Vars {
     test_vars(serde_json::json!({}), serde_json::json!({}), "p")
 }
 
-/// `pat.disabled` with fresh warnings — returns the (disabled, warnings) pair.
-fn disabled(sql: &str, vars: &Vars) -> (bool, Vec<String>) {
+/// `pat.enabled` verdict with fresh warnings — returns the
+/// (verdict, warnings) pair.
+fn enabled(sql: &str, vars: &Vars) -> (Option<Enabled>, Vec<String>) {
     let mut w = Vec::new();
-    let d = Patterns::new().disabled(sql, vars, &mut w, "models/m.sql");
+    let d = Patterns::new().enabled(sql, vars, &mut w, "models/m.sql");
     (d, w)
 }
 
@@ -51,19 +52,34 @@ fn config_extractors_scope_to_config_calls_in_any_arg_order() {
         pat.materialized("{{ config(enabled=true, materialized='table') }}"),
         Some("table".to_string())
     );
-    assert!(pat.disabled(
-        "{{ config(materialized='view', enabled=false) }}",
-        &vars,
-        &mut w,
-        "m.sql"
-    ));
-    assert!(pat.disabled("{{ config(enabled=False) }}", &vars, &mut w, "m.sql"));
+    assert_eq!(
+        pat.enabled(
+            "{{ config(materialized='view', enabled=false) }}",
+            &vars,
+            &mut w,
+            "m.sql"
+        ),
+        Some(Enabled::Off)
+    );
+    assert_eq!(
+        pat.enabled("{{ config(enabled=False) }}", &vars, &mut w, "m.sql"),
+        Some(Enabled::Off)
+    );
     // Outside a config() call the keys are inert (dbt only honours them
     // inside config()).
     assert_eq!(pat.materialized("-- materialized='ephemeral'"), None);
-    assert!(!pat.disabled("where enabled = false", &vars, &mut w, "m.sql"));
-    assert!(!pat.disabled("-- note: enabled=false someday", &vars, &mut w, "m.sql"));
-    assert!(!pat.disabled("{% set enabled=false %}", &vars, &mut w, "m.sql"));
+    assert_eq!(
+        pat.enabled("where enabled = false", &vars, &mut w, "m.sql"),
+        None
+    );
+    assert_eq!(
+        pat.enabled("-- note: enabled=false someday", &vars, &mut w, "m.sql"),
+        None
+    );
+    assert_eq!(
+        pat.enabled("{% set enabled=false %}", &vars, &mut w, "m.sql"),
+        None
+    );
 }
 
 #[test]
@@ -287,18 +303,24 @@ fn last_config_call_wins_for_scalar_kwargs() {
         pat.materialized("{{ config(materialized='view') }}\n{{ config(materialized='table') }}",),
         Some("table".to_string())
     );
-    assert!(!pat.disabled(
-        "{{ config(enabled=false) }}\n{{ config(enabled=true) }}",
-        &vars,
-        &mut w,
-        "m.sql"
-    ));
-    assert!(pat.disabled(
-        "{{ config(enabled=true) }}\n{{ config(enabled=false) }}",
-        &vars,
-        &mut w,
-        "m.sql"
-    ));
+    assert_eq!(
+        pat.enabled(
+            "{{ config(enabled=false) }}\n{{ config(enabled=true) }}",
+            &vars,
+            &mut w,
+            "m.sql"
+        ),
+        Some(Enabled::On)
+    );
+    assert_eq!(
+        pat.enabled(
+            "{{ config(enabled=true) }}\n{{ config(enabled=false) }}",
+            &vars,
+            &mut w,
+            "m.sql"
+        ),
+        Some(Enabled::Off)
+    );
     // An unresolvable later value can't override an earlier literal one.
     assert_eq!(
         pat.materialized("{{ config(materialized='view') }}\n{{ config(materialized=var('m')) }}"),
@@ -955,28 +977,40 @@ fn disabled_resolves_var_forms_like_dbt() {
         serde_json::json!({"flag": true, "p": {"scoped": true}}),
         "p",
     );
-    assert!(disabled("{{ config(enabled=var('flag')) }}", &vars).0);
-    assert!(
-        disabled("{{ config(enabled=var('scoped', true)) }}", &vars).0,
+    assert_eq!(
+        enabled("{{ config(enabled=var('flag')) }}", &vars).0,
+        Some(Enabled::Off)
+    );
+    assert_eq!(
+        enabled("{{ config(enabled=var('scoped', true)) }}", &vars).0,
+        Some(Enabled::Off),
         "the scoped value (false) shadows the default"
     );
-    assert!(!disabled("{{ config(enabled=var('missing', true)) }}", &vars).0);
-    assert!(disabled("{{ config(enabled=var('flag') | as_bool) }}", &vars).0);
+    assert_eq!(
+        enabled("{{ config(enabled=var('missing', true)) }}", &vars).0,
+        Some(Enabled::On)
+    );
+    assert_eq!(
+        enabled("{{ config(enabled=var('flag') | as_bool) }}", &vars).0,
+        Some(Enabled::Off)
+    );
     // Last resolvable wins — a var-resolved value lands in the same order
     // as a literal one.
-    assert!(
-        !disabled(
+    assert_eq!(
+        enabled(
             "{{ config(enabled=false) }}\n{{ config(enabled=var('missing', true)) }}",
             &vars
         )
-        .0
+        .0,
+        Some(Enabled::On)
     );
-    assert!(
-        disabled(
+    assert_eq!(
+        enabled(
             "{{ config(enabled=true) }}\n{{ config(enabled=var('flag')) }}",
             &vars
         )
-        .0
+        .0,
+        Some(Enabled::Off)
     );
 
     // With NO vars.yml the node scope is `vars:` — top-level and scoped.
@@ -985,8 +1019,14 @@ fn disabled_resolves_var_forms_like_dbt() {
         serde_json::json!({"flag": false, "p": {"scoped": false}}),
         "p",
     );
-    assert!(disabled("{{ config(enabled=var('flag')) }}", &vars).0);
-    assert!(disabled("{{ config(enabled=var('scoped', true)) }}", &vars).0);
+    assert_eq!(
+        enabled("{{ config(enabled=var('flag')) }}", &vars).0,
+        Some(Enabled::Off)
+    );
+    assert_eq!(
+        enabled("{{ config(enabled=var('scoped', true)) }}", &vars).0,
+        Some(Enabled::Off)
+    );
 
     // Unresolvable forms warn once (file + config named) and keep the
     // node enabled — `var('missing')` no-default, a non-var expression,
@@ -998,8 +1038,8 @@ fn disabled_resolves_var_forms_like_dbt() {
         "{{ config(enabled='false') }}",
         "{{ config(enabled=0) }}",
     ] {
-        let (d, w) = disabled(sql, &vars);
-        assert!(!d, "{sql} keeps the node enabled");
+        let (d, w) = enabled(sql, &vars);
+        assert_eq!(d, Some(Enabled::Unproven), "{sql} keeps the node enabled");
         assert_eq!(w.len(), 1, "{sql}: {w:?}");
         assert!(w[0].contains("models/m.sql"), "the file is named: {w:?}");
         assert!(w[0].contains("enabled="), "the config is named: {w:?}");
@@ -1007,19 +1047,19 @@ fn disabled_resolves_var_forms_like_dbt() {
     // The LAST `enabled=` decides: an unresolvable later value is a
     // boolean-validation error in dbt — it can't fall back to an earlier
     // proven `false`, so the node stays enabled with a warning.
-    let (d, w) = disabled(
+    let (d, w) = enabled(
         "{{ config(enabled=false) }}\n{{ config(enabled=var('missing')) }}",
         &vars,
     );
-    assert!(!d);
+    assert_eq!(d, Some(Enabled::Unproven));
     assert_eq!(w.len(), 1, "{w:?}");
     // A bare `config(` outside `{{ }}` is SQL text to dbt — never a call.
-    let (d, w) = disabled("select 1 -- config(enabled=false)", &vars);
-    assert!(!d);
+    let (d, w) = enabled("select 1 -- config(enabled=false)", &vars);
+    assert_eq!(d, None);
     assert!(w.is_empty(), "{w:?}");
     // …but `{{ }}` inside a `--` comment still executes (Jinja first).
-    let (d, _) = disabled("select 1 -- {{ config(enabled=false) }}", &vars);
-    assert!(d);
+    let (d, _) = enabled("select 1 -- {{ config(enabled=false) }}", &vars);
+    assert_eq!(d, Some(Enabled::Off));
 }
 
 // ---- enabled expression evaluator (comparisons, logic, membership) ----------
@@ -1123,6 +1163,250 @@ fn enabled_expr_comparisons_resolve_like_python() {
     assert_eq!(enabled_expr("var('f') or ''", &vars), None); // '' is not a bool
     assert_eq!(enabled_expr("0 and var('t')", &vars), None); // result 0
     assert_eq!(enabled_expr("1 and var('t')", &vars), Some(true)); // result True
+}
+
+#[test]
+fn enabled_expr_is_tests_resolve_like_jinja() {
+    let vars = test_vars(
+        serde_json::json!({}),
+        serde_json::json!({
+            "ver": "v1", "n": 3, "t": true, "f": false, "nothing": null,
+            "lst": ["a"], "d": {"k": 1}, "s": "abc", "big": 300,
+        }),
+        "p",
+    );
+    for (expr, want) in [
+        // `is defined`/`is undefined`/`is none` — the three tests that
+        // split a bare missing name from Python `None` (verified on dbt
+        // 1.12.6: `None is defined` is TRUE — a missing bare name is the
+        // only undefined shape an enabled expression can reach, since a
+        // missing `var()` yields `None` in the tolerant render).
+        ("missing_name is defined", Some(false)),
+        ("missing_name is not defined", Some(true)),
+        ("missing_name is undefined", Some(true)),
+        ("missing_name is none", Some(false)), // Undefined is not None
+        (
+            "missing_name is none or missing_name is undefined",
+            Some(true),
+        ),
+        ("var('missing') is defined", Some(true)), // → None, and None IS defined
+        ("var('missing') is none", Some(true)),
+        ("var('nothing') is none", Some(true)),
+        ("var('nothing') is defined", Some(true)),
+        ("var('ver') is defined", Some(true)),
+        ("var('missing', 'd') is defined", Some(true)),
+        ("true is defined", Some(true)),
+        // Type tests — strings, numbers (a bool IS a number in Python),
+        // bools, mappings, sequences, iterables.
+        ("var('ver') is string", Some(true)),
+        ("var('n') is string", Some(false)),
+        ("var('n') is number", Some(true)),
+        ("var('t') is number", Some(true)), // isinstance(True, Number)
+        ("var('t') is boolean", Some(true)),
+        ("var('n') is boolean", Some(false)),
+        ("var('d') is mapping", Some(true)),
+        ("var('lst') is mapping", Some(false)),
+        // Jinja's sequence/iterable tests duck-type — a STRING and a
+        // dict pass both (verified on 1.12.6).
+        ("var('lst') is sequence", Some(true)),
+        ("var('d') is sequence", Some(true)),
+        ("var('s') is sequence", Some(true)),
+        ("var('n') is sequence", Some(false)),
+        ("var('s') is iterable", Some(true)),
+        ("var('t') is iterable", Some(false)),
+        // `Undefined` ducks too — `missing is sequence`/`iterable`
+        // render True (Jinja's Undefined defines len/getitem/iter).
+        ("missing_name is sequence", Some(true)),
+        ("missing_name is iterable", Some(true)),
+        ("missing_name is mapping", Some(false)),
+        ("var('t') is true", Some(true)),
+        ("var('f') is true", Some(false)),
+        ("var('f') is false", Some(true)),
+        // `even`/`odd` — a non-number operand TypeErrors (unprovable).
+        ("var('n') is odd", Some(true)),
+        ("var('n') is even", Some(false)),
+        ("var('n') is not even", Some(true)),
+        ("var('s') is even", None),
+        ("missing_name is even", None), // Undefined % 2 → TypeError
+        // An unsupported test, or a supported one CALLED — unprovable.
+        ("var('ver') is equalto('v1')", None),
+        ("var('n') is divisibleby(3)", None),
+        ("var('n') is defined()", None),
+    ] {
+        assert_eq!(enabled_expr(expr, &vars), want, "{expr}");
+    }
+}
+
+#[test]
+fn enabled_expr_sameas_evaluates_identity_where_safe() {
+    let vars = test_vars(
+        serde_json::json!({}),
+        serde_json::json!({
+            "n": 3, "big": 300, "ver": "v1", "t": true, "f": false,
+            "nothing": null, "f1": 1.5,
+        }),
+        "p",
+    );
+    for (expr, want) in [
+        // None/True/False are singletons — identity is provable even on
+        // a var-drawn operand (verified on dbt 1.12.6).
+        ("var('nothing') is sameas none", Some(true)),
+        ("var('nothing') is sameas(None)", Some(true)),
+        ("var('ver') is sameas none", Some(false)),
+        ("var('t') is sameas true", Some(true)),
+        ("var('f') is sameas true", Some(false)),
+        ("var('f') is not sameas true", Some(true)),
+        ("true is sameas true", Some(true)),
+        // A bare missing name is a fresh Undefined object — never `is`
+        // anything (verified: `missing_name is sameas none` → False).
+        ("missing_name is sameas none", Some(false)),
+        ("missing_name is not sameas none", Some(true)),
+        // Small ints (-5..=256) share CPython's cache — `var('n') is
+        // sameas 3` renders True under real dbt; `300` is past the cache
+        // and renders False (verified).
+        ("var('n') is sameas 3", Some(true)),
+        ("var('n') is sameas 4", Some(false)),
+        ("var('big') is sameas 300", Some(false)),
+        ("var('big') is sameas(300)", Some(false)),
+        ("300 is sameas 300", Some(false)),
+        // A unary-signed BARE operand is a Jinja syntax error — dbt
+        // surfaces a parse failure, so the expression is unprovable
+        // (the `sameas(-3)` call form evaluates fine).
+        ("-3 is sameas -3", None),
+        ("-3 is sameas(-3)", Some(true)), // -3 IS inside the cache range
+        ("-6 is sameas(-6)", Some(false)), // -6 is not (range ends -5)
+        ("256 is sameas(256)", Some(true)),
+        ("257 is sameas(257)", Some(false)),
+        // Floats and equal STRINGS stay unprovable — identity there is
+        // interning- and provenance-dependent (verified: two 'v1'
+        // literals render True while `var('ver') is sameas 'v1'`
+        // renders False — one operand's origin is invisible here).
+        ("var('f1') is sameas 1.5", Some(false)),
+        ("1.5 is sameas 1.5", Some(false)),
+        ("var('ver') is sameas 'v1'", None),
+        ("'v1' is sameas 'v1'", None),
+        // A var() INSIDE the operand can't be judged — the operand
+        // could BE the left operand's object.
+        ("var('n') is sameas var('n')", None),
+        ("3 is sameas var('n')", None),
+        // Cross-type pairs are provably distinct objects.
+        ("var('n') is sameas 'x'", Some(false)),
+        ("var('n') is sameas true", Some(false)),
+    ] {
+        assert_eq!(enabled_expr(expr, &vars), want, "{expr}");
+    }
+}
+
+#[test]
+fn enabled_expr_missing_var_strictness_follows_the_render_scope() {
+    // Real dbt 1.12.6 renders `var()` three ways: the node-scope render
+    // (in-file `config(enabled=…)`) tolerates a missing name → `None`
+    // (which then fails the bool validation → the resource stays
+    // enabled); the dbt_project.yml and schema.yml renders RAISE
+    // "Required var not found" — unprovable here either way.
+    let vars = test_vars(serde_json::json!({}), serde_json::json!({}), "p");
+    // Node scope (tolerant): missing → None → not a bool → unprovable
+    // AT THE BOOL EXTRACTION (the expression itself resolves).
+    assert_eq!(enabled_expr("var('missing')", &vars), None);
+    // …but the resolved `None` participates in comparisons/tests.
+    assert_eq!(enabled_expr("var('missing') is none", &vars), Some(true));
+    assert_eq!(
+        enabled_expr("var('missing') == var('missing')", &vars),
+        Some(true)
+    );
+    assert_eq!(enabled_expr("var('missing') or true", &vars), Some(true));
+    assert_eq!(enabled_expr("not var('missing')", &vars), Some(true));
+    // Tree scope (strict): a missing name is a raise — unprovable.
+    assert_eq!(
+        vars.tree_enabled(&serde_json::json!("{{ var('missing') }}")),
+        None
+    );
+    assert_eq!(
+        vars.tree_enabled(&serde_json::json!("{{ var('missing') is none }}")),
+        None
+    );
+    assert_eq!(
+        vars.tree_enabled(&serde_json::json!("{{ var('missing') or true }}")),
+        None
+    );
+    // Schema scope (strict — verified): same raise.
+    assert_eq!(
+        vars.schema_enabled(&serde_json::json!("{{ var('missing') }}")),
+        None
+    );
+    assert_eq!(
+        vars.schema_enabled(&serde_json::json!("{{ var('missing') or true }}")),
+        None
+    );
+    // A DEFAULT still resolves in every scope — `var('missing', x)`
+    // never reaches the missing-name path.
+    assert_eq!(
+        vars.tree_enabled(&serde_json::json!("{{ var('missing', false) }}")),
+        Some(false)
+    );
+    assert_eq!(
+        vars.schema_enabled(&serde_json::json!("{{ var('missing', true) }}")),
+        Some(true)
+    );
+    assert_eq!(enabled_expr("var('missing', false)", &vars), Some(false));
+}
+
+#[test]
+fn tree_enabled_deepest_declaration_wins_proven_or_unproven() {
+    let vars = no_vars();
+    let mut w = Vec::new();
+    // A deeper UNPROVABLE `+enabled` beats a proven shallower one —
+    // dbt would hard-error on the deeper level, never reaching the
+    // shallower's verdict.
+    let t = resolve_tree_config(
+        &serde_json::json!({
+            "p": {"+enabled": false, "marts": {"+enabled": "{{ var('missing') }}"}},
+        }),
+        &["p".to_string(), "marts".to_string()],
+        "models".to_string(),
+        &mut w,
+        Some(&vars),
+    );
+    assert!(t.enabled_unproven, "{t:?}");
+    assert_eq!(t.enabled_verdict(), Some(Enabled::Unproven));
+    assert_eq!(w.len(), 1, "{w:?}");
+    // The same walk with the levels flipped — the deeper proven value
+    // wins over a shallower unproven one.
+    let mut w = Vec::new();
+    let t = resolve_tree_config(
+        &serde_json::json!({
+            "p": {"+enabled": "{{ var('missing') }}", "marts": {"+enabled": false}},
+        }),
+        &["p".to_string(), "marts".to_string()],
+        "models".to_string(),
+        &mut w,
+        Some(&vars),
+    );
+    assert!(!t.enabled_unproven, "{t:?}");
+    assert_eq!(t.enabled_verdict(), Some(Enabled::Off));
+    // A proven false at the leaf decides; a missing segment descends
+    // past nothing.
+    let mut w = Vec::new();
+    let t = resolve_tree_config(
+        &serde_json::json!({"p": {"+enabled": "{{ var('missing') }}"}}),
+        &["p".to_string(), "deeper".to_string()],
+        "models".to_string(),
+        &mut w,
+        Some(&vars),
+    );
+    assert_eq!(t.enabled_verdict(), Some(Enabled::Unproven));
+    // And the still-bool-only `sources:` walk (vars: None) warns
+    // nothing and reads a literal false.
+    let mut w = Vec::new();
+    let t = resolve_tree_config(
+        &serde_json::json!({"p": {"+enabled": false}}),
+        &["p".to_string()],
+        "sources".to_string(),
+        &mut w,
+        None,
+    );
+    assert_eq!(t.enabled_verdict(), Some(Enabled::Off));
+    assert!(w.is_empty(), "{w:?}");
 }
 
 #[test]
@@ -1423,21 +1707,26 @@ fn malformed_enabled_tails_warn_instead_of_disabling() {
     // `()` is a legal empty tuple — `False and ()` short-circuits to
     // `False` in Python too.
     assert_eq!(enabled_expr("var('x') and ()", &vars), Some(false));
-    // `is` tests: a missing var is Undefined → `is defined` is `False`,
-    // `is not defined`/`is none` are `True`; a present var flips them.
+    // `is` tests in the tolerant node render: a missing `var()` yields
+    // Python `None` (not Jinja's Undefined) — `None is defined` is TRUE
+    // while `is none` also answers True; a bare missing NAME is the
+    // only Undefined the scope reaches.
+    assert_eq!(enabled_expr("var('missing') is defined", &vars), Some(true));
     assert_eq!(
-        enabled_expr("var('missing') is defined", &vars),
+        enabled_expr("var('missing') is not defined", &vars),
         Some(false)
     );
     assert_eq!(
-        enabled_expr("var('missing') is not defined", &vars),
-        Some(true)
+        enabled_expr("a_bare_missing_name is defined", &vars),
+        Some(false)
     );
     assert_eq!(enabled_expr("var('missing') is none", &vars), Some(true));
     assert_eq!(enabled_expr("var('x') is defined", &vars), Some(true));
     assert_eq!(enabled_expr("var('x') is none", &vars), Some(false));
     assert_eq!(enabled_expr("var('x') is boolean", &vars), Some(true));
-    assert_eq!(enabled_expr("var('x') is number", &vars), Some(false));
+    // `False is number` renders True — a Python bool IS a Number
+    // (`isinstance(False, int)`), verified on Jinja 3.1.
+    assert_eq!(enabled_expr("var('x') is number", &vars), Some(true));
     assert_eq!(enabled_expr("not var('x') is defined", &vars), Some(false));
     // A rhs that can't be resolved to a value (`env_var`/`target` calls)
     // makes the whole expression unprovable — enabled + warning, never a
@@ -1580,12 +1869,15 @@ fn config_dict_arg_reads_keys_like_kwargs() {
     );
     // `enabled`/`alias`/`unique_key`/`meta` and the governance readers all
     // route through the same lookup.
-    assert!(pat.disabled(
-        r#"{{ config({"enabled": false}) }}"#,
-        &vars,
-        &mut w,
-        "m.sql"
-    ));
+    assert_eq!(
+        pat.enabled(
+            r#"{{ config({"enabled": false}) }}"#,
+            &vars,
+            &mut w,
+            "m.sql"
+        ),
+        Some(Enabled::Off)
+    );
     assert!(w.is_empty(), "{w:?}");
     assert_eq!(
         config_alias(r#"{{ config({"alias": "renamed"}) }}"#),
@@ -1621,12 +1913,15 @@ fn config_dict_arg_joins_the_ordered_call_sequence() {
         ),
         Some("view".to_string())
     );
-    assert!(pat.disabled(
-        "{{ config(enabled=true) }}\n{{ config({\"enabled\": false}) }}",
-        &vars,
-        &mut w,
-        "m.sql"
-    ));
+    assert_eq!(
+        pat.enabled(
+            "{{ config(enabled=true) }}\n{{ config({\"enabled\": false}) }}",
+            &vars,
+            &mut w,
+            "m.sql"
+        ),
+        Some(Enabled::Off)
+    );
     // A later LITERAL entry overrides; an unresolvable VALUE inside a dict
     // can't clear an earlier literal — the same stance unresolvable kwargs
     // take. Literal keys around it still land.
@@ -1765,7 +2060,7 @@ fn source_config_blocks_merge_in_dbt_order() {
 }
 
 #[test]
-fn source_config_enabled_parks_tables_like_dbt_disabled() {
+fn source_config_enabled_parks_tables_like_dbt_enabled() {
     let dir = tempfile::tempdir().unwrap();
     write_source_config_project(dir.path());
     let m = manifest_from_source(dir.path()).unwrap();
@@ -1787,6 +2082,93 @@ fn source_config_enabled_parks_tables_like_dbt_disabled() {
         m.sources.contains_key("source.p.raw.top_enabled_ignored"),
         "top-level enabled: is not a source-table property"
     );
+}
+
+#[test]
+fn unverifiable_enabled_keeps_the_node_and_marks_it() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::create_dir_all(dir.path().join("seeds")).unwrap();
+    // `+enabled: "{{ var('missing') }}"` — the project-file render's
+    // strict `var()` raises on the missing name (verified on 1.12.6):
+    // a dbt parse error, so the verdict is unprovable, not enabled.
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\n\
+         seeds:\n  p:\n    uncertain_seed:\n      +enabled: \"{{ var('missing') }}\"\n\
+         models:\n  p:\n    tree_uncertain:\n      +enabled: \"{{ var('missing') }}\"\n",
+    )
+    .unwrap();
+    // In-file `config(enabled=var('missing'))` — the tolerant node
+    // render yields `None`, which fails dbt's bool validation → the
+    // node stays enabled but unverifiable (real dbt may have parked it).
+    std::fs::write(
+        dir.path().join("models/uncertain.sql"),
+        "{{ config(enabled=var('missing')) }}\nselect 1\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("models/tree_uncertain.sql"), "select 1\n").unwrap();
+    // A proven-off model stays parked — the mark is NOT for it.
+    std::fs::write(
+        dir.path().join("models/off.sql"),
+        "{{ config(enabled=false) }}\nselect 1\n",
+    )
+    .unwrap();
+    // schema.yml `config.enabled:` — the schema render is strict like
+    // the project file's (verified): missing var → raise → unprovable.
+    // A source table reads the same channel, as does an exposure.
+    std::fs::write(dir.path().join("models/schema_uncertain.sql"), "select 1\n").unwrap();
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\
+         models:\n  - name: schema_uncertain\n    config:\n      enabled: \"{{ var('missing') }}\"\n\
+         sources:\n  - name: raw\n    tables:\n      - name: t\n        config:\n          enabled: \"{{ var('missing') }}\"\n\
+         exposures:\n  - name: dash\n    type: dashboard\n    depends_on:\n      - ref('uncertain')\n    config:\n      enabled: \"{{ var('missing') }}\"\n",
+    )
+    .unwrap();
+    // Python `dbt.config(enabled=…)` — a non-bool literal is a
+    // validation error in dbt → unprovable.
+    std::fs::write(
+        dir.path().join("models/uncertain_py.py"),
+        "def model(dbt, session):\n    dbt.config(enabled='maybe')\n    return None\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("seeds/uncertain_seed.csv"), "id\n1\n").unwrap();
+
+    let (m, warnings) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
+    // Every channel's unprovable resource stays IN the graph and is
+    // marked — the set `Dag` folds into pruned adjacency + the lint
+    // runner's existence filter.
+    for uid in [
+        "model.p.uncertain",
+        "model.p.tree_uncertain",
+        "model.p.schema_uncertain",
+        "model.p.uncertain_py",
+        "seed.p.uncertain_seed",
+    ] {
+        assert!(m.nodes.contains_key(uid), "{uid} stays in the graph");
+        assert!(m.enabled_unverifiable.contains(uid), "{uid} is marked");
+    }
+    assert!(m.sources.contains_key("source.p.raw.t"));
+    assert!(m.enabled_unverifiable.contains("source.p.raw.t"));
+    assert!(m.exposures.contains_key("exposure.p.dash"));
+    assert!(m.enabled_unverifiable.contains("exposure.p.dash"));
+    // A proven-off node parks under `disabled` like always — absent
+    // from the graph AND unmarked.
+    assert!(!m.nodes.contains_key("model.p.off"));
+    assert!(!m.enabled_unverifiable.contains("model.p.off"));
+    // Every channel warned once, naming its site — the dedup in
+    // `finish` keeps the yaml-snapshot-style double read to one line.
+    for needle in [
+        "config(enabled=var('missing'))",
+        "+enabled",
+        "config.enabled",
+    ] {
+        assert!(
+            warnings.iter().any(|w| w.contains(needle)),
+            "a warning names {needle}: {warnings:?}"
+        );
+    }
 }
 
 #[test]

@@ -442,6 +442,7 @@ mod tests {
             )]),
             child_map: HashMap::from([("model.p.base".to_string(), vec!["model.p.m".to_string()])]),
             unresolved_adjacent: Default::default(),
+            enabled_unverifiable: Default::default(),
         }
     }
 

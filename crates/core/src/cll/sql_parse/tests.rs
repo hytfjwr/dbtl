@@ -59,6 +59,7 @@ fn manifest(nodes: Vec<(String, RawNode)>, edges: &[(&str, &str)]) -> RawManifes
     }
     RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         nodes: nodes.into_iter().collect(),
         sources: HashMap::new(),
         exposures: HashMap::new(),

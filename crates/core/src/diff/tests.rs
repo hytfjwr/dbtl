@@ -35,6 +35,7 @@ fn manifest(b: RawNode, extra: Option<(&str, RawNode)>) -> RawManifest {
     }
     RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -215,6 +216,7 @@ fn cross_mode_surfaces_are_excluded_per_node_kind() {
     let dag_with = |seed_node: RawNode, snap_node: RawNode| {
         Dag::build(&RawManifest {
             unresolved_adjacent: Default::default(),
+            enabled_unverifiable: Default::default(),
             metadata: Default::default(),
             nodes: HashMap::from([
                 ("seed.p.fiscal".to_string(), seed_node),
@@ -472,6 +474,7 @@ fn col_manifest(
     }
     RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes: nodes.into_iter().map(|(u, n)| (u.to_string(), n)).collect(),
         sources: HashMap::new(),

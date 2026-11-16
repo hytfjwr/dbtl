@@ -361,6 +361,57 @@ impl Dag {
             .map(|(uid, m)| (uid.clone(), macro_info(m)))
             .collect();
 
+        // Source-mode loads record the macro calls they could not
+        // resolve in `RawManifest::unresolved_adjacent` (`#[serde(skip)]`
+        // — always empty on a real manifest) — the same "unprovable
+        // adjacency" record a `PackageScope::Root` prune writes, so
+        // degree-judging rules treat a hidden-macro edge exactly like a
+        // severed package edge. A manifest-mode build starts empty:
+        // only `PackageScope::apply_with_warnings` adds to it.
+        let mut pruned_adjacent: HashMap<String, PrunedAdjacent> = manifest
+            .unresolved_adjacent
+            .iter()
+            .map(|(uid, a)| {
+                (
+                    uid.clone(),
+                    PrunedAdjacent {
+                        parents: a.parents,
+                        children: a.children,
+                    },
+                )
+            })
+            .collect();
+        // The uid set itself rides the Dag so rules whose premise is the
+        // node's existence (not its degree) can under-report too; kept
+        // only for nodes that actually reached the graph.
+        let enabled_unverifiable: BTreeSet<String> = manifest
+            .enabled_unverifiable
+            .iter()
+            .filter(|uid| nodes.contains_key(*uid))
+            .cloned()
+            .collect();
+        // An `enabled`-unverifiable node may not exist under a real parse
+        // at all — its whole adjacency is unprovable, and so is the far
+        // side of every recorded edge touching it (an edge to a node real
+        // dbt dropped is no edge). Mark the node in both directions and
+        // each neighbour's opposite side once per edge, so degree-judging
+        // rules treat the zone like pruned adjacency: under-report.
+        for uid in &enabled_unverifiable {
+            let e = pruned_adjacent.entry(uid.clone()).or_default();
+            e.parents += 1;
+            e.children += 1;
+            if let Some(ps) = parents.get(uid) {
+                for p in ps {
+                    pruned_adjacent.entry(p.clone()).or_default().children += 1;
+                }
+            }
+            if let Some(cs) = children.get(uid) {
+                for c in cs {
+                    pruned_adjacent.entry(c.clone()).or_default().parents += 1;
+                }
+            }
+        }
+
         let mut dag = Dag {
             nodes,
             parents,
@@ -386,26 +437,8 @@ impl Dag {
                 .clone()
                 .filter(|s| !s.trim().is_empty()),
             overview: None,
-            // Source-mode loads record the macro calls they could not
-            // resolve in `RawManifest::unresolved_adjacent` (`#[serde(skip)]`
-            // — always empty on a real manifest) — the same "unprovable
-            // adjacency" record a `PackageScope::Root` prune writes, so
-            // degree-judging rules treat a hidden-macro edge exactly like a
-            // severed package edge. A manifest-mode build starts empty:
-            // only `PackageScope::apply_with_warnings` adds to it.
-            pruned_adjacent: manifest
-                .unresolved_adjacent
-                .iter()
-                .map(|(uid, a)| {
-                    (
-                        uid.clone(),
-                        PrunedAdjacent {
-                            parents: a.parents,
-                            children: a.children,
-                        },
-                    )
-                })
-                .collect(),
+            pruned_adjacent,
+            enabled_unverifiable,
             // A synthesized source-mode manifest carries the loader's own
             // name-universe recording (installed packages, versioned
             // families, parked names, declared-dependency bookkeeping);
