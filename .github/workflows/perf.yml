@@ -123,6 +123,7 @@ jobs:
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
           RUNNER_OS: ${{ runner.os }}
+        shell: bash
         run: |
           # Same derivation `Perf (prebuild)` saves under — keep them in sync.
           read -ra paths <<< "$PERF_INPUT_PATHS"
@@ -424,6 +425,7 @@ jobs:
         id: key
         env:
           RUNNER_OS: ${{ runner.os }}
+        shell: bash
         run: |
           # Same derivation `Perf (report)` looks up under — keep them in sync.
           read -ra paths <<< "$PERF_INPUT_PATHS"
@@ -459,6 +461,7 @@ jobs:
         env:
           STAGE: ${{ runner.temp }}/perf-bin
           INPUT_SHA: ${{ steps.key.outputs.input-sha }}
+        shell: bash
         run: |
           bench_exe=$(jq -r \
             'select(.reason == "compiler-artifact" and .target.name == "pipeline" and .executable != null) | .executable' \

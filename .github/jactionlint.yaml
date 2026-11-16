@@ -1,0 +1,2 @@
+# Pin the profile so a change of the tool's default cannot change what CI enforces.
+profile: default

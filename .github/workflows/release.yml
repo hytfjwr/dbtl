@@ -20,6 +20,15 @@ on:
 
 permissions: {}
 
+# Releases queue behind each other instead of cancelling a release that is
+# mid-flight. The "-caller" part keeps this group distinct from the groups of
+# the reusable workflows it calls (inside those, github.workflow is this
+# workflow's name too), which would otherwise be a self-deadlock.
+concurrency:
+  group: ${{ github.workflow }}-caller-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   prepare:
     name: Resolve release tag
