@@ -187,6 +187,10 @@ impl std::hash::Hasher for UidHasher {
 
 type UidMap<V> = HashMap<String, V, std::hash::BuildHasherDefault<UidHasher>>;
 
+/// A `K -> &[&'a str]` lookup over dag-borrowed strings, hashed by
+/// [`UidHasher`] — the same fast hasher the node memo uses.
+type FastMap<'a, K> = HashMap<K, Vec<&'a str>, std::hash::BuildHasherDefault<UidHasher>>;
+
 /// The per-`run_rules` call-site cache every graph rule shares —
 /// [`SqlParseResolver`](crate::SqlParseResolver)'s memo shape. Without it
 /// each rule re-parses the same `raw_code`: the extraction (mask + regex
@@ -318,8 +322,8 @@ impl<'a> CallSiteResolver<'a> {
         if self.dag.is_source_mode() {
             return map;
         }
-        let mut refs: HashMap<&str, Vec<&str>> = HashMap::new();
-        let mut sources: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
+        let mut refs: FastMap<'a, &'a str> = FastMap::default();
+        let mut sources: FastMap<'a, (&'a str, &'a str)> = FastMap::default();
         for (uid, n) in self.dag.nodes() {
             match n.resource_type.as_str() {
                 "model" | "seed" | "snapshot" => {
@@ -346,10 +350,17 @@ impl<'a> CallSiteResolver<'a> {
                 let Some(target) = resolve_call(self.dag, &refs, &sources, caller, call) else {
                     continue;
                 };
-                if self.dag.direct_parents(caller).contains(&target) {
+                if self
+                    .dag
+                    .direct_parents(caller)
+                    .iter()
+                    .any(|p| p.as_str() == target)
+                {
                     continue;
                 }
-                map.entry(target).or_default().insert(caller.clone());
+                map.entry(target.to_string())
+                    .or_default()
+                    .insert(caller.clone());
             }
         }
         map
@@ -369,7 +380,7 @@ impl<'a> CallSiteResolver<'a> {
 /// under exactly one package. A name owned by multiple foreign packages
 /// can't pick a render deterministically — the pool comes back empty and
 /// the call resolves to nothing.
-fn caller_pool<'m>(members: &'m [&'m str], caller_pkg: &str) -> Vec<&'m str> {
+fn caller_pool<'m>(members: &[&'m str], caller_pkg: &str) -> Vec<&'m str> {
     let home: Vec<&str> = members
         .iter()
         .copied()
@@ -401,13 +412,13 @@ fn caller_pool<'m>(members: &'m [&'m str], caller_pkg: &str) -> Vec<&'m str> {
 /// call can't name a target: a name no member owns, a literal `v=` pin
 /// hitting no version segment, a nonliteral pin, or a name the member
 /// family can't disambiguate.
-fn resolve_call(
+fn resolve_call<'m>(
     dag: &Dag,
-    refs: &HashMap<&str, Vec<&str>>,
-    sources: &HashMap<(&str, &str), Vec<&str>>,
+    refs: &HashMap<&'m str, Vec<&'m str>, std::hash::BuildHasherDefault<UidHasher>>,
+    sources: &HashMap<(&'m str, &'m str), Vec<&'m str>, std::hash::BuildHasherDefault<UidHasher>>,
     caller_uid: &str,
     call: &DepCall,
-) -> Option<String> {
+) -> Option<&'m str> {
     let caller_pkg = uid_package(caller_uid).unwrap_or("");
     match &call.kind {
         DepCallKind::Ref {
@@ -417,7 +428,7 @@ fn resolve_call(
             version,
         } => {
             let members = refs.get(name.as_str())?;
-            let pool: Vec<&str> = match package.as_deref() {
+            let pool: Vec<&'m str> = match package.as_deref() {
                 // An explicit package arg scopes the family outright
                 // (dbt cross-project semantics) — a miss resolves nothing.
                 Some(p) => members
@@ -436,21 +447,21 @@ fn resolve_call(
                     versioned_model_segs(u).is_some_and(|(_, vs)| normalize_version(vs) == pin)
                 });
                 return match (hits.next(), hits.next()) {
-                    (Some(u), None) => Some((*u).to_string()),
+                    (Some(u), None) => Some(u),
                     _ => None,
                 };
             }
             // Unversioned call: an unversioned member takes it outright;
             // an all-versioned family hands it to the latest.
             if let Some(u) = pool.iter().find(|u| versioned_model_segs(u).is_none()) {
-                return Some((*u).to_string());
+                return Some(u);
             }
             latest_versioned(dag, &pool)
         }
         DepCallKind::Source { source, table } => {
             let members = sources.get(&(source.as_str(), table.as_str()))?;
             match caller_pool(members, caller_pkg).as_slice() {
-                [u] => Some((*u).to_string()),
+                [u] => Some(u),
                 _ => None,
             }
         }
@@ -460,7 +471,7 @@ fn resolve_call(
 /// The "latest" member of an all-versioned family — a declared
 /// `latest_version` wins (dbt's own latest), else the highest `.vN`
 /// segment. `None` when no member's version can be read.
-fn latest_versioned(dag: &Dag, pool: &[&str]) -> Option<String> {
+fn latest_versioned<'m>(dag: &Dag, pool: &[&'m str]) -> Option<&'m str> {
     if let Some(latest) = pool.iter().find_map(|u| {
         dag.detail(u)
             .and_then(|d| d.latest_version.as_deref())
@@ -471,13 +482,13 @@ fn latest_versioned(dag: &Dag, pool: &[&str]) -> Option<String> {
                 .and_then(|d| d.version.as_deref())
                 .is_some_and(|v| normalize_version(v) == latest)
         }) {
-            return Some((*u).to_string());
+            return Some(u);
         }
     }
     pool.iter()
         .filter_map(|u| version_number(u).map(|n| (n, *u)))
         .max_by(|a, b| a.0.cmp(&b.0))
-        .map(|(_, u)| u.to_string())
+        .map(|(_, u)| u)
 }
 
 /// The `ref()`/`source()`/`config()` calls in one node's `raw_code`,
