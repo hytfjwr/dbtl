@@ -12,9 +12,16 @@
 #
 # The re-run happens only when all of these hold:
 #
+#   * the newest attempt actually ran jobs — an approval-gated attempt
+#     lists zero, and a run whose newest attempt is still waiting for
+#     approval (a bot-authored run's re-run can land back there) has
+#     nothing to retry;
 #   * the run's conclusion is `failure` — a cancelled run belongs to a
 #     human or the concurrency group, not to us;
-#   * the run is still on its first attempt, so we never loop;
+#   * no earlier attempt ran jobs, so we never loop — the retry is spent
+#     by the first attempt that really ran, not by the attempt counter:
+#     an approval wait consumes a number without running anything, so a
+#     bot-authored run's first real attempt is attempt 2;
 #   * the run's head commit is still the tip of its head branch — when a
 #     newer push exists, re-running this run would cancel the newer run in
 #     the same concurrency group;
@@ -38,6 +45,9 @@
 #
 #   <dir>/run.json                  the run object (GET /actions/runs/{id})
 #   <dir>/jobs.json                 GET /actions/runs/{id}/jobs
+#   <dir>/attempt-<n>-jobs.json     GET /actions/runs/{id}/attempts/{n}/jobs
+#                                   — one file per attempt earlier than the
+#                                   newest, read only when run_attempt > 1
 #   <dir>/annotations-<job>.json    GET /check-runs/{job}/annotations
 #   <dir>/branch-head               current tip sha of the run's head
 #                                   branch; missing or empty means the
@@ -121,6 +131,8 @@ jq -e . "$JOBS_JSON" >/dev/null
 
 CONCLUSION=$(jq -r '.conclusion // ""' "$RUN_JSON")
 ATTEMPT=$(jq -r '.run_attempt // 0' "$RUN_JSON")
+TOTAL_JOBS=$(jq '.total_count // 0' "$JOBS_JSON")
+LISTED_JOBS=$(jq '.jobs // [] | length' "$JOBS_JSON")
 HEAD_SHA=$(jq -r '.head_sha // ""' "$RUN_JSON")
 HEAD_BRANCH=$(jq -r '.head_branch // ""' "$RUN_JSON")
 HEAD_REPO=$(jq -r '.head_repository.full_name // ""' "$RUN_JSON")
@@ -173,15 +185,68 @@ veto() {
     verdict "no re-run" "$1" false
 }
 
-# --- gate 1+2: the run itself ---------------------------------------------
+# --- gate 1: the newest attempt ran jobs ------------------------------------
+# An approval-gated attempt lists zero jobs, and there is nothing to
+# re-run — that is the shape a re-run of a bot-authored run lands back in
+# when the approval gate applies to the new attempt too. An attempt that
+# is still queued, or a run that never spawned a job at all, shares the
+# shape and is left alone the same way.
+
+[ "$TOTAL_JOBS" -gt 0 ] ||
+    veto "the newest attempt ran no jobs — it is waiting for approval, queued, or empty"
+
+# --- gate 2: the run itself failed ------------------------------------------
 
 [ "$CONCLUSION" = "failure" ] ||
     veto "the run's conclusion is ${CONCLUSION:-unknown}, not failure"
 
-[ "$ATTEMPT" = "1" ] ||
-    veto "the run is already on attempt $ATTEMPT — only the first attempt is retried"
+# --- gate 3: no earlier attempt ran jobs ------------------------------------
+# `run_attempt` counts approval waits, which run zero jobs — a gated first
+# attempt pushes the real first attempt to number 2, so the counter
+# itself proves nothing about whether the retry is spent. What vetoes is
+# an earlier attempt that already ran jobs: that attempt was the first
+# real one, it had (or earned) the one retry, and a failure after it
+# belongs to a human. An unreadable earlier attempt proves nothing either
+# — the script stays out, same as an unresolvable branch tip.
 
-# --- gate 3: the run is still the tip of its branch -----------------------
+# A malformed attempt number means the history cannot be probed at all —
+# fail closed rather than guessing which attempts ran jobs.
+case "$ATTEMPT" in
+    '' | *[!0-9]* | 0)
+        veto "the run's attempt number is unreadable — cannot prove the retry is unspent"
+        ;;
+esac
+
+if [ "$ATTEMPT" -gt 1 ]; then
+    EARLIER=""
+    for ((K = 1; K < ATTEMPT; K++)); do
+        if [ -n "$FIXTURES" ]; then
+            AJ="$FIXTURES/attempt-$K-jobs.json"
+            [ -f "$AJ" ] || {
+                echo "::error::$AJ is missing" >&2
+                exit 2
+            }
+            KJOBS=$(jq -r '.total_count // 0' "$AJ")
+        else
+            KJOBS=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$K/jobs?per_page=1" \
+                --jq '.total_count // 0' 2>/dev/null) ||
+                veto "attempt $K's jobs could not be listed — cannot prove the retry is unspent"
+        fi
+        case "$KJOBS" in
+            '' | *[!0-9]*)
+                veto "attempt $K's job count is unreadable — cannot prove the retry is unspent"
+                ;;
+        esac
+        if [ "$KJOBS" -gt 0 ]; then
+            EARLIER="$K"
+            break
+        fi
+    done
+    [ -z "$EARLIER" ] ||
+        veto "attempt $EARLIER already ran jobs — the first real attempt had the one retry"
+fi
+
+# --- gate 4: the run is still the tip of its branch -----------------------
 # Re-running a superseded run would cancel the newer run sharing its
 # concurrency group. An unresolvable head — a deleted branch, a private
 # fork, an API error — means we cannot prove freshness, so we stay out.
@@ -209,13 +274,11 @@ fi
 [ "$CURRENT_HEAD" = "$HEAD_SHA" ] ||
     veto "the branch tip moved to ${CURRENT_HEAD:0:8}; a newer run supersedes this one"
 
-# --- gate 4: what actually failed -----------------------------------------
+# --- gate 5: what actually failed -----------------------------------------
 # The aggregate (<workflow> result) only mirrors its needs, so it is not
 # evidence either way. Everything else that did not succeed must carry the
 # acquisition annotation.
 
-TOTAL_JOBS=$(jq '.total_count // 0' "$JOBS_JSON")
-LISTED_JOBS=$(jq '.jobs // [] | length' "$JOBS_JSON")
 [ "$TOTAL_JOBS" -le "$LISTED_JOBS" ] ||
     veto "the run reports $TOTAL_JOBS jobs but only $LISTED_JOBS were listed"
 
