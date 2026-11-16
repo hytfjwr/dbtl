@@ -35,7 +35,7 @@ Every subcommand that reads a project resolves its data source the same way:
 
 With neither `--manifest` nor `--source`, `dbtl` uses `<project>/target/manifest.json` if it exists and parses the project source otherwise.
 
-An auto-detected manifest can go stale: `dbt parse` ran before your last edits. When a project file (`.sql`, `.py`, `.yml`, `.yaml`, `.csv`) is newer than the manifest, `dbtl` warns on stderr — naming the count and the newest file — and suggests `dbt parse` or `--source`. Explicit `--manifest` and `--source` choose the source deliberately and never warn.
+An auto-detected manifest can go stale: `dbt parse` ran before your last edits. `dbtl` compares the manifest's modification time against the files `dbt parse` reads — the resource files (`.sql`, `.py`, `.yml`, `.yaml`, `.csv`, `.md`) under the project's configured `*-paths` (`model-paths`, `seed-paths`, `snapshot-paths`, `macro-paths`, `analysis-paths`, `test-paths`, `docs-paths`, or dbt's defaults), plus the `.yml`/`.yaml` files and `.dbtignore` at the project root. When any are newer it warns on stderr — naming the count and the newest file — and suggests `dbt parse` or `--source`. Generated and vendored trees (`logs/`, `dbt_packages/`, `dbt_internal_packages/`, `target/`, dot-directories) and files outside the resource paths never count. If `dbt_project.yml` can't be read, the check falls back to a broad data-file scan that still skips `logs/` and the package directories. Explicit `--manifest` and `--source` choose the source deliberately and never warn.
 
 ```sh
 dbtl lint                                   # auto-detect in the current directory

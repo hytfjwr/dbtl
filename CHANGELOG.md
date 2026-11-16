@@ -17,6 +17,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   matching what source mode records as real edges. The lineage graph
   itself stays dbt-faithful — the possible edges exist only while the
   lint rules run.
+- The auto-detected-manifest staleness warning and source-mode `--watch`
+  no longer count files `dbt parse` never reads. Both now compare
+  against the same input set — the `.sql`/`.py`/`.yml`/`.yaml`/`.csv`/
+  `.md` files under the project's configured `*-paths` (`model-paths`,
+  `seed-paths`, `snapshot-paths`, `macro-paths`, `analysis-paths`,
+  `test-paths`, `docs-paths`, with dbt's defaults and the legacy
+  `source-paths`/`data-paths` aliases) plus every root-level
+  `.yml`/`.yaml` file and `.dbtignore`. Writes under `logs/`,
+  `dbt_packages/`, `dbt_internal_packages/`, `target/`, dot-directories,
+  or directories outside the resource paths (`venv/`, `node_modules/`,
+  `build/`) can no longer trigger a stale warning or a watch reload;
+  `target/compiled/` still reloads the view so a `dbt compile` refreshes
+  the SQL preview. When `dbt_project.yml` is missing or unparsable the
+  scan falls back to the previous broad walk while still excluding
+  `logs/` and the package directories.
 
 ## [0.7.1] - 2026-11-16
 

@@ -159,28 +159,18 @@ impl InstalledPackages {
             Some(p) if !p.name.is_empty() => p.name.clone(),
             _ => fallback_name(),
         };
-        // `source-paths` is the legacy alias for `model-paths`; `data-paths`
-        // for `seed-paths` — same aliasing the root project's load applies.
-        let or_default = |pick: &dyn Fn(&DbtProject) -> Option<Vec<String>>, default: &str| {
-            contained_resource_paths(
-                project
-                    .as_ref()
-                    .and_then(pick)
-                    .unwrap_or_else(|| vec![default.to_string()]),
-            )
-        };
-        let model_paths = or_default(
-            &|p| p.model_paths.clone().or_else(|| p.source_paths.clone()),
-            "models",
-        );
-        let seed_paths = or_default(
-            &|p| p.seed_paths.clone().or_else(|| p.data_paths.clone()),
-            "seeds",
-        );
-        let snapshot_paths = or_default(&|p| p.snapshot_paths.clone(), "snapshots");
+        // The same `*-paths` resolution the root project's load applies —
+        // an unparsable package `dbt_project.yml` resolves to dbt's
+        // defaults. Its `data-paths`-style notices go to a discarded sink:
+        // package warnings were never part of this scan's surface.
+        let mut ignored = Vec::new();
+        let paths = resolve_resource_paths(&project.unwrap_or_default(), &mut ignored);
+        let model_paths = &paths.model_paths;
+        let seed_paths = &paths.seed_paths;
+        let snapshot_paths = &paths.snapshot_paths;
 
         let mut yml_roots: Vec<String> = Vec::new();
-        for sub in &model_paths {
+        for sub in model_paths {
             yml_roots.push(sub.clone());
             for file in collect_with_root(pkg_dir, std::slice::from_ref(sub), "sql")
                 .into_iter()
@@ -203,7 +193,7 @@ impl InstalledPackages {
                 self.refs.entry(stem).or_default().insert(name.clone());
             }
         }
-        for sub in &seed_paths {
+        for sub in seed_paths {
             yml_roots.push(sub.clone());
             for (file, _) in collect_with_root(pkg_dir, std::slice::from_ref(sub), "csv") {
                 self.refs
@@ -212,7 +202,7 @@ impl InstalledPackages {
                     .insert(name.clone());
             }
         }
-        for sub in &snapshot_paths {
+        for sub in snapshot_paths {
             yml_roots.push(sub.clone());
             for (file, _) in collect_with_root(pkg_dir, std::slice::from_ref(sub), "sql") {
                 // `{% snapshot x %}` names the refable resource; the file
