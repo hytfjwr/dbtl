@@ -3603,3 +3603,108 @@ fn manifest_mode_picks_the_adapter_dialect_for_in_rhs_models() {
         assert!(r.fallback_nodes().is_empty());
     }
 }
+
+// -- dangling-separator strip vs. literals ------------------------------------
+//
+// [`strip_dangling`] blanks a separator missing its right operand — the
+// `,`/`or`/`union all` a `{% if not loop.last %} SEP {% endif %}` leaves on
+// the last `{% for %}` iteration. The token scan used to jump over a
+// string literal or quoted identifier without emitting anything, so the
+// token AFTER the literal decided danglingness: `'2'`'s `)` blanked the
+// `,` inside `IN ('1', '2')`, and a quoted relation's `ORDER` blanked a
+// written join's `,`. A skipped literal now counts as an operand.
+
+/// Every dialect parses `IN ('1', '2')` inside a `{% if not loop.last %}`
+/// `or`-separated loop — the written `,` survives the strip.
+#[test]
+fn a_loop_separator_strip_never_blanks_inside_a_literal_list() {
+    let in_case = "select\n\
+        case when\n\
+        {%- for i in range(1, 4) %}\n\
+            c_{{ i }} in ('1', '2')\n\
+            {%- if not loop.last %} or {%- endif %}\n\
+        {%- endfor %}\n\
+        then true else false end as f\n\
+        from {{ ref('base') }}";
+    // The same shape in `WHERE` — once closing the statement, once
+    // followed by a real operand.
+    let in_where = "select id from {{ ref('base') }} where\n\
+        {%- for i in range(1, 4) %}\n\
+            c_{{ i }} in ('1', '2')\n\
+            {%- if not loop.last %} or {%- endif %}\n\
+        {%- endfor %}";
+    let in_where_and = "select id from {{ ref('base') }} where\n\
+        {%- for i in range(1, 4) %}\n\
+            c_{{ i }} in ('1', '2')\n\
+            {%- if not loop.last %} or {%- endif %}\n\
+        {%- endfor %}\n\
+        and id = 1";
+    // A `,` before a string literal is a select-item separator — `'x'`
+    // is the operand, not a boundary.
+    let comma_before_literal = "select id, 'x' as k from {{ ref('base') }} where \
+        {% for i in range(2) %} c_1 = 1 or {% endfor %}";
+    for d in [
+        SqlDialect::Generic,
+        SqlDialect::Redshift,
+        SqlDialect::Postgres,
+        SqlDialect::Snowflake,
+        SqlDialect::BigQuery,
+        SqlDialect::DuckDb,
+    ] {
+        for sql in [in_case, in_where, in_where_and, comma_before_literal] {
+            assert!(
+                jinja_parse(sql, JinjaMark::Plain, d).is_ok(),
+                "{sql:?} parses under {d:?}"
+            );
+        }
+    }
+    // The same loops over numeric literals and bare comparisons never
+    // tripped the strip and still parse.
+    let numeric = "select case when {% for i in range(3) %} c_1 in (1, 2) \
+        {% if not loop.last %} or {% endif %} {% endfor %} then true \
+        else false end as f from {{ ref('base') }}";
+    let bare = "select case when {% for i in range(3) %} c_1 = '1' \
+        {% if not loop.last %} or {% endif %} {% endfor %} then true \
+        else false end as f from {{ ref('base') }}";
+    for sql in [numeric, bare] {
+        assert!(
+            jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_ok(),
+            "{sql:?} still parses"
+        );
+    }
+    // A genuinely dangling separator — `union all` at the text's end —
+    // still blanks.
+    let sql = "{% for t in ['a','b'] %}\nselect id from {{ t }}\n\
+               {% if not loop.last %} union all {% endif %}\n{% endfor %}\n";
+    let (r, stmts) = jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).unwrap();
+    assert_eq!(stmts.len(), 1);
+    assert!(!r.text.contains("union"), "the dangling separator blanked");
+}
+
+#[test]
+fn a_quoted_relation_after_a_comma_keeps_its_cartesian_fact() {
+    // `FROM {{ ref('a') }}, {{ ref('b') }}` — the `,` separates two
+    // written relations; the quoted name the second `ref` renders to is
+    // its operand, not a loop artifact.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            model("model.t.b", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "select id from {{ ref('a') }}, {{ ref('b') }} order by id \
+                 {% for i in range(2) %}, id{% if loop.last %},{% endif %}{% endfor %}",
+                &[],
+            ),
+        ],
+        &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert_eq!(
+        facts.cartesian.len(),
+        1,
+        "the written comma join still reports"
+    );
+    assert!(!facts.elided_clauses);
+}

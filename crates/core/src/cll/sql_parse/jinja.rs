@@ -2032,16 +2032,22 @@ fn strip_dangling(rendered: &mut RenderedSql, lex: &Lex) {
     rendered.text = String::from_utf8(text).expect("blanked bytes stay UTF-8");
 }
 
-/// The token stream [`strip_dangling`] reads — word runs and the
-/// single-byte punctuation a separator check cares about; comments and
-/// literals (every dialect form) are skipped like the parser reads
-/// them.
+/// The token stream [`strip_dangling`] reads — word runs, one
+/// [`Tok::Operand`] per skipped literal, and the single-byte
+/// punctuation a separator check cares about; comments are skipped
+/// like the parser reads them. A literal the scan jumps over still
+/// sits where an operand sits — without the token, the `,` inside
+/// `('1', '2')` reads as followed by `)` and blanks.
 #[derive(Clone, PartialEq)]
 enum Tok {
     Word,
     Comma,
     RParen,
     Semi,
+    /// A whole skipped literal — a string, a quoted identifier, a
+    /// dollar- or `q'[..]'`-quoted body. The range covers the literal's
+    /// bytes; nothing reads it since an operand is never a separator.
+    Operand,
     Other,
 }
 
@@ -2055,12 +2061,23 @@ fn sep_tokens(b: &[u8], lex: &Lex) -> Vec<(Range<usize>, Tok)> {
             b'/' if lex.slash_comment_at(b, i) => i = line_comment_end(b, i),
             b'/' if b.get(i + 1) == Some(&b'*') => i = block_comment_end(b, i, lex.nested_comments),
             b'#' if lex.hash_comment_at(b, i) => i = line_comment_end(b, i),
-            b'\'' if lex.q_quote_at(b, i) => i = q_quote_end(b, i),
-            q @ (b'\'' | b'"' | b'`') => i = quoted_end(b, i, q, lex.escape_for(b, i)),
+            b'\'' if lex.q_quote_at(b, i) => {
+                let end = q_quote_end(b, i);
+                toks.push((i..end, Tok::Operand));
+                i = end;
+            }
+            q @ (b'\'' | b'"' | b'`') => {
+                let end = quoted_end(b, i, q, lex.escape_for(b, i));
+                toks.push((i..end, Tok::Operand));
+                i = end;
+            }
             b'$' if lex.dollar_quote => match dollar_quote_open(b, i) {
                 Some(dlen) => {
                     let from = i + dlen;
-                    i = dollar_quote_close(b, from, &b[i..i + dlen]).map_or(b.len(), |c| c + dlen);
+                    let end =
+                        dollar_quote_close(b, from, &b[i..i + dlen]).map_or(b.len(), |c| c + dlen);
+                    toks.push((i..end, Tok::Operand));
+                    i = end;
                 }
                 None => {
                     toks.push((i..i + 1, Tok::Other));
@@ -2098,7 +2115,8 @@ fn sep_tokens(b: &[u8], lex: &Lex) -> Vec<(Range<usize>, Tok)> {
 /// Can the token at `i` (or the text's end) take a separator's operand?
 /// `)`, `;`, another separator, a clause keyword — `select` excepted:
 /// `union all select` is a real arm — and EOF can't, so the separator
-/// before them is dangling.
+/// before them is dangling. A literal or other punctuation can, so the
+/// separator before one stands.
 fn dangling_at(toks: &[(Range<usize>, Tok)], i: usize, text: &str) -> bool {
     match toks.get(i) {
         None => true,
@@ -2107,7 +2125,7 @@ fn dangling_at(toks: &[(Range<usize>, Tok)], i: usize, text: &str) -> bool {
             let w = lower(text, r);
             w != "select" && ARM_BOUNDARY_WORDS.contains(&w.as_bytes())
         }
-        Some((_, Tok::Other)) => false,
+        Some((_, Tok::Operand | Tok::Other)) => false,
     }
 }
 
