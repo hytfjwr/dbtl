@@ -185,6 +185,18 @@ pub(super) struct Analyzed {
     /// (`facts::star_over_single_explicit_cte`). Irrelevant when
     /// `unbounded_wildcard` is false (nothing would flag anyway).
     pub(super) star_over_single_explicit_cte: bool,
+    /// The winning render dropped a `{{ }}` at a clause boundary — the
+    /// query may be missing a JOIN/WHERE/LIMIT the real macro emits, so
+    /// the absence-facts are all pre-emptied above (`cartesian`,
+    /// `unresolved`, `unused_ctes`, `unlimited_order_by`) and CLL
+    /// resolves through the name-match fallback like an unparsable
+    /// model. The parse itself still counts — the model isn't unparsed.
+    pub(super) elided_clauses: bool,
+    /// The winning render stood `(NULL)` in for a `{{ }}` on an
+    /// `IN`/`ANY`/`SOME`/`ALL` right-hand side — the tag may expand to a
+    /// subquery reading a CTE, so `unused_ctes` is pre-emptied too.
+    /// Every other fact stays judged.
+    pub(super) in_rhs: bool,
 }
 
 /// Per-query context: the `Dag`, the model's direct-parent matcher table,

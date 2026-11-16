@@ -2,7 +2,7 @@ use super::*;
 use crate::manifest::{RawContract, RawManifest, RawNode, RawSource, RawTestMetadata};
 use crate::project_config::{project_config_path, ProjectConfig, PROJECT_CONFIG_NAME};
 use crate::{Catalog, SqlDialect, SqlParseResolver, UnparsedReason};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 /// Parse the `lint:` section out of `.dbtl.yml` text (the parse's own tests
@@ -7793,19 +7793,21 @@ fn unused_cte_flags_only_unread_definitions() {
 
 #[test]
 fn unused_cte_counts_a_name_a_macro_argument_carries() {
-    // `{{ join_customers('customers', …) }}` renders `NULL` — the parse
-    // can't see the join the macro emits — but the CTE name rides the
-    // string literal, so `customers` isn't provably unread. A literal
-    // naming a different CTE — or no literal at all — still flags.
+    // `{{ join_customers('customers', …) }}` at a value position renders
+    // `NULL` — the parse can't see the join the macro emits — but the
+    // CTE name rides the string literal, so `customers` isn't provably
+    // unread. A literal naming a different CTE — or no literal at all —
+    // still flags. (The same tag at a clause boundary now ELIDES and
+    // marks the model — `unused_ctes` stays unproven there instead.)
     let m = manifest(
         vec![
             model_sql(
                 "macro_arg",
-                "with orders as (select 1), customers as (select 2)\nselect * from orders {{ join_customers('customers', 'orders.customer_id') }}",
+                "with orders as (select 1), customers as (select 2)\nselect * from orders where 1 = {{ join_customers('customers', 'orders.customer_id') }}",
             ),
             model_sql(
                 "other_name",
-                "with orders as (select 1), customers as (select 2)\nselect * from orders {{ join_customers('orders', 'id') }}",
+                "with orders as (select 1), customers as (select 2)\nselect * from orders where 1 = {{ join_customers('orders', 'id') }}",
             ),
             model_sql(
                 "plain_unread",
@@ -11043,6 +11045,116 @@ fn unresolved_references_source_scope_records_disabled_and_version_families() {
         "{}",
         hits[0].message
     );
+}
+
+// -- `{{ }}` at `IN` right-hand sides and clause boundaries ------------------
+//
+// A `{{ }}` a clause could replace renders to whitespace and marks the
+// model (`elided_clauses`); the `IN`/`ANY`/`SOME`/`ALL` right-hand side
+// renders `(NULL)` and marks `in_rhs`. The marked model still parses —
+// it isn't `unparsed` — but facts that would prove an absence stay
+// unproven, and `--fix` plans no edit on them.
+
+#[test]
+fn a_clause_elided_model_flags_no_absence_dependent_findings() {
+    // `FROM a, b {{ m() }}` — the tag could emit the ON clause the
+    // comma-join lacks. The parse marks the model rather than reporting
+    // the missing condition; a written `FROM a, b` still flags.
+    let m = manifest(
+        vec![
+            model_sql("a", "select 1 as id"),
+            model_sql("b", "select 1 as id"),
+            model_sql("marked", "select a.id from \"a\" a, \"b\" b {{ m() }}"),
+            model_sql("written", "select a.id from \"a\" a, \"b\" b"),
+        ],
+        vec![],
+        &[
+            ("model.p.a", "model.p.marked"),
+            ("model.p.b", "model.p.marked"),
+            ("model.p.a", "model.p.written"),
+            ("model.p.b", "model.p.written"),
+        ],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin, LintRule::UnusedCte]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::CartesianJoin),
+        vec!["model.p.written"],
+        "the elided `{{ }}` could emit the ON; a written comma-join flags"
+    );
+    // The marked model parses — it isn't `unparsed`, it's deliberately
+    // unjudged on the absence facts.
+    assert!(
+        !out.unparsed.contains_key("model.p.marked"),
+        "an elided-clause model still parses: {:?}",
+        out.unparsed
+    );
+}
+
+#[test]
+fn fix_planning_refuses_models_whose_render_elided_a_clause() {
+    // Every fixable finding on a clause-elided model refuses — the parse
+    // the edit is computed on can't see the clause the tag emits.
+    let m = manifest(
+        vec![
+            model_sql("a", "select 1 as id"),
+            model_sql("b", "select 1 as id"),
+            model_sql("elided", "select a.id from \"a\" a, \"b\" b {{ m() }};"),
+            model_sql("plain", "select a.id from \"a\" a, \"b\" b;"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let plan = plan_node_edits(
+        &dag,
+        &res,
+        "model.p.elided",
+        &BTreeSet::from([LintRule::TrailingSemicolon, LintRule::UnusedCte]),
+    );
+    assert!(plan.edits.is_empty(), "an elided model plans no edits");
+    assert_eq!(plan.refused.len(), 2);
+    // An identical unmarked model still plans its `;` delete.
+    let plan = plan_node_edits(
+        &dag,
+        &res,
+        "model.p.plain",
+        &BTreeSet::from([LintRule::TrailingSemicolon]),
+    );
+    assert_eq!(plan.edits.len(), 1, "{plan:?}");
+}
+
+#[test]
+fn fix_planning_refuses_an_in_rhs_models_cte_delete() {
+    // `id IN {{ m() }}` — `(NULL)` stands in for a list that could be a
+    // subquery reading `dead`: the CTE delete refuses while an unrelated
+    // edit (the `;`) still plans.
+    let m = manifest(
+        vec![
+            model_sql("up", "select 1 as id"),
+            model_sql(
+                "in_rhs",
+                "with dead as (select 1) select u.id in {{ m() }} as x from \"up\" u;",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let plan = plan_node_edits(
+        &dag,
+        &res,
+        "model.p.in_rhs",
+        &BTreeSet::from([LintRule::UnusedCte, LintRule::TrailingSemicolon]),
+    );
+    assert_eq!(plan.edits.len(), 1, "{plan:?}");
+    assert_eq!(plan.edits[0].rule, LintRule::TrailingSemicolon);
+    assert_eq!(plan.refused.len(), 1);
+    assert_eq!(plan.refused[0].0, LintRule::UnusedCte);
 }
 
 // ---- possible_edges ----------------------------------------------------------

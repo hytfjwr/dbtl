@@ -599,14 +599,16 @@ fn only_branch_commas_tells_an_arm_split_from_a_written_comma() {
 
 #[test]
 fn opaque_jinja_expressions_carry_their_string_literals() {
-    // `{{ join_customers('customers', …) }}` renders `NULL` but its args
-    // still name the CTE the macro joins — `unused_cte` reads them.
+    // `{{ join_customers('customers', …) }}` elides to whitespace at the
+    // clause boundary after `orders`, but its args still name the CTE
+    // the macro joins — `unused_cte` reads them either way.
     let rendered = render_jinja_mapped(
         "select * from orders {{ join_customers('customers', \"orders.id\") }}",
         JinjaMark::Plain,
         SqlDialect::Generic,
     );
-    assert_eq!(rendered.text, "select * from orders  NULL ");
+    assert_eq!(rendered.text, "select * from orders  ");
+    assert!(rendered.elided_clauses);
     assert_eq!(
         rendered.jinja_literals,
         vec!["customers".to_string(), "orders.id".to_string()]
@@ -1746,14 +1748,15 @@ fn inner_subquery_keywords_do_not_leak_into_the_outer_context() {
     );
     // `where exists (select 1) {{ m() }}` — the inner `select` is the
     // subquery's: it must not flip the outer context into a select list
-    // and drop `, __dbtl_…` into a WHERE expression — a value render
-    // (` NULL `) is what the position means.
+    // and drop `, __dbtl_…` into a WHERE expression. The `)` completes
+    // the expression — a clause boundary — so the tag elides to
+    // whitespace (a JOIN/AND/LIMIT clause is all that can stand there).
     assert_eq!(
         render_jinja(
             "select a from t where exists (select 1) {{ m() }}",
             SqlDialect::Generic
         ),
-        "select a from t where exists (select 1)  NULL "
+        "select a from t where exists (select 1)  "
     );
     // The select-item case parses to a real item.
     let dag = Dag::build(&manifest(
@@ -1880,7 +1883,7 @@ fn dialect_decides_line_comments_nested_blocks_and_string_prefixes() {
     assert_eq!(render_jinja(raw, SqlDialect::Snowflake), raw);
     assert_eq!(
         render_jinja(raw, SqlDialect::Generic),
-        "select a // __dbtl_jinja_0__\nfrom t"
+        "select a //  NULL \nfrom t"
     );
     // `--` needs whitespace only where the dialect asks (MySQL): `--x`
     // is an expression, so the `{{` on the line stays live; `-- x` is a
@@ -3242,4 +3245,466 @@ fn quoted_close_markers_dont_truncate_tags() {
         crate::source::arms_exclusive(branches.arm_path(t1), branches.arm_path(t2)),
         "arms index after a quoted close marker"
     );
+}
+
+// -- `{{ }}` at `IN` right-hand sides and clause boundaries ------------------
+//
+// A `{{ }}` macro after a completed expression used to render ` NULL ` or
+// `, __dbtl_jinja_N__` — shapes only Generic's parser forgave — and the
+// same tag on an `IN` right-hand side rendered `NULL` (`IN NULL` parses
+// nowhere but Generic). Now the boundary shape drops the tag to
+// whitespace and marks the render (`elided_clauses`), and an `IN`/`ANY`/
+// `SOME`/`ALL` right-hand side renders the `(NULL)` list and marks
+// `in_rhs`.
+
+/// The nine reproduced model shapes — every dialect must parse them.
+#[test]
+fn jinja_tags_at_clause_boundaries_and_in_rhss_parse_on_every_dialect() {
+    let shapes = [
+        // `{{ join_on_id }}` after a complete JOIN — only a clause can
+        // stand there.
+        "with a as (select 1 as id), b as (select 1 as id, 2 as v), \
+         c as (select 1 as id)\n\
+         select a.id from a left join b on a.id = b.id\n\
+         {{ join_on_id('c', 'a.id') }}",
+        // Between the FROM item and WHERE.
+        "select a.id from {{ ref('base') }} as a\n\
+         {{ join_on_id('c', 'a.id') }}\n\
+         where a.id = 1",
+        // After a complete WHERE expression.
+        "select id from {{ ref('base') }} as b where b.id = 1 {{ extra_filter() }}",
+        // `IN` right-hand sides — a select item, a CASE arm, `var()`,
+        // WHERE `IN`/`NOT IN`, and `= ANY`.
+        "select id in {{ code_list() }} as x from {{ ref('base') }}",
+        "select case when id in {{ id_subquery() }} then 1 else 0 end as f \
+         from {{ ref('base') }}",
+        "select id in {{ var('codes', \"('1','2')\") }} as x from {{ ref('base') }}",
+        "select id from {{ ref('base') }} where id in {{ code_list() }}",
+        "select id from {{ ref('base') }} where id not in {{ code_list() }}",
+        "select id from {{ ref('base') }} where id = any {{ code_list() }}",
+    ];
+    for d in [
+        SqlDialect::Generic,
+        SqlDialect::Redshift,
+        SqlDialect::Postgres,
+        SqlDialect::Snowflake,
+        SqlDialect::BigQuery,
+        SqlDialect::DuckDb,
+    ] {
+        for sql in shapes {
+            assert!(
+                jinja_parse(sql, JinjaMark::Plain, d).is_ok(),
+                "{sql:?} parses under {d:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_in_rhs_renders_a_parenthesized_list_and_marks_it() {
+    // `IN`/`NOT IN` and a comparison's `ANY`/`SOME`/`ALL` take `(NULL)` —
+    // the list shape stands for the tuple OR the subquery the tag
+    // returns, under every dialect.
+    for (sql, want) in [
+        (
+            "select a from t where id in {{ m() }}",
+            "select a from t where id in (NULL)",
+        ),
+        (
+            "select a from t where id not in {{ m() }}",
+            "select a from t where id not in (NULL)",
+        ),
+        (
+            "select id in {{ m() }} as x from t",
+            "select id in (NULL) as x from t",
+        ),
+        (
+            "select case when id in {{ m() }} then 1 else 0 end as f from t",
+            "select case when id in (NULL) then 1 else 0 end as f from t",
+        ),
+        (
+            "select a from t where x = any {{ m() }}",
+            "select a from t where x = any (NULL)",
+        ),
+        (
+            "select a from t where x <> some {{ m() }}",
+            "select a from t where x <> some (NULL)",
+        ),
+        (
+            "select a from t where x != all {{ m() }}",
+            "select a from t where x != all (NULL)",
+        ),
+    ] {
+        let r = render_jinja_mapped(sql, JinjaMark::Plain, SqlDialect::Generic);
+        assert_eq!(r.text, want, "{sql:?}");
+        assert!(r.in_rhs && !r.elided_clauses, "{sql:?}");
+    }
+    // Written parens keep the value shape — `IN ({{ m() }})` renders
+    // `NULL` inside the user's `()` and carries no `in_rhs` mark.
+    let r = render_jinja_mapped(
+        "select a from t where id in ({{ m() }})",
+        JinjaMark::Plain,
+        SqlDialect::Generic,
+    );
+    assert_eq!(r.text, "select a from t where id in ( NULL )");
+    assert!(!r.in_rhs);
+    // `in` followed by a WORD — `IN UNNEST(…)` — isn't the tag's RHS
+    // shape: the `{{ }}` inside unnest's parens is a plain value.
+    let r = render_jinja_mapped(
+        "select a from t where id in unnest({{ m() }})",
+        JinjaMark::Plain,
+        SqlDialect::BigQuery,
+    );
+    assert_eq!(r.text, "select a from t where id in unnest( NULL )");
+    assert!(!r.in_rhs);
+    // `LIKE ANY`/`SIMILAR TO`-family words aren't comparisons — the `any`
+    // follows a word, so the value shape stands.
+    let r = render_jinja_mapped(
+        "select a from t where x like any {{ p() }}",
+        JinjaMark::Plain,
+        SqlDialect::Generic,
+    );
+    assert_eq!(r.text, "select a from t where x like any  NULL ");
+    assert!(!r.in_rhs);
+    // The marked render quotes its generated name inside the list.
+    let r = render_jinja_mapped(
+        "select a from t where id in {{ m() }}",
+        JinjaMark::Marked,
+        SqlDialect::Generic,
+    );
+    assert_eq!(r.text, "select a from t where id in (\"__dbtl_jinja_0__\")");
+}
+
+#[test]
+fn a_tag_after_a_complete_expression_elides_to_whitespace() {
+    // `)`/`]`/a closed literal or quoted name, a number, a
+    // non-keyword identifier, or a `.`-qualified name part — the tag
+    // drops to whitespace and the render marks `elided_clauses`.
+    for (sql, want) in [
+        // An identifier — `orders` completes the FROM item.
+        ("select * from orders {{ m() }}", "select * from orders  "),
+        // A `)` — `IN (1, 2)`'s close pops `last_word` back to `in`;
+        // the signature-byte gate is what keeps `in` from re-firing
+        // the list shape.
+        (
+            "select a from t where id in (1, 2)\n{{ m() }}",
+            "select a from t where id in (1, 2)\n ",
+        ),
+        // A `]` inside a bracketed subscript at non-select depth.
+        (
+            "select a from t where a[1] = 2 {{ m() }}",
+            "select a from t where a[1] = 2  ",
+        ),
+        // A closed literal — the `"` boundary byte the close feeds.
+        (
+            "select a from t where a = 'x' {{ m() }}",
+            "select a from t where a = 'x'  ",
+        ),
+        // A number.
+        (
+            "select a from t where a = 42 {{ m() }}",
+            "select a from t where a = 42  ",
+        ),
+        // A `.`-qualified name part — `order` IS a keyword, the
+        // qualifier completes it anyway.
+        (
+            "select a from t where x = db.order {{ m() }}",
+            "select a from t where x = db.order  ",
+        ),
+        // A relation the `{{ ref }}` render produced — `"u"`'s close
+        // completes the FROM item inside a CTE body (depth is ignored).
+        (
+            "with x as (select id from {{ ref('u') }} {{ m() }}) select * from x",
+            "with x as (select id from \"u\"  ) select * from x",
+        ),
+    ] {
+        let r = render_jinja_mapped(sql, JinjaMark::Plain, SqlDialect::Generic);
+        assert_eq!(r.text, want, "{sql:?}");
+        assert!(r.elided_clauses, "{sql:?}");
+    }
+}
+
+#[test]
+fn keywords_never_complete_an_expression_for_elision() {
+    // `zone`/`interval`/`date`/`to`/`any`/`in`/`is`/`desc` are keywords —
+    // a `{{ }}` behind one is the operand the keyword awaits, not a
+    // clause boundary: the value shape stands, exactly as before.
+    for sql in [
+        "select id from t where ts at time zone {{ var('tz') }} > '2020-01-01'",
+        "select id from t where ts - interval {{ var('n') }} > '2020-01-01'",
+        "select id from t where name like any {{ var('p') }}",
+        "select id from t where name similar to {{ var('p') }}",
+        "select id from t where ts = date {{ var('d') }}",
+    ] {
+        let r = render_jinja_mapped(sql, JinjaMark::Plain, SqlDialect::Generic);
+        assert!(r.text.contains(" NULL "), "{sql:?} -> {}", r.text);
+        assert!(!r.elided_clauses && !r.in_rhs, "{sql:?}");
+        assert!(
+            jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_ok(),
+            "{sql:?} still parses under Generic"
+        );
+    }
+}
+
+#[test]
+fn clause_elision_covers_the_cte_and_join_forms() {
+    for sql in [
+        // `{{ extra_filter() }}` after a complete `IN (…)` list.
+        "select id from t where id in (1, 2)\n{{ extra_filter() }}",
+        // `{{ m() }}` between a CTE item and the outer SELECT.
+        "with a as (select 1 as id)\n{{ m() }}\nselect * from a",
+        // `{{ join_on_id(…) }}` after `ON (…)` inside a CTE body —
+        // paren depth doesn't matter.
+        "with x as (select id from u join v on (u.id = v.id)\n{{ join_on_id('w', 'u.id') }}) select * from x",
+    ] {
+        let (r, _stmts) = jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic)
+            .unwrap_or_else(|e| panic!("{sql:?} parses: {e:?}"));
+        assert!(r.elided_clauses, "{sql:?}");
+    }
+}
+
+#[test]
+fn an_else_split_right_after_an_elision_emits_no_comma() {
+    // `where a = 1 {% if x %} {{ m() }} {% else %} and b = 2 {% endif %}`
+    // — the tag elides, and the arm split right after it must not put
+    // a `,` where the elided clause sits (`where a = 1 , and b = 2`
+    // can't parse).
+    let sql = "select a from t where a = 1 {% if x %} {{ m() }} {% else %} and b = 2 {% endif %}";
+    let r = render_jinja_mapped(sql, JinjaMark::Plain, SqlDialect::Generic);
+    assert!(r.elided_clauses);
+    assert!(!r.text.contains(','), "{}", r.text);
+    assert!(jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_ok());
+}
+
+#[test]
+fn a_statement_opening_tag_never_elides() {
+    // `{{ staging_model('x') }}` alone — nothing precedes the tag, so
+    // there's no boundary; the ` NULL ` render fails and the model
+    // keeps its unparsed answer (it must never become "parsed, empty").
+    let sql = "{{ staging_model('x') }}";
+    let r = render_jinja_mapped(sql, JinjaMark::Plain, SqlDialect::Generic);
+    assert!(!r.elided_clauses);
+    assert!(
+        jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_err(),
+        "a whole-model macro stays unparsed"
+    );
+    let dag = Dag::build(&manifest(vec![raw_model("model.t.m", sql, &[])], &[]));
+    let r = resolver();
+    let _ = r.resolve(&dag, "model.t.m");
+    assert!(r.is_fallback("model.t.m"));
+}
+
+#[test]
+fn an_elided_model_empties_the_absence_facts_and_falls_back_for_cll() {
+    // `FROM a, b {{ m() }}` — the tag could emit the ON clause the
+    // comma-join lacks; the parse marks the model instead of reporting
+    // the missing condition.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id", "v"]),
+            model("model.t.b", "select 1", &["id", "v"]),
+            raw_model(
+                "model.t.m",
+                "select a.id, a.missing from \"a\" a, \"b\" b {{ m() }} order by id",
+                &["id"],
+            ),
+        ],
+        &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert!(facts.elided_clauses && !facts.in_rhs);
+    // Every fact proving an absence is unproven — the elided clause
+    // could carry the ON, the LIMIT, or the column's real source.
+    assert!(facts.cartesian.is_empty() && facts.cartesian_count == 0);
+    assert!(facts.unresolved.is_empty());
+    assert!(facts.unused_ctes.is_empty());
+    assert!(!facts.unlimited_order_by);
+    // CLL takes the name-match fallback — flag included — exactly like
+    // an unparsable model (the elided JOIN's provenance can't be
+    // trusted to a parse that never saw it).
+    let _ = r.resolve(&dag, "model.t.m");
+    assert!(r.is_fallback("model.t.m"));
+    assert_eq!(r.fallback_nodes(), vec!["model.t.m".to_string()]);
+    // `columns()` answers the declared-column list the fallback reads.
+    assert_eq!(r.columns(&dag, "model.t.m"), vec!["id".to_string()]);
+
+    // A REAL `FROM a, b` — no tag — still reports the condition it can
+    // prove missing.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            model("model.t.b", "select 1", &["id"]),
+            raw_model("model.t.m", "select a.id from \"a\" a, \"b\" b", &[]),
+        ],
+        &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert!(!facts.elided_clauses);
+    assert_eq!(facts.cartesian.len(), 1);
+    let _ = r.resolve(&dag, "model.t.m");
+    assert!(!r.is_fallback("model.t.m"));
+}
+
+#[test]
+fn an_in_rhs_model_empties_only_unused_ctes() {
+    // `u.id IN {{ m() }}` — the tag could return `(select id from dead)`
+    // — `unused_ctes` stays unproven. Every other fact still judges and
+    // CLL uses the parse.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with dead as (select 1) select u.id in {{ m() }} as x from \"up\" u order by x",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert!(facts.in_rhs && !facts.elided_clauses);
+    assert!(facts.unused_ctes.is_empty());
+    // The rest of the fact surface still judges — the ORDER BY still
+    // reports its missing LIMIT.
+    assert!(facts.unlimited_order_by);
+    let _ = r.resolve(&dag, "model.t.m");
+    assert!(!r.is_fallback("model.t.m"));
+}
+
+#[test]
+fn manifest_mode_picks_the_adapter_dialect_for_in_rhs_models() {
+    // `dbt parse`'s manifest carries `raw_code` but no `compiled_code` —
+    // `metadata.adapter_type` picks the dialect. `WHERE id IN {{ m() }}`
+    // happened to parse under Generic (`IN NULL` is legal there) but
+    // failed under a real adapter — `(NULL)` parses on both.
+    let mut m = manifest(
+        vec![
+            raw_model("model.t.base", "select 1 as id", &[]),
+            raw_model(
+                "model.t.w1",
+                "select id from {{ ref('base') }} where id in {{ code_list() }}",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.w1")],
+    );
+    for adapter in ["redshift", "duckdb"] {
+        m.metadata.adapter_type = Some(adapter.to_string());
+        let dag = Dag::build(&m);
+        let r = SqlParseResolver::new(None, SqlDialect::from_dag(&dag));
+        let _ = r.resolve(&dag, "model.t.w1");
+        assert!(
+            !r.is_fallback("model.t.w1"),
+            "w1 analyzes under the {adapter} adapter dialect"
+        );
+        assert!(r.fallback_nodes().is_empty());
+    }
+}
+
+// -- dangling-separator strip vs. literals ------------------------------------
+//
+// [`strip_dangling`] blanks a separator missing its right operand — the
+// `,`/`or`/`union all` a `{% if not loop.last %} SEP {% endif %}` leaves on
+// the last `{% for %}` iteration. The token scan used to jump over a
+// string literal or quoted identifier without emitting anything, so the
+// token AFTER the literal decided danglingness: `'2'`'s `)` blanked the
+// `,` inside `IN ('1', '2')`, and a quoted relation's `ORDER` blanked a
+// written join's `,`. A skipped literal now counts as an operand.
+
+/// Every dialect parses `IN ('1', '2')` inside a `{% if not loop.last %}`
+/// `or`-separated loop — the written `,` survives the strip.
+#[test]
+fn a_loop_separator_strip_never_blanks_inside_a_literal_list() {
+    let in_case = "select\n\
+        case when\n\
+        {%- for i in range(1, 4) %}\n\
+            c_{{ i }} in ('1', '2')\n\
+            {%- if not loop.last %} or {%- endif %}\n\
+        {%- endfor %}\n\
+        then true else false end as f\n\
+        from {{ ref('base') }}";
+    // The same shape in `WHERE` — once closing the statement, once
+    // followed by a real operand.
+    let in_where = "select id from {{ ref('base') }} where\n\
+        {%- for i in range(1, 4) %}\n\
+            c_{{ i }} in ('1', '2')\n\
+            {%- if not loop.last %} or {%- endif %}\n\
+        {%- endfor %}";
+    let in_where_and = "select id from {{ ref('base') }} where\n\
+        {%- for i in range(1, 4) %}\n\
+            c_{{ i }} in ('1', '2')\n\
+            {%- if not loop.last %} or {%- endif %}\n\
+        {%- endfor %}\n\
+        and id = 1";
+    // A `,` before a string literal is a select-item separator — `'x'`
+    // is the operand, not a boundary.
+    let comma_before_literal = "select id, 'x' as k from {{ ref('base') }} where \
+        {% for i in range(2) %} c_1 = 1 or {% endfor %}";
+    for d in [
+        SqlDialect::Generic,
+        SqlDialect::Redshift,
+        SqlDialect::Postgres,
+        SqlDialect::Snowflake,
+        SqlDialect::BigQuery,
+        SqlDialect::DuckDb,
+    ] {
+        for sql in [in_case, in_where, in_where_and, comma_before_literal] {
+            assert!(
+                jinja_parse(sql, JinjaMark::Plain, d).is_ok(),
+                "{sql:?} parses under {d:?}"
+            );
+        }
+    }
+    // The same loops over numeric literals and bare comparisons never
+    // tripped the strip and still parse.
+    let numeric = "select case when {% for i in range(3) %} c_1 in (1, 2) \
+        {% if not loop.last %} or {% endif %} {% endfor %} then true \
+        else false end as f from {{ ref('base') }}";
+    let bare = "select case when {% for i in range(3) %} c_1 = '1' \
+        {% if not loop.last %} or {% endif %} {% endfor %} then true \
+        else false end as f from {{ ref('base') }}";
+    for sql in [numeric, bare] {
+        assert!(
+            jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_ok(),
+            "{sql:?} still parses"
+        );
+    }
+    // A genuinely dangling separator — `union all` at the text's end —
+    // still blanks.
+    let sql = "{% for t in ['a','b'] %}\nselect id from {{ t }}\n\
+               {% if not loop.last %} union all {% endif %}\n{% endfor %}\n";
+    let (r, stmts) = jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).unwrap();
+    assert_eq!(stmts.len(), 1);
+    assert!(!r.text.contains("union"), "the dangling separator blanked");
+}
+
+#[test]
+fn a_quoted_relation_after_a_comma_keeps_its_cartesian_fact() {
+    // `FROM {{ ref('a') }}, {{ ref('b') }}` — the `,` separates two
+    // written relations; the quoted name the second `ref` renders to is
+    // its operand, not a loop artifact.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            model("model.t.b", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "select id from {{ ref('a') }}, {{ ref('b') }} order by id \
+                 {% for i in range(2) %}, id{% if loop.last %},{% endif %}{% endfor %}",
+                &[],
+            ),
+        ],
+        &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert_eq!(
+        facts.cartesian.len(),
+        1,
+        "the written comma join still reports"
+    );
+    assert!(!facts.elided_clauses);
 }

@@ -167,6 +167,19 @@ pub struct SqlFacts {
     /// `allow_final_star_over_single_cte` param exempts exactly this
     /// shape; every other wildcard still flags.
     pub star_over_single_explicit_cte: bool,
+    /// The winning render dropped a `{{ }}` at a clause boundary — the
+    /// parse can't see the clause the tag emits, so every fact proving
+    /// an ABSENCE (`cartesian`/`unresolved`/`unused_ctes`/
+    /// `unlimited_order_by`) is already empty. `--fix` planning refuses
+    /// the node outright; CLL resolves it by name-match like an
+    /// unparsable model. The model still counts as analyzed — it's not
+    /// on `unparsed`.
+    pub elided_clauses: bool,
+    /// The winning render stood `(NULL)` in for a `{{ }}` on an
+    /// `IN`/`ANY`/`SOME`/`ALL` right-hand side — the tag may expand to
+    /// a subquery reading a CTE, so `unused_ctes` stays empty and
+    /// `--fix` plans no CTE delete. Other facts still judge.
+    pub in_rhs: bool,
 }
 
 /// Why a model's SQL exists but the analyzer gave up on it — the reason
@@ -355,6 +368,8 @@ impl SqlParseResolver {
                 unused_ctes: an.unused_ctes.clone(),
                 unlimited_order_by: an.unlimited_order_by,
                 star_over_single_explicit_cte: an.star_over_single_explicit_cte,
+                elided_clauses: an.elided_clauses,
+                in_rhs: an.in_rhs,
             })
         });
         self.facts_memo
@@ -511,8 +526,9 @@ impl SqlParseResolver {
             }
         }
         let analyzed = self.analyzed(dag, uid);
+        let elided = analyzed.as_ref().is_some_and(|an| an.elided_clauses);
         if let Some(an) = &analyzed {
-            if an.out.iter().any(|o| !o.synthetic) {
+            if !elided && an.out.iter().any(|o| !o.synthetic) {
                 return Some(Rc::new(
                     an.out
                         .iter()
@@ -522,11 +538,12 @@ impl SqlParseResolver {
                 ));
             }
         }
-        if analyzed.is_none() && resolution_sql(dag, uid).is_some() {
+        if (analyzed.is_none() || elided) && resolution_sql(dag, uid).is_some() {
             // Same flag `compute_resolve` sets: a node whose SQL exists but
-            // didn't parse IS a fallback node — including when only its
-            // `columns()` path took the name-match route (`resolve` never
-            // invoked).
+            // didn't parse — or parsed only after a `{{ }}` at a clause
+            // boundary dropped out — IS a fallback node — including when
+            // only its `columns()` path took the name-match route
+            // (`resolve` never invoked).
             self.fallbacks.borrow_mut().insert(uid.to_string());
         }
         let cols = self.fallback.columns(dag, uid);
@@ -722,23 +739,52 @@ impl SqlParseResolver {
                 }
                 dup_counts[idx] = kept.len().min(dup_counts[idx]);
             }
+            // The render's Jinja marks — a `{{ }}` dropped at a clause
+            // boundary (the parse can't see the JOIN/WHERE/LIMIT it
+            // emits) or stood `(NULL)` in for on an `IN`/`ANY`/`SOME`/
+            // `ALL` right-hand side (the tag may expand to a
+            // CTE-reading subquery). Facts proving an ABSENCE stay
+            // unproven on the marked model — the join condition that
+            // never appears, the CTE nobody reads, the LIMIT missing
+            // under ORDER BY, the column no parent emits — so the
+            // fields come out empty before any rule reads them.
+            let elided = rendered.elided_clauses;
+            let in_rhs = rendered.in_rhs;
             Some(Rc::new(Analyzed {
                 scope,
                 out: res.out,
                 foj: res.foj,
                 unbounded_wildcard: !wildcards.is_empty(),
                 wildcard_count: wildcards.len(),
-                cartesian: scan.cartesian.iter().cloned().collect(),
-                cartesian_count: scan.cartesian_spans.len(),
-                unresolved: ctx.unresolved.into_inner(),
+                cartesian: if elided {
+                    Vec::new()
+                } else {
+                    scan.cartesian.iter().cloned().collect()
+                },
+                cartesian_count: if elided {
+                    0
+                } else {
+                    scan.cartesian_spans.len()
+                },
+                unresolved: if elided {
+                    ColSources::new()
+                } else {
+                    ctx.unresolved.into_inner()
+                },
                 duplicate_outputs: dup_order
                     .into_iter()
                     .zip(dup_counts)
                     .filter(|(_, c)| *c > 1)
                     .collect(),
-                unused_ctes: scan.unread_ctes().map(|(name, _)| name.clone()).collect(),
-                unlimited_order_by: outer_order_by_span(query).is_some(),
+                unused_ctes: if elided || in_rhs {
+                    Vec::new()
+                } else {
+                    scan.unread_ctes().map(|(name, _)| name.clone()).collect()
+                },
+                unlimited_order_by: !elided && outer_order_by_span(query).is_some(),
                 star_over_single_explicit_cte: star_over_single_explicit_cte(query),
+                elided_clauses: elided,
+                in_rhs,
             }))
         })();
         self.analyzing.borrow_mut().remove(node);
@@ -826,6 +872,15 @@ impl SqlParseResolver {
             self.fallbacks.borrow_mut().insert(node.to_string());
             return self.fallback.resolve(dag, node);
         };
+        if an.elided_clauses {
+            // The render dropped a `{{ }}` at a clause boundary — the
+            // parse can't see the JOIN/WHERE/LIMIT the tag emits, so
+            // resolved edges would silently lose that clause's sources.
+            // Same name-match fallback an unparsable model takes —
+            // including the `[name-match]` flag.
+            self.fallbacks.borrow_mut().insert(node.to_string());
+            return self.fallback.resolve(dag, node);
+        }
         let confidence = if base_conf == Confidence::Stale {
             Confidence::Stale
         } else {

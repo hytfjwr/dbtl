@@ -96,6 +96,20 @@ pub(super) struct RenderedSql {
     /// exclusive-arm fact checks ([`crate::source::arms_exclusive`])
     /// read.
     branches: JinjaBranches,
+    /// A `{{ }}` at a clause boundary rendered to whitespace — the
+    /// statement can be missing a JOIN/WHERE/LIMIT the real macro
+    /// emits, so facts proving an absence can't be trusted from this
+    /// parse: `compute_analyzed` empties `cartesian`/`unused_ctes`/
+    /// `unlimited_order_by`/`unresolved`, `--fix` planning refuses the
+    /// node, and CLL falls back to the name-match resolver like an
+    /// unparsable model. The mark is a fact-layer limitation, not a
+    /// parse failure — the model still counts as analyzed.
+    pub(super) elided_clauses: bool,
+    /// A `{{ }}` on an `IN`/`ANY`/`SOME`/`ALL` right-hand side rendered
+    /// as `(NULL)` — the macro may return a subquery reading a CTE the
+    /// parse can't see, so `unused_ctes` stays unproven on this model
+    /// too (and `--fix` plans no CTE delete). Other facts still judge.
+    pub(super) in_rhs: bool,
 }
 
 impl RenderedSql {
@@ -650,6 +664,12 @@ const OPERAND_WORDS: &[&[u8]] = &[
     b"with",
 ];
 
+/// The [`OPERAND_WORDS`] entries that COMPLETE the expression before
+/// them — postfix forms like `ORDER BY x DESC` and `x ISNULL` — so the
+/// operand check [`Scan::select_operand`] keeps them on the new-item
+/// shape: `desc , name` parses where `desc NULL` breaks.
+const POSTFIX_WORDS: &[&[u8]] = &[b"asc", b"desc", b"isnull", b"notnull"];
+
 /// Which `{% if %}`/`{% for %}` arms a render emits — [`jinja_parse`]
 /// judges the union view first and falls to the collapse view when the
 /// union text can't parse.
@@ -677,6 +697,10 @@ struct Scan<'a> {
     mark: JinjaMark,
     /// The arm mode this render runs under.
     arms: RenderArms,
+    /// May a `{{ }}` at a clause boundary render to whitespace? `false`
+    /// is the value-shape render [`jinja_parse`] retries within a stage
+    /// when the boundary shape fails — the pre-boundary behavior.
+    elide: bool,
     /// The source's `{% if %}`/`{% for %}` arm index — arm paths decide
     /// collapse-mode drops and whether a `{% else %}` split can emit
     /// `,`.
@@ -694,6 +718,11 @@ struct Scan<'a> {
     /// The last non-whitespace token byte — comments and literal
     /// interiors don't update it.
     last_sig: Option<u8>,
+    /// The significant byte immediately BEFORE the accumulating word —
+    /// `= ANY`, `!= SOME`, `<> ALL` read the comparison operator the
+    /// quantified right-hand side needs. Meaningful only while a word
+    /// is current (its last byte is `last_sig`).
+    prev_sig: Option<u8>,
     /// Inside a `SELECT` item list — `select`/`distinct` set it, a
     /// [`CLAUSE_WORDS`] keyword clears it.
     select: bool,
@@ -704,6 +733,17 @@ struct Scan<'a> {
     /// (`select a, (select y from t) {{ m() }}` — the inner `from` must
     /// not close the outer item list). `)` restores the frame.
     paren: Vec<(Vec<u8>, bool)>,
+    /// A `{{ }}` at a clause boundary dropped to whitespace this render
+    /// — copied onto [`RenderedSql::elided_clauses`] by `finish`.
+    elided_clauses: bool,
+    /// A `{{ }}` elided and no real token followed yet — the position
+    /// is still "after a complete expression" for the next `{{ }}`, but
+    /// an `{% else %}` arm split here must NOT emit `,` (`last_sig`
+    /// never moved, so [`Scan::comma_end`] stays true without this).
+    just_elided: bool,
+    /// A `{{ }}` rendered `(NULL)` on an `IN`/`ANY`/`SOME`/`ALL`
+    /// right-hand side — copied onto [`RenderedSql::in_rhs`].
+    in_rhs: bool,
     /// Per-render counter stamped on generated names so two `{{ }}`
     /// placeholders can never collide into one name.
     seq: usize,
@@ -716,12 +756,14 @@ impl<'a> Scan<'a> {
         lex: Lex,
         branches: JinjaBranches,
         arms: RenderArms,
+        elide: bool,
     ) -> Scan<'a> {
         Scan {
             sql,
             lex,
             mark,
             arms,
+            elide,
             branches,
             out: Vec::with_capacity(sql.len() + 16),
             segs: Vec::new(),
@@ -730,8 +772,12 @@ impl<'a> Scan<'a> {
             word: Vec::new(),
             last_word: Vec::new(),
             last_sig: None,
+            prev_sig: None,
             select: false,
             paren: Vec::new(),
+            elided_clauses: false,
+            just_elided: false,
+            in_rhs: false,
             seq: 0,
         }
     }
@@ -745,7 +791,14 @@ impl<'a> Scan<'a> {
     fn note(&mut self, bytes: &[u8]) {
         for &c in bytes {
             if !c.is_ascii_whitespace() {
+                if self.word.is_empty() && word_byte(c) {
+                    // First byte of a fresh word — the byte before it is
+                    // what `= ANY`/`!= SOME`/`<> ALL` read to tell a
+                    // quantified comparison from a clause word.
+                    self.prev_sig = self.last_sig;
+                }
                 self.last_sig = Some(c);
+                self.just_elided = false;
             }
             if word_byte(c) {
                 self.word.push(c.to_ascii_lowercase());
@@ -810,6 +863,8 @@ impl<'a> Scan<'a> {
             branch_commas: self.branch_commas,
             jinja_literals: self.jinja_literals,
             branches: self.branches,
+            elided_clauses: self.elided_clauses,
+            in_rhs: self.in_rhs,
         }
     }
 
@@ -1226,11 +1281,30 @@ impl<'a> Scan<'a> {
     ///   but also `then`/`and`/`by`/`on`…): a name or value identifier —
     ///   `FROM NULL` fails outright on some dialects, and two `{{ }}`
     ///   aliases must not fold to the same `null`
-    ///   (`duplicate_output_columns`'s false positive).
+    ///   (`duplicate_output_columns`'s false positive). The word only
+    ///   counts when it's really the last token — after `)`, `]`, or a
+    ///   closed literal the [`Scan::paren`]-restored word (`as`/`on`/`in`
+    ///   pushed by `(`) must not pose as the position.
+    /// - on an `IN`/`ANY`/`SOME`/`ALL` right-hand side: `(NULL)` — the
+    ///   parenthesized list stands for whatever the tag returns (a tuple
+    ///   or a subquery), so `id IN {{ codes() }}` and `= ANY {{ p() }}`
+    ///   parse under every dialect. The render flags
+    ///   [`RenderedSql::in_rhs`] — the macro could read a CTE through a
+    ///   subquery the parse can't see.
     /// - inside a `SELECT` item list: an item — when the previous token
     ///   could end an expression (`o.status` then a bare `{{ m() }}` line)
     ///   a leading `,` keeps it from posing as that item's alias; after a
-    ///   `,`/`(`/keyword it just becomes the item.
+    ///   `,`/`(`/keyword it just becomes the item; after an
+    ///   operand-expecting word or a comparison/arithmetic operator
+    ///   (`a is {{ }}`, `x = {{ }}`) it stays part of the item — the
+    ///   value shape, since `,` there can't parse.
+    /// - at a [`Scan::clause_boundary`]: whitespace — a complete
+    ///   expression directly before the tag (and no select item open)
+    ///   means the `{{ }}` can only stand where a whole clause goes
+    ///   (`JOIN …`, `AND …`, `LIMIT …`), and any value breaks the
+    ///   statement. The render flags [`RenderedSql::elided_clauses`] so
+    ///   the analysis layer treats absence-facts as unproven — the
+    ///   clause the tag emits is invisible to this parse.
     /// - anywhere else: a value — `NULL` under `Plain`, a marked quoted
     ///   identifier under `Marked`.
     fn other_text(&mut self, ctx: TagCtx, after: Option<u8>) -> String {
@@ -1242,24 +1316,132 @@ impl<'a> Scan<'a> {
                 JinjaMark::Marked => name,
             },
             TagCtx::Top => {
+                let word_adj = self.word_adjacent();
                 if self.adjacent(after)
                     || self.last_sig == Some(b'.')
-                    || NAME_WORDS.contains(&self.last_word.as_slice())
+                    || (word_adj && NAME_WORDS.contains(&self.last_word.as_slice()))
                 {
                     return name;
                 }
+                if word_adj && self.list_rhs() {
+                    self.in_rhs = true;
+                    return match self.mark {
+                        JinjaMark::Plain => "(NULL)".to_string(),
+                        JinjaMark::Marked => format!("(\"{name}\")"),
+                    };
+                }
                 if self.select {
+                    if self.select_operand() {
+                        return self.value_text(name);
+                    }
                     return if self.expr_ender() {
                         format!(", {name}")
                     } else {
                         name
                     };
                 }
-                match self.mark {
-                    JinjaMark::Plain => " NULL ".to_string(),
-                    JinjaMark::Marked => format!("\"{name}\""),
+                if self.elide && self.clause_boundary() {
+                    self.elided_clauses = true;
+                    self.just_elided = true;
+                    return " ".to_string();
                 }
+                self.value_text(name)
             }
+        }
+    }
+
+    /// The value-shaped render — ` NULL ` under `Plain` (a bare value),
+    /// a marked quoted identifier under `Marked` (a generated name the
+    /// hard-coded-relation scan must not read as written).
+    fn value_text(&self, name: String) -> String {
+        match self.mark {
+            JinjaMark::Plain => " NULL ".to_string(),
+            JinjaMark::Marked => format!("\"{name}\""),
+        }
+    }
+
+    /// Is `last_word` really the token the emitted text ends with — its
+    /// last byte IS `last_sig`? `(`/`)` stacking restores the word that
+    /// preceded the paren (`as`/`on`/`in`), so a bare `last_word` check
+    /// misreads `… = ANY (…) {{ }}` or `x IS (…) {{ }}` as still inside
+    /// the operand position. Word checks only run when the signature
+    /// byte is the word's own last byte.
+    fn word_adjacent(&self) -> bool {
+        self.last_sig.is_some_and(|c| {
+            (word_byte(c) || c >= 0x80)
+                && self
+                    .last_word
+                    .last()
+                    .is_some_and(|w| w.eq_ignore_ascii_case(&c))
+        })
+    }
+
+    /// Is the `{{ }}` an `IN`/`ANY`/`SOME`/`ALL` right-hand side — the
+    /// `in`/`not in` list, or a comparison's quantifier (`= ANY`,
+    /// `!= SOME`, `<> ALL`)? [`Scan::prev_sig`] records the byte before
+    /// the word, so `name LIKE ANY` (an operand word, not a comparison)
+    /// and `IN UNNEST(…)` (a word follows `in`, not a tag) stay out.
+    fn list_rhs(&self) -> bool {
+        match self.last_word.as_slice() {
+            b"in" => true,
+            b"any" | b"some" | b"all" => {
+                matches!(self.prev_sig, Some(b'=' | b'<' | b'>' | b'!'))
+            }
+            _ => false,
+        }
+    }
+
+    /// Inside a `SELECT` item list, does the `{{ }}` follow a token that
+    /// still needs its operand — a comparison or arithmetic operator, or
+    /// an [`OPERAND_WORDS`] word? Then it's a value, not a new item:
+    /// `a is ,b` and `x = ,y` can't parse where `a is NULL` can. Two
+    /// word classes stay out:
+    ///
+    /// - the postfix closers ([`POSTFIX_WORDS`]) — `ORDER BY x DESC` is
+    ///   complete, and `desc , name` is today's parseable split;
+    /// - `select`/`distinct` — the openers never produce `, name`
+    ///   ([`Scan::expr_ender`] already says so), and the generated name
+    ///   keeps `select {{ cols() }}` reading as an item instead of an
+    ///   unnamed `NULL`.
+    ///
+    /// `*`/`?` are deliberately absent from the operator set — the
+    /// ender shapes the `select *` union and `x ?` postfix forms take
+    /// have to keep working.
+    fn select_operand(&self) -> bool {
+        match self.last_sig {
+            Some(
+                b'=' | b'<' | b'>' | b'!' | b'+' | b'-' | b'/' | b'%' | b'|' | b'&' | b'^' | b'~',
+            ) => true,
+            Some(c) if word_byte(c) || c >= 0x80 => {
+                let w = self.last_word.as_slice();
+                !matches!(w, b"select" | b"distinct")
+                    && OPERAND_WORDS.contains(&w)
+                    && !POSTFIX_WORDS.contains(&w)
+            }
+            _ => false,
+        }
+    }
+
+    /// Does a complete expression sit right before the `{{ }}` — making
+    /// the position a clause boundary, not a value? Complete means:
+    /// `)`, `]`, a closed literal or quoted identifier (the `"` boundary
+    /// byte a literal's close feeds — see [`Scan::literal`]), a number,
+    /// an identifier that isn't a SQL keyword, or a `.`-qualified name
+    /// part that happens to spell a keyword (`db.orders`… — `order` IS
+    /// a keyword, the qualifier still completes it). A keyword never
+    /// completes — after `zone`/`interval`/`date`/`to`/`any`/`desc` the
+    /// `{{ }}` is the operand the keyword awaits, and the value shape
+    /// must stay (`ts AT TIME ZONE {{ var('tz') }}`).
+    fn clause_boundary(&self) -> bool {
+        match self.last_sig {
+            Some(b')' | b']' | b'"') => true,
+            Some(c) if word_byte(c) || c >= 0x80 => {
+                let w = self.last_word.as_slice();
+                w.first().is_some_and(u8::is_ascii_digit)
+                    || !is_sql_keyword(w)
+                    || self.prev_sig == Some(b'.')
+            }
+            _ => false,
         }
     }
 
@@ -1305,6 +1487,13 @@ impl<'a> Scan<'a> {
     /// split there emits whitespace so the arms' text concatenates or
     /// the collapse retry keeps one arm.
     fn comma_end(&self) -> bool {
+        if self.just_elided {
+            // A `{{ }}` just elided — `last_sig` still sits on the
+            // expression before it, but a `,` here would separate the
+            // arm's text from the tag's own clause (`FROM a {{ m() }}
+            // {% else %}b` must not produce `FROM a , b`).
+            return false;
+        }
         match self.last_sig {
             Some(b')' | b']' | b'*' | b'?' | b'"') => true,
             Some(c) if word_byte(c) || c >= 0x80 => {
@@ -1313,6 +1502,19 @@ impl<'a> Scan<'a> {
             _ => false,
         }
     }
+}
+
+/// Is `word` a SQL keyword — a token the bundled parser never reads as
+/// a bare identifier? [`Scan::clause_boundary`] refuses to close an
+/// expression on one (`zone`/`interval`/`any`/`desc`… are operands the
+/// keyword still awaits). The list is sqlparser's own; non-ASCII bytes
+/// can't spell a keyword.
+fn is_sql_keyword(word: &[u8]) -> bool {
+    std::str::from_utf8(word).is_ok_and(|w| {
+        sqlparser::keywords::ALL_KEYWORDS
+            .binary_search(&w.to_ascii_uppercase().as_str())
+            .is_ok()
+    })
 }
 
 /// The index of the line comment's end (the `\n`, or EOF) for the `--`
@@ -1466,9 +1668,10 @@ pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark, dialect: SqlDialect) -
 
 /// [`render_jinja_as`], plus the rendered→raw byte map the lint rules
 /// convert parsed spans through to point at the written file — the union
-/// arm render ([`RenderArms::Union`]).
+/// arm render ([`RenderArms::Union`]) with clause-boundary elision on.
+#[cfg(test)]
 pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark, dialect: SqlDialect) -> RenderedSql {
-    render_arms(sql, mark, dialect, RenderArms::Union)
+    render_arms(sql, mark, dialect, RenderArms::Union, true)
 }
 
 /// [`render_jinja_mapped`] with an explicit arm mode — see
@@ -1476,14 +1679,18 @@ pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark, dialect: SqlDialec
 /// comment-masked text — `mask_jinja_comments`, the same masking the
 /// call-site scanner indexes — so a `{# {% else %} #}` can't fake an arm
 /// and every arm path lines up with what `CallSiteResolver` computes.
+/// `elide` lets [`Scan::other_text`] drop a `{{ }}` at a clause boundary
+/// to whitespace — [`jinja_parse`]'s within-stage fallback re-renders
+/// with `elide: false` (the value shape) when the boundary render fails.
 pub(super) fn render_arms(
     sql: &str,
     mark: JinjaMark,
     dialect: SqlDialect,
     arms: RenderArms,
+    elide: bool,
 ) -> RenderedSql {
     let branches = jinja_branches(&mask_jinja_comments(sql));
-    let mut scan = Scan::new(sql, mark, Lex::new(dialect), branches, arms);
+    let mut scan = Scan::new(sql, mark, Lex::new(dialect), branches, arms, elide);
     scan.run();
     scan.finish()
 }
@@ -1501,34 +1708,51 @@ pub(super) fn render_arms(
 ///    unparsable or phantom-fact union, and
 /// 4. the collapse render stripped the same way.
 ///
-/// `Err` when all four fail — the caller's unparsed-model path, and the
-/// failure the UNION render produced (the faithful text a compile would
-/// run; the fallbacks exist for Jinja artifacts, so its error is the
-/// honest reason) rather than whichever retry failed last.
+/// Each stage first tries the clause-boundary render — a `{{ }}` right
+/// after a complete expression drops to whitespace and flags
+/// [`RenderedSql::elided_clauses`], since only a whole clause can stand
+/// there. When that render can't parse AND it actually elided a tag,
+/// the same stage immediately retries the value shape (every `{{ }}`
+/// renders a value — the pre-boundary behavior), so nothing that
+/// parsed before can stop parsing. The elided render that wins carries
+/// its mark into analysis.
+///
+/// `Err` when every stage fails — the caller's unparsed-model path, and
+/// the failure the UNION render produced (the faithful text a compile
+/// would run; the fallbacks exist for Jinja artifacts, so its error is
+/// the honest reason) rather than whichever retry failed last.
 pub(super) fn jinja_parse(
     sql: &str,
     mark: JinjaMark,
     dialect: SqlDialect,
 ) -> Result<(RenderedSql, Vec<Statement>), ParseFailure> {
     let lex = Lex::new(dialect);
-    let mut rendered = render_jinja_mapped(sql, mark, dialect);
-    let first_failure = match parse_statements(dialect, &rendered.text) {
-        Ok(stmts) => return Ok((rendered, stmts)),
-        Err(e) => e,
-    };
-    strip_dangling(&mut rendered, &lex);
-    if let Ok(stmts) = parse_statements(dialect, &rendered.text) {
-        return Ok((rendered, stmts));
+    let mut first_failure: Option<ParseFailure> = None;
+    for arms in [RenderArms::Union, RenderArms::Collapse] {
+        for strip in [false, true] {
+            for elide in [true, false] {
+                let mut rendered = render_arms(sql, mark, dialect, arms, elide);
+                if strip {
+                    strip_dangling(&mut rendered, &lex);
+                }
+                match parse_statements(dialect, &rendered.text) {
+                    Ok(stmts) => return Ok((rendered, stmts)),
+                    Err(e) => {
+                        if first_failure.is_none() {
+                            first_failure = Some(e);
+                        }
+                        if !rendered.elided_clauses {
+                            // The boundary render dropped nothing — the
+                            // value-shape retry would re-parse the same
+                            // text, so the stage is done.
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
-    let mut rendered = render_arms(sql, mark, dialect, RenderArms::Collapse);
-    if let Ok(stmts) = parse_statements(dialect, &rendered.text) {
-        return Ok((rendered, stmts));
-    }
-    strip_dangling(&mut rendered, &lex);
-    match parse_statements(dialect, &rendered.text) {
-        Ok(stmts) => Ok((rendered, stmts)),
-        Err(_) => Err(first_failure),
-    }
+    Err(first_failure.expect("the first stage always parses or fails"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1808,16 +2032,22 @@ fn strip_dangling(rendered: &mut RenderedSql, lex: &Lex) {
     rendered.text = String::from_utf8(text).expect("blanked bytes stay UTF-8");
 }
 
-/// The token stream [`strip_dangling`] reads — word runs and the
-/// single-byte punctuation a separator check cares about; comments and
-/// literals (every dialect form) are skipped like the parser reads
-/// them.
+/// The token stream [`strip_dangling`] reads — word runs, one
+/// [`Tok::Operand`] per skipped literal, and the single-byte
+/// punctuation a separator check cares about; comments are skipped
+/// like the parser reads them. A literal the scan jumps over still
+/// sits where an operand sits — without the token, the `,` inside
+/// `('1', '2')` reads as followed by `)` and blanks.
 #[derive(Clone, PartialEq)]
 enum Tok {
     Word,
     Comma,
     RParen,
     Semi,
+    /// A whole skipped literal — a string, a quoted identifier, a
+    /// dollar- or `q'[..]'`-quoted body. The range covers the literal's
+    /// bytes; nothing reads it since an operand is never a separator.
+    Operand,
     Other,
 }
 
@@ -1831,12 +2061,23 @@ fn sep_tokens(b: &[u8], lex: &Lex) -> Vec<(Range<usize>, Tok)> {
             b'/' if lex.slash_comment_at(b, i) => i = line_comment_end(b, i),
             b'/' if b.get(i + 1) == Some(&b'*') => i = block_comment_end(b, i, lex.nested_comments),
             b'#' if lex.hash_comment_at(b, i) => i = line_comment_end(b, i),
-            b'\'' if lex.q_quote_at(b, i) => i = q_quote_end(b, i),
-            q @ (b'\'' | b'"' | b'`') => i = quoted_end(b, i, q, lex.escape_for(b, i)),
+            b'\'' if lex.q_quote_at(b, i) => {
+                let end = q_quote_end(b, i);
+                toks.push((i..end, Tok::Operand));
+                i = end;
+            }
+            q @ (b'\'' | b'"' | b'`') => {
+                let end = quoted_end(b, i, q, lex.escape_for(b, i));
+                toks.push((i..end, Tok::Operand));
+                i = end;
+            }
             b'$' if lex.dollar_quote => match dollar_quote_open(b, i) {
                 Some(dlen) => {
                     let from = i + dlen;
-                    i = dollar_quote_close(b, from, &b[i..i + dlen]).map_or(b.len(), |c| c + dlen);
+                    let end =
+                        dollar_quote_close(b, from, &b[i..i + dlen]).map_or(b.len(), |c| c + dlen);
+                    toks.push((i..end, Tok::Operand));
+                    i = end;
                 }
                 None => {
                     toks.push((i..i + 1, Tok::Other));
@@ -1874,7 +2115,8 @@ fn sep_tokens(b: &[u8], lex: &Lex) -> Vec<(Range<usize>, Tok)> {
 /// Can the token at `i` (or the text's end) take a separator's operand?
 /// `)`, `;`, another separator, a clause keyword — `select` excepted:
 /// `union all select` is a real arm — and EOF can't, so the separator
-/// before them is dangling.
+/// before them is dangling. A literal or other punctuation can, so the
+/// separator before one stands.
 fn dangling_at(toks: &[(Range<usize>, Tok)], i: usize, text: &str) -> bool {
     match toks.get(i) {
         None => true,
@@ -1883,7 +2125,7 @@ fn dangling_at(toks: &[(Range<usize>, Tok)], i: usize, text: &str) -> bool {
             let w = lower(text, r);
             w != "select" && ARM_BOUNDARY_WORDS.contains(&w.as_bytes())
         }
-        Some((_, Tok::Other)) => false,
+        Some((_, Tok::Operand | Tok::Other)) => false,
     }
 }
 
