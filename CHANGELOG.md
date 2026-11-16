@@ -14,6 +14,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the caller as possibly having an unshown parent — so `root_models`
   stays quiet and `unused_models` no longer spares the root model it
   falsely consumed.
+- Models whose only parse failure was a `{{ }}` clause macro behind a
+  keyword-shaped word — `where id is not null {{ group_by() }}`,
+  `where v = status {{ m() }}` — no longer report as unparsable SQL:
+  when the strict renders all fail, they retry under a looser boundary
+  that counts literals and column-named non-reserved words as
+  completing the expression, and the rescued parse stays marked so
+  absence-proving rules report nothing.
 
 ## [0.7.2] - 2026-11-16
 
