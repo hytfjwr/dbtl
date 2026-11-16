@@ -79,6 +79,19 @@ export interface LineageRect {
   h: number;
 }
 
+/** One diagram edge — `parent` flows into `child`. `cell_edges` indexes into `edges`. */
+export interface LineageEdge {
+  parent: string;
+  child: string;
+}
+
+/** The edges routed through one cell, as indices into `edges`. */
+export interface LineageCellEdges {
+  x: number;
+  y: number;
+  edges: number[];
+}
+
 export interface LineageOutput {
   width: number;
   height: number;
@@ -92,6 +105,20 @@ export interface LineageOutput {
   classes: string[];
   /** Per-cell emphasis flag ('1' = the selected node's label). */
   emphasis: string[];
+  /**
+   * Per-cell kind, parallel to `rows` — ' ' blank, 'b' box border, 'p' box
+   * padding, 'n' node label, 'x' test-count label, 'e' connector,
+   * 'a' arrowhead.
+   */
+  kinds: string[];
+  /** The diagram's edges, sorted (parent, child) — `cell_edges` indexes into it. */
+  edges: LineageEdge[];
+  /**
+   * The edges routed through each connector cell, sorted by (y, x). A cell
+   * shared by several edges — a child-side corner or arrowhead — lists every
+   * one of them.
+   */
+  cell_edges: LineageCellEdges[];
   rects: LineageRect[];
   selected: string | null;
 }

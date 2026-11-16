@@ -495,6 +495,118 @@ fn lineage_roots_unions_the_neighborhoods() {
     assert_eq!(out.rows.join("\n"), want);
 }
 
+/// The cell-level fields the browser renderer reads: `kinds` tells wire
+/// cells from box cells, `cell_edges` lists every edge through a connector
+/// cell — a shared child-side corner or arrowhead lists all entering edges.
+#[test]
+fn lineage_reports_cell_kinds_and_edge_ownership() {
+    let engine = jaffle_engine();
+    let root = "model.jaffle_finance.fct_subscription_process";
+    let out = engine
+        .lineage(&LineageInput {
+            root: Some(root.to_string()),
+            ..LineageInput::default()
+        })
+        .unwrap();
+    let sg = engine.dag().subgraph(root);
+    let lay = dbtl::layout_mode(&sg, dbtl::GlyphMode::Unicode);
+
+    // kinds is parallel to rows; box kinds sit inside exactly one rect,
+    // connectors inside none, and a blank kind always means a blank glyph.
+    assert_eq!(out.kinds.len(), out.height);
+    for (y, row) in out.kinds.iter().enumerate() {
+        assert_eq!(row.chars().count(), out.width);
+        for (x, k) in row.bytes().enumerate() {
+            let inside = out
+                .rects
+                .iter()
+                .filter(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+                .count();
+            match k {
+                b'b' | b'p' | b'n' | b'x' => assert_eq!(inside, 1, "({x},{y}) kind {k}"),
+                b'e' | b'a' => assert_eq!(inside, 0, "({x},{y}) kind {k}"),
+                b' ' => assert_eq!(out.rows[y].chars().nth(x), Some(' ')),
+                _ => panic!("({x},{y}) unknown kind {k}"),
+            }
+        }
+    }
+
+    // `edges` keeps the sorted (parent, child) order `cell_edges` indexes.
+    let keys: Vec<(&str, &str)> = out
+        .edges
+        .iter()
+        .map(|e| (e.parent.as_str(), e.child.as_str()))
+        .collect();
+    assert!(keys.windows(2).all(|w| w[0] <= w[1]));
+    assert_eq!(out.edges.len(), sg.edges.len());
+
+    // The child's arrow cell carries every edge entering it — the claim the
+    // demo's path highlighting needs that `edge_cells`' first-wins map lacks.
+    let mut saw_shared = false;
+    for node in &sg.nodes {
+        let ins: Vec<usize> = sg
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.child == node.unique_id)
+            .map(|(i, _)| i)
+            .collect();
+        if ins.len() < 2 {
+            continue;
+        }
+        let r = &lay.rects[&node.unique_id];
+        let cell = (r.x - 1, r.y + 1);
+        if out.kinds[cell.1].as_bytes()[cell.0] != b'a' {
+            continue;
+        }
+        let ce = out
+            .cell_edges
+            .iter()
+            .find(|ce| (ce.x, ce.y) == cell)
+            .expect("arrow cell is listed");
+        assert_eq!(ce.edges, ins, "arrow cell of {}", node.unique_id);
+        saw_shared = true;
+    }
+    assert!(
+        saw_shared,
+        "the fixture has a multi-parent child to share an arrow"
+    );
+
+    // Every visible cell core recorded for an edge lists that edge; the list
+    // itself is (y, x)-sorted with ascending, in-range indices.
+    let mut prev = (0, 0);
+    for (i, ce) in out.cell_edges.iter().enumerate() {
+        if i > 0 {
+            assert!((ce.y, ce.x) > prev, "cell_edges sorted by (y, x)");
+        }
+        prev = (ce.y, ce.x);
+        assert!(matches!(out.kinds[ce.y].as_bytes()[ce.x], b'e' | b'a'));
+        assert!(ce.edges.windows(2).all(|w| w[0] < w[1]));
+        assert!(ce.edges.iter().all(|&e| e < out.edges.len()));
+    }
+    for (i, e) in sg.edges.iter().enumerate() {
+        let Some(run) = lay.edge_cells.get(&(e.parent.clone(), e.child.clone())) else {
+            continue;
+        };
+        for &(x, y) in run {
+            // A 'b'..'x' kind means a box stamped over the run; an 'a' kind
+            // means an arrowhead won the cell — its in-edges, not the run's
+            // earlier claim, own it now. Only an 'e' cell must still list i.
+            if out.kinds[y].as_bytes()[x] == b'e' {
+                let ce = out
+                    .cell_edges
+                    .iter()
+                    .find(|ce| ce.x == x && ce.y == y)
+                    .unwrap();
+                assert!(
+                    ce.edges.contains(&i),
+                    "({x},{y}) is a visible cell of edge {i} but does not list it"
+                );
+            }
+        }
+    }
+}
+
 // ---- `ls --format json` row parity (including `path`) --------------------
 
 /// The select rows match `ls --format json` field for field — the engine's

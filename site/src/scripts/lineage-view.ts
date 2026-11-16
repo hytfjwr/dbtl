@@ -1,7 +1,7 @@
-// The browser side of the lineage renderer: mounts a stage in a host element, redraws it,
-// and wires hover, click and double-click. The layout and painting live in lineage.ts.
-import type { Graph } from "./graph.ts";
-import { layout, paint, type Layout, type LineageNode, type Style } from "./lineage.ts";
+// The browser side of the lineage pane: mounts a stage in a host element, redraws it,
+// and wires hover, click and double-click. The cell grid and painting live in
+// engine-lineage.ts — the engine's own layout, not a second renderer.
+import { paint, type Lin, type Style } from "./engine-lineage.ts";
 import { reveal } from "./motion.ts";
 
 export interface MountOptions {
@@ -17,13 +17,9 @@ export interface RenderOptions {
 export interface LineageView {
   stage: HTMLElement;
   pre: HTMLElement;
-  layout: Layout;
+  layout: Lin;
   /** Redraw. The cursor band slides to its new node. Returns the reveal duration in ms. */
-  render: (
-    graph: Graph<LineageNode>,
-    styleFor: (L: Layout) => Style,
-    opts?: RenderOptions,
-  ) => number;
+  render: (lin: Lin, styleFor: (L: Lin) => Style, opts?: RenderOptions) => number;
 }
 
 /** Mount a renderer in a host element. A stage the server already drew there is reused. */
@@ -35,16 +31,16 @@ export function mount(host: HTMLElement, o: MountOptions = {}): LineageView {
   const stage = host.querySelector<HTMLElement>(".lin-stage")!;
   const band = stage.querySelector<HTMLElement>(".lin-band")!;
   const pre = stage.querySelector<HTMLElement>("pre.lin")!;
-  const view = { stage, pre, layout: null as unknown as Layout } as LineageView;
+  const view = { stage, pre, layout: null as unknown as Lin } as LineageView;
 
-  view.render = (graph, styleFor, opts = {}) => {
-    const L = (view.layout = layout(graph));
+  view.render = (lin, styleFor, opts = {}) => {
+    const L = (view.layout = lin);
     pre.innerHTML = paint(L, styleFor(L));
     const r = opts.cursor ? L.rects[opts.cursor] : undefined;
     if (r && opts.cursor) {
-      band.style.setProperty("--x", String(r.x + 2));
-      band.style.setProperty("--y", String(r.y + 1));
-      band.style.setProperty("--w", String(L.by.get(opts.cursor)!.name.length));
+      band.style.setProperty("--x", String(r.x + (r.h >= 3 ? 2 : 1)));
+      band.style.setProperty("--y", String(r.y + (r.h >= 3 ? 1 : 0)));
+      band.style.setProperty("--w", String(L.names.get(opts.cursor)?.length ?? 0));
     }
     band.classList.toggle("on", !!r);
     if (opts.reveal) return reveal(stage, L, opts.reveal);

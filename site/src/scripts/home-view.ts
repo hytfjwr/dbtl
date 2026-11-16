@@ -1,10 +1,10 @@
 // The home demo panel as pure functions: what the model list, the lineage and the
 // inspector show for a given root and cursor. The page renders the first state at build
 // time and home.ts keeps it live in the browser, both through these functions.
-import { between, index, sub, walk, type Graph } from "./graph.ts";
+import { between, index, walk } from "./graph.ts";
 import { esc } from "./html.ts";
-import type { Layout, Style } from "./lineage.ts";
-import { coverage, type Project, type ProjectNode } from "./samples.ts";
+import type { Lin, Style } from "./engine-lineage.ts";
+import { coverage, type Project } from "./samples.ts";
 
 /** dbtl's list order: layers in this order, any other layer after them by name. */
 const LAYER_ORDER = ["staging", "intermediate", "marts", "utilities"];
@@ -13,14 +13,6 @@ const layerRank = (layer: string) => {
   const i = LAYER_ORDER.indexOf(layer);
   return i < 0 ? LAYER_ORDER.length : i;
 };
-
-/** The root with its upstream and downstream, each limited to `depth` hops, as the TUI's depth-limited view. */
-export function neighbourhood(p: Project, rootId: string, depth: number): Graph<ProjectNode> {
-  const ids = walk(p, rootId, "up", depth);
-  for (const x of walk(p, rootId, "down", depth)) ids.add(x);
-  ids.add(rootId);
-  return sub(p, ids);
-}
 
 /** Nodes on a path between the root and the cursor. Empty while the cursor is on the root. */
 export function pathSet(p: Project, rootId: string, cursor: string): Set<string> {
@@ -36,7 +28,7 @@ export function demoStyle(
   cursor: string,
   path: Set<string>,
   was: Set<string>,
-): (L: Layout) => Style {
+): (L: Lin) => Style {
   const has = path.size > 0;
   return (L) => ({
     originX: L.rects[rootId]?.x ?? 0,
@@ -138,12 +130,16 @@ export const HOME = {
   root: "fct_subscription_process",
   /** Hops kept on each side of the root, and kept when re-rooting. */
   depth: 1,
+  /** The engine display options the demo's prebuilt layouts are computed with. */
+  direction: "both",
+  glyphs: "unicode",
+  density: "comfortable",
   trail: [
     "int_subscriptions__combined",
     "fct_delivery_monthly_snapshot",
     "subscription_churn_notebook",
   ],
-};
+} as const;
 
 /** Resolve the home config to node ids. Throws when the data no longer has these names. */
 export function homeIds(p: Project): { root: string; trail: string[] } {

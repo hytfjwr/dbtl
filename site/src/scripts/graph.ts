@@ -61,14 +61,6 @@ export function walk(g: Graph, id: string, dir: "up" | "down", max = Infinity): 
   return out;
 }
 
-/** The subgraph induced by `ids`. */
-export function sub<N extends GraphNode>(g: Graph<N>, ids: Set<string>): Graph<N> {
-  return {
-    nodes: g.nodes.filter((n) => ids.has(n.id)),
-    edges: g.edges.filter(([p, c]) => ids.has(p) && ids.has(c)),
-  };
-}
-
 /** Every node on a path between a and b, in either direction. Empty when they are unrelated. */
 export function between(g: Graph, a: string, b: string): Set<string> {
   const s = new Set<string>();
