@@ -1084,25 +1084,54 @@ fn annotations_json(messages: &[&str]) -> String {
     format!("[{}]", rows.join(","))
 }
 
-/// Replay the decision over recorded API payloads in the script's
-/// `--fixtures` directory layout: `run.json`, `jobs.json`, one
-/// `annotations-<job>.json` per probed candidate, and `branch-head` for
-/// the head branch's current tip (`None` = the lookup cannot resolve it).
+/// Write the decision script's `--fixtures` directory layout into `dir`:
+/// `run.json`, `jobs.json`, one `attempt-<n>-jobs.json` per earlier
+/// attempt in `attempt_jobs`, one `annotations-<job>.json` per probed
+/// candidate, and `branch-head` for the head branch's current tip
+/// (`None` = the lookup cannot resolve it).
+fn write_run_fixtures(
+    dir: &Path,
+    run: &str,
+    jobs: &str,
+    annotations: &[(u64, String)],
+    branch_head: Option<&str>,
+    attempt_jobs: &[(u32, u64)],
+) {
+    std::fs::write(dir.join("run.json"), run).unwrap();
+    std::fs::write(dir.join("jobs.json"), jobs).unwrap();
+    for (id, body) in annotations {
+        std::fs::write(dir.join(format!("annotations-{id}.json")), body).unwrap();
+    }
+    for (attempt, count) in attempt_jobs {
+        std::fs::write(
+            dir.join(format!("attempt-{attempt}-jobs.json")),
+            format!(r#"{{"total_count":{count},"jobs":[]}}"#),
+        )
+        .unwrap();
+    }
+    if let Some(sha) = branch_head {
+        std::fs::write(dir.join("branch-head"), format!("{sha}\n")).unwrap();
+    }
+}
+
+/// Replay the decision over recorded API payloads; `attempt_jobs` carries
+/// the `total_count` each earlier attempt's jobs endpoint reported.
 fn retry_decision(
     run: &str,
     jobs: &str,
     annotations: &[(u64, String)],
     branch_head: Option<&str>,
+    attempt_jobs: &[(u32, u64)],
 ) -> BTreeMap<String, String> {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("run.json"), run).unwrap();
-    std::fs::write(dir.path().join("jobs.json"), jobs).unwrap();
-    for (id, body) in annotations {
-        std::fs::write(dir.path().join(format!("annotations-{id}.json")), body).unwrap();
-    }
-    if let Some(sha) = branch_head {
-        std::fs::write(dir.path().join("branch-head"), format!("{sha}\n")).unwrap();
-    }
+    write_run_fixtures(
+        dir.path(),
+        run,
+        jobs,
+        annotations,
+        branch_head,
+        attempt_jobs,
+    );
     let out = Command::new("bash")
         .arg(script("retry-runner-failures.sh"))
         .arg("--fixtures")
@@ -1136,6 +1165,7 @@ fn runner_acquisition_loss_retries_the_run_once() {
             (3, annotations_json(&[ACQUIRED])),
         ],
         Some("aaaa0000"),
+        &[],
     );
     assert_eq!(map["rerun"], "true", "{}", map["reason"]);
     assert_eq!(
@@ -1164,15 +1194,40 @@ fn a_real_failure_mixed_in_vetoes_the_retry() {
             ),
         ],
         Some("aaaa0000"),
+        &[],
     );
     assert_eq!(map["rerun"], "false");
     assert!(map["reason"].contains("Lint"), "{}", map["reason"]);
 }
 
-/// A second attempt means someone (or this automation) already retried —
-/// the run is left alone so the retry can never loop.
+/// An approval-gated attempt runs zero jobs, so it never counts as the
+/// run's first real attempt: a bot-authored run's approved attempt — the
+/// second by number, the first that ran — still earns the one retry.
 #[test]
-fn a_second_attempt_is_never_retried() {
+fn an_approval_wait_attempt_does_not_spend_the_retry() {
+    let map = retry_decision(
+        &run_json("failure", 2, "aaaa0000"),
+        &jobs_json(&[
+            (1, "changes", "success"),
+            (2, "Build & Test (macos-latest)", "cancelled"),
+            (3, "CI result", "failure"),
+        ]),
+        &[(2, annotations_json(&[ACQUIRED]))],
+        Some("aaaa0000"),
+        // Attempt 1 sat in the approval gate: zero jobs.
+        &[(1, 0)],
+    );
+    assert_eq!(map["rerun"], "true", "{}", map["reason"]);
+}
+
+/// The retry is spent by the first attempt that ran jobs, not by the
+/// attempt counter — an earlier attempt that listed jobs means this
+/// failure is not the first real attempt and is left to a human. That is
+/// also what a second evaluation of an already-retried run sees: the
+/// re-run advanced the attempt, so the retry can never loop.
+#[test]
+fn an_attempt_that_ran_jobs_spends_the_retry() {
+    // The second attempt after a first attempt that ran jobs.
     let map = retry_decision(
         &run_json("failure", 2, "aaaa0000"),
         &jobs_json(&[
@@ -1181,8 +1236,53 @@ fn a_second_attempt_is_never_retried() {
         ]),
         &[(2, annotations_json(&[ACQUIRED]))],
         Some("aaaa0000"),
+        &[(1, 14)],
     );
     assert_eq!(map["rerun"], "false", "{}", map["reason"]);
+
+    // The third attempt: an approval wait, then the retried attempt —
+    // the shape a re-evaluated run shows after its one retry was used.
+    let map = retry_decision(
+        &run_json("failure", 3, "aaaa0000"),
+        &jobs_json(&[
+            (2, "Build & Test (macos-latest)", "cancelled"),
+            (3, "CI result", "failure"),
+        ]),
+        &[(2, annotations_json(&[ACQUIRED]))],
+        Some("aaaa0000"),
+        &[(1, 0), (2, 14)],
+    );
+    assert_eq!(map["rerun"], "false", "{}", map["reason"]);
+    assert!(map["reason"].contains("attempt 2"), "{}", map["reason"]);
+}
+
+/// A run whose newest attempt lists no jobs is still waiting — the
+/// approval gate a bot-authored run's re-run can land back in — or queued;
+/// either way there is nothing to re-run. The conclusion it carries does
+/// not matter: an approval wait reports `action_required`, and a run that
+/// never spawned jobs can report `failure` (a workflow that could not
+/// start), and both stay untouched.
+#[test]
+fn a_newest_attempt_without_jobs_is_left_alone() {
+    for conclusion in ["action_required", "failure"] {
+        let map = retry_decision(
+            &run_json(conclusion, 3, "aaaa0000"),
+            &jobs_json(&[]),
+            &[],
+            Some("aaaa0000"),
+            &[(1, 0), (2, 14)],
+        );
+        assert_eq!(
+            map["rerun"], "false",
+            "conclusion {conclusion}: {}",
+            map["reason"]
+        );
+        assert!(
+            map["reason"].contains("no jobs"),
+            "conclusion {conclusion}: {}",
+            map["reason"]
+        );
+    }
 }
 
 /// Cancellations that are not a lost runner — a cancelled run outright,
@@ -1197,6 +1297,7 @@ fn cancellations_are_left_alone() {
         &jobs_json(&[]),
         &[],
         Some("aaaa0000"),
+        &[],
     );
     assert_eq!(map["rerun"], "false", "{}", map["reason"]);
 
@@ -1219,6 +1320,7 @@ fn cancellations_are_left_alone() {
             ]),
             &[(2, anns)],
             Some("aaaa0000"),
+            &[],
         );
         assert_eq!(map["rerun"], "false", "{}", map["reason"]);
     }
@@ -1241,6 +1343,7 @@ fn a_stale_or_unresolvable_head_vetoes_the_retry() {
             &jobs,
             &[(2, annotations_json(&[ACQUIRED]))],
             head,
+            &[],
         );
         assert_eq!(map["rerun"], "false", "head {head:?}: {}", map["reason"]);
     }
@@ -1260,6 +1363,235 @@ fn an_aggregate_only_failure_is_not_runner_loss() {
         ]),
         &[],
         Some("aaaa0000"),
+        &[],
     );
     assert_eq!(map["rerun"], "false", "{}", map["reason"]);
+}
+
+// ---- retry-runner-sweep.sh -------------------------------------------------
+
+/// One `workflow_runs[]` row of the `GET /actions/runs` listing the sweep
+/// reads: id, workflow name, conclusion, the run's actor, created_at.
+fn listed_run(id: u64, name: &str, conclusion: &str, actor: &str, created: &str) -> String {
+    format!(
+        r#"{{"id":{id},"name":"{name}","conclusion":"{conclusion}","actor":{{"login":"{actor}"}},"created_at":"{created}","html_url":"https://example.invalid/runs/{id}"}}"#
+    )
+}
+
+/// A `GET /actions/runs` body from `listed_run` rows.
+fn runs_listing(rows: &[String]) -> String {
+    format!(
+        r#"{{"total_count":{},"workflow_runs":[{}]}}"#,
+        rows.len(),
+        rows.join(",")
+    )
+}
+
+/// Replay the sweep over recorded payloads: `listing` is the
+/// `GET /actions/runs` body, and each `dir` named `<run-id>/` under the
+/// fixture root holds that run's decision fixtures. Returns the script's
+/// stdout lines.
+fn sweep(dir: &Path, listing: &str, since: &str, extra_args: &[&str]) -> std::process::Output {
+    std::fs::write(dir.join("runs.json"), listing).unwrap();
+    let out = Command::new("bash")
+        .arg(script("retry-runner-sweep.sh"))
+        .arg("--decision")
+        .arg(script("retry-runner-failures.sh"))
+        .arg("--since")
+        .arg(since)
+        .arg("--fixtures")
+        .arg(dir)
+        .args(extra_args)
+        .output()
+        .expect("run retry-runner-sweep.sh");
+    assert!(
+        out.status.success(),
+        "a sweep must always exit cleanly: {}",
+        stderr(&out)
+    );
+    out
+}
+
+/// The shape the release pull request's failing CI run leaves in the
+/// listing — a bot actor, the watched workflow, inside the window.
+fn bot_run_fixture(dir: &Path) {
+    write_run_fixtures(
+        dir,
+        &run_json("failure", 2, "aaaa0000"),
+        &jobs_json(&[
+            (1, "changes", "success"),
+            (2, "Build & Test (macos-latest)", "cancelled"),
+            (3, "CI result", "failure"),
+        ]),
+        &[(2, annotations_json(&[ACQUIRED]))],
+        Some("aaaa0000"),
+        &[(1, 0)],
+    );
+}
+
+/// The sweep evaluates only failed runs of the watched workflows whose
+/// actor is github-actions[bot] inside the window — a human's failure is
+/// the event path's business, anything else is nobody's retry to give.
+#[test]
+fn sweep_evaluates_only_recent_bot_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let listing = runs_listing(&[
+        listed_run(
+            9001,
+            "CI",
+            "failure",
+            "github-actions[bot]",
+            "2026-11-17T10:00:00Z",
+        ),
+        // Outside the window.
+        listed_run(
+            9002,
+            "Dogfood",
+            "failure",
+            "github-actions[bot]",
+            "2026-11-15T10:00:00Z",
+        ),
+        // A human's run — the event path already covers it.
+        listed_run(9003, "CI", "failure", "hytfjwr", "2026-11-17T10:00:00Z"),
+        // Not one of the watched workflows.
+        listed_run(
+            9004,
+            "bump",
+            "failure",
+            "github-actions[bot]",
+            "2026-11-17T10:00:00Z",
+        ),
+        // Not a failure.
+        listed_run(
+            9005,
+            "CI",
+            "success",
+            "github-actions[bot]",
+            "2026-11-17T10:00:00Z",
+        ),
+    ]);
+    let run_dir = dir.path().join("9001");
+    std::fs::create_dir(&run_dir).unwrap();
+    bot_run_fixture(&run_dir);
+
+    let out = sweep(dir.path(), &listing, "2026-11-17T00:00:00Z", &["--dry-run"]);
+    let text = stdout(&out);
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.starts_with("evaluated="))
+            .collect::<Vec<_>>(),
+        vec!["evaluated=9001"],
+        "only the in-window bot failure of a watched workflow: {text}"
+    );
+    assert!(
+        text.lines().any(|l| l == "rerun=9001"),
+        "the decision's verdict surfaces: {text}"
+    );
+    assert!(
+        !text.lines().any(|l| l.starts_with("issued=")),
+        "a dry run never dispatches: {text}"
+    );
+    assert_eq!(kv(&out)["swept"], "1");
+}
+
+/// Without `--dry-run` the accepted run is actually re-issued — the
+/// schedule's whole point. The listing and the per-run decision are
+/// unchanged from the dry-run case.
+#[test]
+fn sweep_issues_the_retry_when_not_a_dry_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let listing = runs_listing(&[listed_run(
+        9001,
+        "CI",
+        "failure",
+        "github-actions[bot]",
+        "2026-11-17T10:00:00Z",
+    )]);
+    let run_dir = dir.path().join("9001");
+    std::fs::create_dir(&run_dir).unwrap();
+    bot_run_fixture(&run_dir);
+
+    let out = sweep(dir.path(), &listing, "2026-11-17T00:00:00Z", &[]);
+    let text = stdout(&out);
+    assert!(
+        text.lines().any(|l| l == "issued=9001"),
+        "the accepted run's re-run is dispatched: {text}"
+    );
+}
+
+/// `--run-id` skips the listing entirely — and the actor filter with it —
+/// so a manual dispatch can pin the evaluation to any run (a human picks
+/// the target deliberately).
+#[test]
+fn sweep_run_id_evaluates_the_pinned_run() {
+    let dir = tempfile::tempdir().unwrap();
+    // The fixture directory IS the run's own decision fixture here; the
+    // listing file is never read in this mode.
+    bot_run_fixture(dir.path());
+    let out = Command::new("bash")
+        .arg(script("retry-runner-sweep.sh"))
+        .arg("--decision")
+        .arg(script("retry-runner-failures.sh"))
+        .arg("--run-id")
+        .arg("123")
+        .arg("--fixtures")
+        .arg(dir.path())
+        .arg("--dry-run")
+        .output()
+        .expect("run retry-runner-sweep.sh --run-id");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.lines().any(|l| l == "evaluated=123"),
+        "the pinned run is evaluated by its own fixtures: {text}"
+    );
+    assert!(text.lines().any(|l| l == "rerun=123"), "{text}");
+}
+
+/// The retry workflow keeps the event path for human-authored runs and
+/// carries the scheduled + dispatch sweep for the bot's runs — the two
+/// triggers must exist together or one population is never reached.
+#[test]
+fn retry_workflow_covers_both_paths() {
+    let wf = workflow("retry-runner-failures.yml");
+    let watched: BTreeSet<String> = wf["on"]["workflow_run"]["workflows"]
+        .as_sequence()
+        .expect("workflow_run.workflows is a list")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        watched,
+        set(&["CI", "Dogfood", "Security"]),
+        "the event path watches exactly the gating workflows"
+    );
+    assert!(
+        !wf["on"]["schedule"].as_sequence().unwrap().is_empty(),
+        "the bot's runs emit no workflow_run event — a schedule must reach them"
+    );
+    assert!(
+        !wf["on"]["workflow_dispatch"].is_null(),
+        "a manual evaluate-only path inspects the sweep"
+    );
+
+    // Both jobs evaluate through the same decision with the same
+    // permissions — the sweep issues the same write the event path does.
+    for id in job_ids(&wf) {
+        let perms = &job(&wf, &id)["permissions"];
+        assert_eq!(
+            perms["actions"].as_str(),
+            Some("write"),
+            "{id} must hold actions: write to re-issue the failed jobs"
+        );
+        assert_eq!(
+            perms["checks"].as_str(),
+            Some("read"),
+            "{id} must read check-run annotations"
+        );
+    }
+    let sweep_if = job(&wf, "sweep")["if"].as_str().unwrap_or("");
+    assert!(
+        sweep_if.contains("schedule"),
+        "the sweep job must run on the cron path: {sweep_if}"
+    );
 }
