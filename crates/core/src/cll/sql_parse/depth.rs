@@ -332,10 +332,13 @@ impl Level {
     }
 }
 
-/// Why `parse_statements` refused a text — the two failure kinds the
+/// Why `parse_statements` refused a text — the failure kinds the
 /// lint `unparsed` tally reports differently: the depth bound tripping
-/// (the text would build a tree too deep to walk safely) and the parser
-/// rejecting the text outright.
+/// (the text would build a tree too deep to walk safely), the parser
+/// rejecting the text outright, and the special parse failure
+/// [`crate::cll::sql_parse::jinja::jinja_parse`] proves — an
+/// unclassifiable `{{ }}` standing where the parser waited for the
+/// statement's body.
 #[derive(Debug)]
 pub(super) enum ParseFailure {
     /// The lexical pre-parse bound tripped, or `sqlparser`'s own
@@ -345,6 +348,16 @@ pub(super) enum ParseFailure {
     /// `sqlparser` rejected the text — its error text, which ends with
     /// the position (` at Line: N, Column: M`) when the error has one.
     Error(String),
+    /// `jinja_parse` proved the rejection sits on an unclassifiable
+    /// `{{ }}`'s render — a macro call, `var(…)`, anything
+    /// `Scan::other_text` shapes — where the parser waited for the
+    /// statement's or query's body: the tag generates the SQL, so
+    /// compiling (not editing) is the remedy. `line`/`column` index
+    /// into the render, exactly like [`UnparsedReason::ParseError`]'s —
+    /// the failure's own position, or the elided tag's when it has
+    /// none. Only `jinja_parse` produces this — `parse_statements`
+    /// never does.
+    JinjaGenerated { line: u32, column: u32 },
 }
 
 impl ParseFailure {
@@ -363,13 +376,16 @@ impl ParseFailure {
                     .strip_prefix("sql parser error: ")
                     .unwrap_or(&message)
                     .to_string();
-                let (line, column, message) = split_error_position(message);
+                let (line, column, message) = split_error_position(&message);
                 let message = unmark_generated_names(&message);
                 UnparsedReason::ParseError {
                     line,
                     column,
                     message,
                 }
+            }
+            ParseFailure::JinjaGenerated { line, column } => {
+                UnparsedReason::JinjaGenerated { line, column }
             }
         }
     }
@@ -430,16 +446,16 @@ fn marker_len(tail: &str) -> usize {
 /// `sqlparser` errors end ` at Line: <N>, Column: <M>` when they carry
 /// a position — split that tail into fields; a message without one
 /// (a tokenizer error) keeps whole with no position.
-fn split_error_position(message: String) -> (Option<u32>, Option<u32>, String) {
+pub(super) fn split_error_position(message: &str) -> (Option<u32>, Option<u32>, String) {
     let Some((head, tail)) = message.rsplit_once(" at Line: ") else {
-        return (None, None, message);
+        return (None, None, message.to_string());
     };
     let Some((l, c)) = tail.split_once(", Column: ") else {
-        return (None, None, message);
+        return (None, None, message.to_string());
     };
     match (l.trim().parse::<u32>(), c.trim().parse::<u32>()) {
         (Ok(line), Ok(column)) => (Some(line), Some(column), head.to_string()),
-        _ => (None, None, message),
+        _ => (None, None, message.to_string()),
     }
 }
 

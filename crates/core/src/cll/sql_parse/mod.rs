@@ -205,6 +205,16 @@ pub enum UnparsedReason {
         column: Option<u32>,
         message: String,
     },
+    /// An unclassifiable `{{ }}` — a macro call, `var(…)`, anything the
+    /// render couldn't give a meaning — sits where the parser waited
+    /// for the statement's or query's body: the tag generates the SQL,
+    /// so no edit to the model's text can ever show the parser the
+    /// body. Only `dbt compile`'s `compiled_code` (or the
+    /// `target/compiled/` file source mode reads) can. `line`/`column`
+    /// index into the rendered text like [`UnparsedReason::ParseError`]'s
+    /// — the failure's own position, or the elided tag's when it
+    /// carried none.
+    JinjaGenerated { line: u32, column: u32 },
     /// The text parsed but carried no `Query` statement — a model body
     /// that isn't a `SELECT` (a bare DDL statement) has nothing to
     /// analyze.
@@ -236,8 +246,47 @@ impl std::fmt::Display for UnparsedReason {
                 write!(f, "parse error: {message}")
             }
             UnparsedReason::ParseError { .. } => f.write_str("parse error"),
+            UnparsedReason::JinjaGenerated { line, column } => {
+                write!(
+                    f,
+                    "Jinja generates the query ({{{{…}}}} at {line}:{column})"
+                )
+            }
             UnparsedReason::NoQueryStatement => f.write_str("no query statement"),
             UnparsedReason::DependencyCycle => f.write_str("dependency cycle"),
+        }
+    }
+}
+
+impl UnparsedReason {
+    /// The `unparsable_sql` finding's fix advice for this reason —
+    /// what un-skips the model, or how to silence the finding when
+    /// nothing here can. A `ParseError` is the model's own Jinja to
+    /// repair; `JinjaGenerated` means a macro emits the statement, so
+    /// compiling (never editing) is what shows the parser the body.
+    pub fn help(&self) -> &'static str {
+        match self {
+            UnparsedReason::DepthLimit => {
+                "simplify the model's SQL — it nests deeper than the parser's \
+                 depth bound allows — or suppress the finding with meta.dbtl.ignore"
+            }
+            UnparsedReason::ParseError { .. } => {
+                "fix the model's Jinja so it renders valid SQL, suppress it with \
+                 meta.dbtl.ignore, or lint a manifest carrying compiled_code"
+            }
+            UnparsedReason::JinjaGenerated { .. } => {
+                "a macro generates this SQL — run `dbt compile` and lint a manifest \
+                 carrying compiled_code (or the `target/compiled/` output source \
+                 mode reads), or suppress the finding with meta.dbtl.ignore"
+            }
+            UnparsedReason::NoQueryStatement => {
+                "give the model a SELECT body — its SQL parsed but carried no \
+                 query — or suppress the finding with meta.dbtl.ignore"
+            }
+            UnparsedReason::DependencyCycle => {
+                "break the dependency cycle the model's refs form, or suppress \
+                 the finding with meta.dbtl.ignore"
+            }
         }
     }
 }
