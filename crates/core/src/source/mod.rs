@@ -92,16 +92,40 @@
 //!   can't claim "no parents" on a node whose hidden parents live inside
 //!   an unexpanded call, and `unused_sources` can't claim "no consumers"
 //!   on a source table such a call literally named.
+//! - `versions:`-declared models synthesize the way real dbt's
+//!   versioned parse does (verified on 1.12.6): each `v:` binds its
+//!   implementation file — `defined_in:` > `<name>_v<v>` convention
+//!   (the latest may also live in `<name>.sql`) — into a
+//!   `model.<proj>.<name>.v<v>` node carrying the file's own
+//!   path/raw/config, so the file stem never becomes an independent
+//!   refable name. `latest_version:` (or the pairwise max over the
+//!   declared `v:`s — numbers as floats, anything else as text) is
+//!   what a bare `ref('name')` resolves to; `v=`/`version=` pins look
+//!   up the member by the VERBATIM rendered version (`v='v3'` answers
+//!   `v: 'v3'`'s `.vv3`, never `v: 3`'s `.v3`). Enabled precedence
+//!   folds in-file `config()` > version `config.enabled` > model
+//!   `config.enabled` > the member-fqn tree (`[proj, *dirs, name, v<v>]`
+//!   — a `models:` tree configures the whole family at `<name>`); a
+//!   parked member drops with a `(version, "model")` disabled record
+//!   so a pin on it reads "disabled version". Version-level
+//!   description/`deprecation_date`/`config:`/`meta:`/`columns:`/
+//!   `tests:` layer onto the model-level declaration — `columns:`
+//!   `include:`/`exclude:` markers slice the inherited set and a
+//!   same-named def replaces its column (tests union), while a
+//!   version's own `tests:` list REPLACES the model-level one outright
+//!   (no markers there — every entry is a def). Malformed shapes dbt
+//!   hard-errors on (a repeated `v:`, an undeclared `latest_version`,
+//!   a missing impl file, a `<name>.sql` file beside the family)
+//!   degrade to warnings.
 //! - `unit_tests:` declarations (dbt ≥1.8) synthesize into
 //!   `RawManifest::unit_tests` — the same wire records a real parse
 //!   emits, so `Dag::build` attaches each test to its `model:` target
 //!   through the one intake path (the `tests` side map, never a node).
 //!   `config.enabled` is the only disable channel (a top-level
 //!   `enabled:` is a dbt error), and a `versions:` filter expands one
-//!   record per selected version over the `<model>_v<version>` file
-//!   names dbt's convention requires — the `.vN` uid segments a real
-//!   manifest carries are not synthesized, so the file-named member is
-//!   the dep the record points at.
+//!   `unit_test…_v<v>` record per selected member — verbatim version
+//!   matching, an undeclared `include` warning instead of dbt's parse
+//!   error — so the record's `depends_on` names the exact `.vN` node.
 //!
 //! Scope: this covers the common project shape, not dbt's full resolver. NOT
 //! handled (a `ref` to one of these simply drops out, which `prune_adjacency`
@@ -109,10 +133,11 @@
 //! `var()` in `enabled` positions resolves — see vars.rs), the bodies of
 //! installed-package macros (their invocations count into
 //! `unresolved_adjacent` rather than resolving — `dbt_packages/` is never
-//! read), and singular (`.sql`) tests. A versioned ref resolves to the
-//! unversioned name (approximation — the `.vN` node a `versions:` block
-//! would define is not synthesized); YAML-defined snapshots (dbt 1.9+) ARE
-//! synthesized as nodes.
+//! read), and singular (`.sql`) tests. A `v=` pin that's not a literal
+//! (`v=var('x')`, an unbound macro parameter) resolves to the family's
+//! latest member — the approximation dbt's run-time binding can't give
+//! a static scan; YAML-defined snapshots (dbt 1.9+) ARE synthesized as
+//! nodes.
 //! Recoverable oddities (an unparsable schema.yml, a duplicate resource name)
 //! are reported as warnings, not errors.
 
@@ -129,9 +154,8 @@ use yaml_rust2::parser::{Event, MarkedEventReceiver, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
 use crate::{
-    normalize_version, Dag, RawConstraint, RawContract, RawDependsOn, RawFreshness,
-    RawFreshnessThreshold, RawManifest, RawNode, RawSource, RawTestMetadata, RawUnitTest,
-    RawUnitTestIo,
+    Dag, RawConstraint, RawContract, RawDependsOn, RawFreshness, RawFreshnessThreshold,
+    RawManifest, RawNode, RawSource, RawTestMetadata, RawUnitTest, RawUnitTestIo,
 };
 
 /// Parse a dbt project directory and build its [`Dag`] from source.
@@ -189,6 +213,12 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     synth.collect_seeds();
     synth.collect_snapshots();
     let parsed = synth.parse_schema_files();
+    // The versioned-model stage binds `versions:`-declared families to
+    // their implementation files (minting `.<v>` member nodes) and
+    // materializes every remaining file as an independent model — it
+    // must run after the schema parse names the families and before
+    // edges/schema-metadata resolve targets.
+    synth.synthesize_models(&parsed);
     synth.synthesize_yaml_snapshots(&parsed);
     let ResolvedEdges {
         parent_map,
@@ -242,3 +272,4 @@ pub(crate) use patterns::{config_arg, kwarg, lit_value};
 pub(crate) use patterns::{find_subslice, jinja_set_assigns, jinja_tag_close, tag_word};
 pub(crate) use python::{scan_python, PyCallKind};
 pub use vars::CliVars;
+pub(crate) use yaml::scalar_to_string;

@@ -96,6 +96,29 @@ pub(crate) fn versioned_model_segs(uid: &str) -> Option<(&str, &str)> {
     }
 }
 
+/// `model.<pkg>.<name>.<vseg>` → the `(pkg, name, normalize_version(vseg))`
+/// tuple [`RefScope::versions`](crate::RefScope) records — the set a
+/// `v=`/`version=` pin judges against. The real-manifest scope builder
+/// walks the node map with it; source mode walks its synthesized node
+/// map the same way so both loads record the same shape.
+pub(crate) fn version_scope_key(uid: &str) -> Option<(String, String, String)> {
+    let mut segs = uid.split('.');
+    match (
+        segs.next(),
+        segs.next(),
+        segs.next(),
+        segs.next(),
+        segs.next(),
+    ) {
+        (Some("model"), Some(pkg), Some(name), Some(vseg), None) => Some((
+            pkg.to_string(),
+            name.to_string(),
+            normalize_version(vseg).to_string(),
+        )),
+        _ => None,
+    }
+}
+
 /// The name LIST surfaces print for `uid` — `dbtl ls --output names`, the
 /// TUI model list and lineage boxes, the generated-docs labels, and the
 /// Mermaid node labels share it: `name.vseg` for a versioned model (the

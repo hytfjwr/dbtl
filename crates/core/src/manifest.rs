@@ -78,9 +78,10 @@ pub struct RefScope {
     pub refs: HashMap<String, BTreeSet<String>>,
     /// The `v=`/`version=` arg a `ref('x', v=2)` can pin — `(package,
     /// name, normalized version)` tuples from `model.<pkg>.<name>.<v>`
-    /// uids. `None` when version args are unjudgeable: source mode never
-    /// synthesizes versioned nodes, so a versioned ref is skipped
-    /// outright there rather than judged against an empty set.
+    /// uids. Source mode synthesizes the same `.<v>` uids from its
+    /// `versions:` declarations, so both modes record the set the same
+    /// way; `None` stays the "version args unjudgeable" marker a loader
+    /// that can't see version uids would set.
     pub versions: Option<BTreeSet<(String, String, String)>>,
     /// Declared `source()` targets `(source, table)` across every
     /// package the load could see.
@@ -97,9 +98,9 @@ pub struct RefScope {
     pub disabled_refs: BTreeMap<String, BTreeSet<DisabledRef>>,
     /// Disabled `source()` targets `(source, table)` — same split.
     pub disabled_sources: BTreeSet<(String, String)>,
-    /// Names counted as resolved without a node — the versioned-family
-    /// spellings source mode can't synthesize (`versions:`/`defined_in:`
-    /// declarations, `<name>_v<N>` file families). Empty in manifest
+    /// Names counted as resolved without a node — the spellings source
+    /// mode can't disprove (`versions:`/`defined_in:` declarations,
+    /// `<name>_v<N>` file families it never binds). Empty in manifest
     /// mode (real nodes carry every answer).
     pub assumed: BTreeSet<String>,
     /// `dependencies.yml` `projects:` names — a two-arg `ref` naming one

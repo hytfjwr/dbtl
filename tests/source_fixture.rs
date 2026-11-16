@@ -839,11 +839,51 @@ fn yaml_snapshot_edges_resolve_in_both_directions() {
 
 #[test]
 fn versioned_ref_resolves_to_unversioned_model() {
+    // `ref('base', v=2)` on an UNVERSIONED `base` is a dbt error — a
+    // version pin only reaches a `versions:` family member, so the call
+    // degrades to no edge (the lint pass then reports the unresolved
+    // pin) rather than an invented target.
     let dag = load_dag_from_source(YAML_SNAPSHOT_PROJECT).expect("project loads");
     let up = dag.upstream("model.ysnap.uses_versioned");
     assert!(
-        up.contains("model.ysnap.base"),
-        "ref('base', v=2) resolves to the unversioned model, got {up:?}"
+        !up.contains("model.ysnap.base"),
+        "ref('base', v=2) on an unversioned model resolves to nothing, got {up:?}"
+    );
+}
+
+#[test]
+fn orphan_version_stem_warns_and_drops() {
+    // `fam` declares versions [1, 2]; `fam_v3.sql` matches the impl-file
+    // convention but names no declared version — a dbt parse error, so it
+    // must never materialize as an independent `model.d.fam_v3` (and
+    // `ref('fam_v3')` must not reach a phantom node).
+    let tmp = tiny_project(&[
+        ("models/fam_v1.sql", "select 1 as id\n"),
+        ("models/fam_v2.sql", "select 1 as id\n"),
+        ("models/fam_v3.sql", "select 1 as id\n"),
+        ("models/down.sql", "select * from {{ ref('fam_v3') }}\n"),
+        (
+            "models/schema.yml",
+            "version: 2\nmodels:\n  - name: fam\n    versions:\n      - v: 1\n      - v: 2\n",
+        ),
+    ]);
+    let (dag, warnings) =
+        load_dag_from_source_with_warnings(tmp.path(), None).expect("project loads");
+    assert!(
+        dag.contains("model.d.fam.v1") && dag.contains("model.d.fam.v2"),
+        "declared members survive"
+    );
+    assert!(
+        !dag.contains("model.d.fam_v3"),
+        "an undeclared-version impl file never becomes a model"
+    );
+    assert!(
+        !dag.upstream("model.d.down").contains("model.d.fam_v3"),
+        "ref('fam_v3') resolves to nothing"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("fam_v3")),
+        "the orphan impl file is named in a warning, got {warnings:?}"
     );
 }
 

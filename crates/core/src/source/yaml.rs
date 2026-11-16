@@ -349,7 +349,7 @@ pub(super) fn pyyaml_float(v: &str) -> Option<f64> {
 // description can't fail the whole file.
 
 /// `5` → `"5"`, `true` → `"true"`, a string → itself; non-scalars → `None`.
-pub(super) fn scalar_to_string(v: &serde_json::Value) -> Option<String> {
+pub(crate) fn scalar_to_string(v: &serde_json::Value) -> Option<String> {
     match v {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Bool(b) => Some(b.to_string()),

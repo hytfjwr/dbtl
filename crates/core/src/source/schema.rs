@@ -156,15 +156,18 @@ pub(super) struct SchemaModel {
     /// dbt validates it's a date; kept as the declared string.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) deprecation_date: Option<String>,
-    /// `versions:` — dbt's versioned-model declaration. Read for NAMES
-    /// only: a `versions:`-declared model and each entry's `defined_in:`
-    /// are names `ref()` can legitimately reach — versioned nodes are
-    /// never synthesized, so `unresolved_references` counts them
-    /// resolved rather than judging an impossible target. Raw `Value`
-    /// entries: each is `{v: …, defined_in: …}`-shaped (a `v:` value may
-    /// itself be a number or string).
+    /// `latest_version:` — the version a bare `ref('model')` resolves to.
+    /// Kept raw (a number or string scalar); `synthesize_models` renders
+    /// it with [`scalar_to_string`].
     #[serde(default)]
-    pub(super) versions: Vec<serde_json::Value>,
+    pub(super) latest_version: serde_json::Value,
+    /// `versions:` — dbt's versioned-model declaration. Each entry is one
+    /// declared version: `synthesize_models` binds it to an
+    /// implementation file and mints `model.<proj>.<name>.v<version>`
+    /// nodes; `apply_versioned_meta` then layers the model- and
+    /// version-level metadata onto each member.
+    #[serde(default)]
+    pub(super) versions: Vec<SchemaVersion>,
     /// The model-level `constraints:` list — the manifest wire shape
     /// (`{type, columns, …}`); column-level constraints live on
     /// [`SchemaColumn::constraints`]. A property, not a `config:` key.
@@ -212,9 +215,73 @@ pub(super) struct SchemaConfig {
     /// `delete+insert` / `insert_overwrite` / `microbatch`.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) incremental_strategy: Option<String>,
+    /// `config: tags:` — unions with the property `tags:` and other
+    /// levels' tags rather than overriding (dbt accumulates tags across
+    /// the model/version config levels, verified on 1.12.6).
+    #[serde(default, deserialize_with = "de_string_vec")]
+    pub(super) tags: Vec<String>,
 }
 
+/// A `versions:` entry — one declared version of a model. `columns:` /
+/// `tests:` / `data_tests:` stay raw `Value` lists: `columns:` mixes
+/// `include:`/`exclude:` markers with real defs (the version's slice of
+/// the model-level declarations) while a `tests:` list is all defs that
+/// REPLACES the model-level list — `apply_versioned_meta` sorts both out.
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaVersion {
+    /// `v:` — the declared version scalar verbatim (a number or string —
+    /// `scalar_to_string` renders it the way dbt writes the uid segment:
+    /// `1.10` → `"1.1"`, `'beta'` → `"beta"`). Missing/non-scalar →
+    /// `Null`, skipped with a warning.
+    #[serde(rename = "v", default)]
+    pub(super) v: serde_json::Value,
+    /// `defined_in:` — the file stem implementing this version when it
+    /// isn't `<model>_v<version>` (the latest may also live in
+    /// `<model>.sql`). A stem only — directories aren't part of it.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) defined_in: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) description: Option<String>,
+    /// `deprecation_date:` — a property dbt accepts at the version level
+    /// too; the version's own date outranks the model's.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) deprecation_date: Option<String>,
+    /// Top-level `access:` / `alias:` / `group:` — the bare property
+    /// spellings dbt accepts on versions like on models (`config:` wins
+    /// over them).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) access: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) alias: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) group: Option<String>,
+    /// Top-level `tags:` — unions with the other tag channels.
+    #[serde(default, deserialize_with = "de_string_vec")]
+    pub(super) tags: Vec<String>,
+    /// The version's `config:` block — sits ABOVE the model's `config:`
+    /// and below the file's own `config()` (verified precedence:
+    /// in-file > version > model > project tree).
+    #[serde(default)]
+    pub(super) config: SchemaConfig,
+    /// `meta:` — merges under `config.meta` per key, like the model level.
+    #[serde(default)]
+    pub(super) meta: serde_json::Value,
+    /// `columns:` — raw entries: `name:`-bearing column defs interleaved
+    /// with `include:`/`exclude:` markers selecting from the model-level
+    /// set.
+    #[serde(default)]
+    pub(super) columns: Vec<serde_json::Value>,
+    /// `tests:` / `data_tests:` — raw entries, all test defs: a version
+    /// that declares its own list REPLACES the model-level one (dbt has
+    /// no `include:`/`exclude:` markers here — an entry keyed `include`
+    /// parses as a test of that name).
+    #[serde(default)]
+    pub(super) tests: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub(super) data_tests: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
 pub(super) struct SchemaColumn {
     #[serde(deserialize_with = "de_string")]
     pub(super) name: String,

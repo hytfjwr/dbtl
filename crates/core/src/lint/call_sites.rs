@@ -17,8 +17,8 @@ use std::rc::Rc;
 use crate::dag::{normalize_version, versioned_model_segs, Dag};
 use crate::source::{
     arms_exclusive, call_sites_masked, config_arg, jinja_branches, kwarg, lit_value,
-    mask_jinja_comments, scan_python, ArmKind, ArmStep, CallKind, CallSite, JinjaBranches,
-    PyCallKind,
+    mask_jinja_comments, scalar_to_string, scan_python, ArmKind, ArmStep, CallKind, CallSite,
+    JinjaBranches, PyCallKind,
 };
 
 use super::{Finding, Label};
@@ -355,14 +355,16 @@ impl<'a> CallSites<'a> {
                 CallKind::Ref {
                     name,
                     package,
-                    version,
+                    version: _,
                 } => {
-                    // `version` is the literal v=/version= value's range
-                    // (absent when the kwarg isn't there OR didn't read
-                    // literal) — the args text distinguishes the two: a
-                    // kwarg present without a literal value is a
-                    // nonliteral `v=var('x')`, which the rule must skip
-                    // rather than judge as unversioned.
+                    // A `v=`/`version=` kwarg judges by its literal
+                    // rendered the way dbt spells the version (a
+                    // number's `str()` — `1.10` → `"1.1"` — a string
+                    // verbatim): `v='v3'` names `.vv3`, never `.v3`.
+                    // A kwarg that isn't a literal is the nonliteral
+                    // `v=var('x')` case — `versioned` true, `version`
+                    // none — which the rule must skip rather than judge
+                    // as unversioned.
                     let args = site.args.as_ref().map(|a| &masked[a.clone()]);
                     DepCallKind::Ref {
                         name: masked[name.clone()].to_string(),
@@ -370,9 +372,7 @@ impl<'a> CallSites<'a> {
                         versioned: args.is_some_and(|a| {
                             kwarg(a, "v").is_some() || kwarg(a, "version").is_some()
                         }),
-                        version: version
-                            .as_ref()
-                            .map(|v| normalize_version(&masked[v.clone()]).to_string()),
+                        version: args.and_then(rendered_version),
                     }
                 }
                 CallKind::Source { source, table } => DepCallKind::Source {
@@ -450,10 +450,11 @@ impl<'a> CallSites<'a> {
     /// `model|seed|snapshot.*.<name>` by NAME alone — the loader's
     /// name-index resolution ignores the package arg (`ref('pkg','x')`
     /// lands on the local `x`), so a call naming any package still marks
-    /// the edge it produced. A versioned ref wants that `.vN` — or any
-    /// same-named unversioned uid, the name-only approximation the source
-    /// loader makes — and a bare `ref('x')` lands on an unversioned uid or
-    /// the family's latest version.
+    /// the edge it produced. A versioned ref wants exactly `.v<pin>`
+    /// (`version='02'` is `.v02`, never `.v2` — the rendered arg is
+    /// verbatim) and never an unversioned same-named uid; a bare
+    /// `ref('x')` lands on an unversioned uid or the family's latest
+    /// version.
     fn targets(&self, call: &CallSite, parent: &str, segs: &[&str]) -> bool {
         match &call.kind {
             CallKind::Source { source, table } => {
@@ -461,7 +462,7 @@ impl<'a> CallSites<'a> {
                     if self.sites.masked[source.clone()] == **s
                         && self.sites.masked[table.clone()] == **t)
             }
-            CallKind::Ref { name, version, .. } => {
+            CallKind::Ref { name, .. } => {
                 let [kind, _, uname, ..] = segs else {
                     return false;
                 };
@@ -471,17 +472,21 @@ impl<'a> CallSites<'a> {
                     return false;
                 }
                 let uid_version = segs.get(3).map(|v| normalize_version(v));
-                match version {
+                // The pin compares RENDERED — `v='v3'` names the `.vv3`
+                // member, `v=1.10` the `.v1.1`, `v='02'` nothing at all
+                // — while a kwarg that isn't a literal rides the
+                // dynamic-pin resolution (the family's latest), the
+                // bare-ref case. `normalize_version` strips exactly one
+                // `v`, so `pin == normalize(vseg)` is the same
+                // `v{pin} == vseg` check dbt's lookup makes.
+                match call
+                    .args
+                    .as_ref()
+                    .and_then(|a| rendered_version(&self.sites.masked[a.clone()]))
+                {
                     Some(v) => {
-                        let Some(uv) = uid_version else { return true };
-                        // Compare as numbers first (`v=02` and `.v2` are
-                        // the same version), then as normalized text
-                        // (non-numeric spellings like `v='x'`).
-                        let v = normalize_version(&self.sites.masked[v.clone()]);
-                        match (v.parse::<u64>(), uv.parse::<u64>()) {
-                            (Ok(a), Ok(b)) => a == b,
-                            _ => v == uv,
-                        }
+                        let Some(uv) = uid_version else { return false };
+                        v == uv
                     }
                     None => uid_version.is_none() || self.is_latest(parent, segs),
                 }
@@ -622,18 +627,29 @@ pub(crate) enum DepCallKind {
         name: String,
         /// `ref('pkg','x')` → `pkg`.
         package: Option<String>,
-        /// A `v=`/`version=` kwarg is present at all — judged or not
-        /// depends on the mode's `RefScope::versions` (source mode never
-        /// judges; manifest mode checks the pin).
+        /// A `v=`/`version=` kwarg is present at all — judged against
+        /// the `RefScope::versions` table both load modes record.
         versioned: bool,
-        /// The version kwarg's literal value, normalized (`v='v2'` →
-        /// `2`). `None` with `versioned` means the kwarg didn't read
-        /// literal (`v=var('ver')`) — the call is unjudgeable, not
-        /// unversioned.
+        /// The version kwarg's literal value RENDERED — `v=2`/`v='2'` →
+        /// `"2"`, `v='v2'` → `"v2"`, `v=1.10` → `"1.1"`. `None` with
+        /// `versioned` means the kwarg didn't read literal
+        /// (`v=var('ver')`) — the call is unjudgeable, not unversioned.
         version: Option<String>,
     },
     Source {
         source: String,
         table: String,
     },
+}
+
+/// A `ref()` call's `v=`/`version=` literal rendered the way dbt spells
+/// the version — a number's `str()` (`1.10` → `"1.1"`), a string
+/// verbatim (`'v3'` → `"v3"`, `'1.10'` stays `"1.10"`). `None` when the
+/// kwarg is absent or isn't a literal (the dynamic pin the loader
+/// resolves to the family's latest).
+fn rendered_version(args: &str) -> Option<String> {
+    kwarg(args, "v")
+        .or_else(|| kwarg(args, "version"))
+        .and_then(lit_value)
+        .and_then(|v| scalar_to_string(&v))
 }

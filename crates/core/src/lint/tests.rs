@@ -5323,7 +5323,7 @@ fn layer_violation_positions_the_later_layer_ref() {
 #[test]
 fn layer_violation_picks_the_versioned_call_for_the_right_parent() {
     // stg_c reads BOTH versions: `ref('x')` resolves to the family's latest
-    // (v2), `ref('x', version='v1')` names v1 explicitly — each violation's
+    // (v2), `ref('x', version='1')` names v1 explicitly — each violation's
     // position underlines the call that made ITS edge.
     let v1 = (
         "model.p.x.v1".to_string(),
@@ -5347,7 +5347,7 @@ fn layer_violation_picks_the_versioned_call_for_the_right_parent() {
             ..Default::default()
         },
     );
-    let raw = "{{ ref('x') }}\n{{ ref('x', version='v1') }}\n";
+    let raw = "{{ ref('x') }}\n{{ ref('x', version='1') }}\n";
     let m = manifest(
         vec![
             v1,
@@ -10802,9 +10802,9 @@ fn unresolved_references_judges_version_pins_when_the_scope_records_them() {
 
 #[test]
 fn unresolved_references_source_mode_never_judges_a_pin_but_judges_the_name() {
-    // `versions: None` (the source-mode scope) — `ref('x', v=1)` can't
-    // have its pin checked, but a `ref('ghost', v=1)` still flags on the
-    // name: the pin is unjudgeable, the name isn't.
+    // `versions: None` (a scope with no version data) — `ref('x', v=1)`
+    // can't have its pin checked, but a `ref('ghost', v=1)` still flags on
+    // the name: the pin is unjudgeable, the name isn't.
     let mut m = manifest(
         vec![dep_model(
             "reads",
@@ -10910,6 +10910,11 @@ fn unresolved_references_source_scope_counts_installed_and_assumed_names() {
         "version: 2\nmodels:\n  - name: v_model\n    versions:\n      - v: 1\n      - v: 2\n",
     )
     .unwrap();
+    // The declared versions need their implementation files — a
+    // file-less `v=` pin resolves to nothing (dbt's own error), so the
+    // member files exist for the "resolves" half of the assertion.
+    std::fs::write(dir.path().join("models/v_model_v1.sql"), "select 1\n").unwrap();
+    std::fs::write(dir.path().join("models/v_model_v2.sql"), "select 1\n").unwrap();
     std::fs::write(
         dir.path().join("models/fct.sql"),
         "select * from {{ ref('pkg', 'pkg_model') }}\n\

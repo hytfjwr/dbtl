@@ -555,7 +555,7 @@ fn ref_scope_from_manifest(manifest: &RawManifest) -> RefScope {
     // no 5th) is a versioned-model uid whose version a `v=` pin checks.
     for (uid, node) in &manifest.nodes {
         let mut segs = uid.split('.');
-        let (kind, pkg, name_seg) = match (segs.next(), segs.next(), segs.next()) {
+        let (kind, pkg, _name_seg) = match (segs.next(), segs.next(), segs.next()) {
             (Some(k), Some(p), Some(n)) => (k, p, n),
             _ => continue,
         };
@@ -568,13 +568,9 @@ fn ref_scope_from_manifest(manifest: &RawManifest) -> RefScope {
             .or_default()
             .insert(pkg.to_string());
         if kind == "model" {
-            if let (Some(vseg), None) = (segs.next(), segs.next()) {
+            if let Some(key) = version_scope_key(uid) {
                 if let Some(versions) = scope.versions.as_mut() {
-                    versions.insert((
-                        pkg.to_string(),
-                        name_seg.to_string(),
-                        normalize_version(vseg).to_string(),
-                    ));
+                    versions.insert(key);
                 }
             }
         }

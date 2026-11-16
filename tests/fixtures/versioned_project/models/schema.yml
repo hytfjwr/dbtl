@@ -3,6 +3,7 @@ version: 2
 sources:
   - name: raw
     schema: raw_data
+    database: dbtl_versioned
     tables:
       - name: orders
 
@@ -15,6 +16,49 @@ models:
         description: first cut of the order facts
       - v: 2
       - v: beta
+  # The LATEST version lives in the unversioned `<name>.sql` file —
+  # the convention's alternate slot.
+  - name: stg_users
+    latest_version: 2
+    versions:
+      - v: 1
+        deprecation_date: 2030-01-01
+      - v: 2
+    columns:
+      - name: id
+        tests:
+          - unique
+          - not_null
+  # `defined_in:` names a version's file stem directly; the default
+  # latest_version is the pairwise max of the declared `v:`s. v2 also
+  # exercises the version-level `columns:`/`tests:` slices — an
+  # `include:` marker keeps only `id` from the inherited columns while
+  # the def adds `extra`, and the version's own `tests:` REPLACES the
+  # model-level list (dbt has no test include/exclude markers — v2
+  # keeps only `not_null` and drops the inherited `accepted_values`
+  # that v1 still carries).
+  - name: dim_items
+    columns:
+      - name: id
+        tests:
+          - unique
+      - name: sku
+        tests:
+          - not_null
+    tests:
+      - accepted_values:
+          column_name: sku
+          values: [a, b]
+    versions:
+      - v: 1
+        defined_in: dim_items_base
+      - v: 2
+        columns:
+          - include: [id]
+          - name: extra
+            description: v2-only column
+        tests:
+          - not_null
 
 unit_tests:
   - name: fct_orders_v2_keeps_rows

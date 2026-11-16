@@ -274,7 +274,7 @@ impl InstalledPackages {
                     .or_default()
                     .insert(name.clone());
                 for v in &model.versions {
-                    if let Some(d) = v.get("defined_in").and_then(|d| d.as_str()) {
+                    if let Some(d) = v.defined_in.as_deref() {
                         self.refs
                             .entry(d.to_string())
                             .or_default()
