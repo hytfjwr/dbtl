@@ -108,6 +108,8 @@ mod tests {
     fn cli_reference_command_forwards_locked() {
         let root = Path::new("/repo");
         let args = argv(&cli_reference_command(Path::new("cargo"), root, true));
+        // The joined path is spelled with the platform's separator.
+        let manifest = root.join("Cargo.toml").to_string_lossy().into_owned();
         assert_eq!(
             args,
             [
@@ -115,7 +117,7 @@ mod tests {
                 "--quiet",
                 "--locked",
                 "--manifest-path",
-                "/repo/Cargo.toml",
+                manifest.as_str(),
                 "-p",
                 "dbtl",
                 "--",
