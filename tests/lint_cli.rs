@@ -1712,7 +1712,7 @@ fn sql_rules_skip_non_relations_derived_names_and_statementless_models() {
         // The real findings survive.
         "m_dup_alias.sql",
         "duplicate output column: x",
-        "m_comma joins without a join condition: {{ ref('base') }} b",
+        "m_comma joins without a join condition: base b",
         "m_real reads relation without ref()/source(): raw.orders",
         "m_offset's final query has ORDER BY but no LIMIT",
         // …and only truly unparsable SQL is reported as skipped.
