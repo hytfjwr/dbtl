@@ -48,9 +48,11 @@
 //! %}…{% endmacro %}`/`{% call %}…{% endcall %}` bodies blank whole (their
 //! interior SQL is not a statement). When the union text can't parse,
 //! `jinja_parse` retries with dangling loop separators blanked, then with
-//! a collapse render keeping one arm per `{% if %}` chain. Anything the
-//! render or the dialect parse can't handle falls back to the name-match
-//! resolver.
+//! a collapse render keeping one arm per `{% if %}` chain — and when all
+//! four fail, runs them once more under a loose clause-boundary rule
+//! that counts `null`/`true`/`false` and column-shaped non-reserved
+//! words as completing the expression. Anything the render or the
+//! dialect parse can't handle falls back to the name-match resolver.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
