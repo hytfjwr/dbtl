@@ -445,3 +445,111 @@ fn selecting_in_the_list_re_roots_only_the_active_tab() {
     a.activate_tab(2);
     assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
 }
+
+#[test]
+fn tab_close_others_keeps_only_the_active_model_tab() {
+    let mut a = app();
+    let (_root0, m1, m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    a.open_node_as_tab(&m2);
+    // [home, root0, m1, m2] — activate m1 in the middle.
+    a.activate_tab(2);
+    apply_action(&mut a, Action::TabCloseOthers);
+    assert_eq!(
+        tab_roots(&a),
+        vec!["", m1.as_str()],
+        "every model tab but the active one closed (home always survives)"
+    );
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(m1.as_str()),
+        "the kept tab is still the live one"
+    );
+
+    // On the home tab `W` clears the strip down to home alone — the one
+    // "close everything" the unclosable tab legitimately runs.
+    a.open_node_as_tab(&m2);
+    a.activate_tab(0);
+    apply_action(&mut a, Action::TabCloseOthers);
+    assert_eq!(tab_roots(&a), vec![""]);
+    assert!(a.home_active());
+}
+
+#[test]
+fn tab_close_right_clears_everything_past_the_active_tab() {
+    let mut a = app();
+    let (root0, m1, m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    a.open_node_as_tab(&m2);
+    // [home, root0, m1, m2] — `R` on root0 closes m1 + m2, lands on root0.
+    a.activate_tab(1);
+    apply_action(&mut a, Action::TabCloseRight);
+    assert_eq!(tab_roots(&a), vec!["", root0.as_str()]);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(root0.as_str()));
+
+    // On the last tab `R` is a no-op; on home it clears the whole strip.
+    apply_action(&mut a, Action::TabCloseRight);
+    assert_eq!(tab_roots(&a), vec!["", root0.as_str()]);
+    a.open_node_as_tab(&m1);
+    a.activate_tab(0);
+    apply_action(&mut a, Action::TabCloseRight);
+    assert_eq!(tab_roots(&a), vec![""]);
+}
+
+#[test]
+fn move_tab_reorders_and_follows_the_active_tab() {
+    let mut a = app();
+    let (root0, m1, m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    a.open_node_as_tab(&m2);
+    // [home, root0, m1, m2], active = 3 (m2).
+
+    // Drag index 1 to the tail: the tabs between slide left, and the
+    // ACTIVE tab's index follows its identity (3 -> 2), not the slot.
+    a.move_tab(1, 3);
+    assert_eq!(
+        tab_roots(&a),
+        vec!["", m1.as_str(), m2.as_str(), root0.as_str()]
+    );
+    assert_eq!(a.active_tab(), 2, "m2 slid left with the move");
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m2.as_str()));
+
+    // Drag the active tab itself right: index follows it again.
+    a.move_tab(2, 3);
+    assert_eq!(
+        tab_roots(&a),
+        vec!["", m1.as_str(), root0.as_str(), m2.as_str()]
+    );
+    assert_eq!(a.active_tab(), 3);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m2.as_str()));
+}
+
+#[test]
+fn move_tab_keeps_home_pinned_and_carries_the_whole_state() {
+    let mut a = app();
+    let (_root0, m1, _m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    // [home, root0, m1] — give root0 a state bundle, then move it.
+
+    a.activate_tab(1);
+    a.tab_mut().lineage_view.upstream = false;
+    a.tab_mut().back = vec![m1.clone()];
+    a.tab_mut().lineage_cursor = Some(m1.clone());
+    a.move_tab(1, 2);
+    assert_eq!(tab_roots(&a), vec!["", m1.as_str(), _root0.as_str()]);
+    let moved = &a.tabs()[2];
+    assert!(
+        !moved.lineage_view.upstream
+            && moved.back == vec![m1.clone()]
+            && moved.lineage_cursor.is_some(),
+        "the whole TabState travelled with the move"
+    );
+
+    // The home tab can neither move nor host a drop: moving it is a no-op,
+    // and a drop on index 0 clamps to index 1 — home stays pinned.
+    a.move_tab(0, 2);
+    assert_eq!(tab_roots(&a), vec!["", m1.as_str(), _root0.as_str()]);
+    a.move_tab(2, 0);
+    assert_eq!(tab_roots(&a), vec!["", _root0.as_str(), m1.as_str()]);
+    assert_eq!(a.active_tab(), 1, "the dragged tab landed at 1, not 0");
+}

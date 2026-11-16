@@ -24,6 +24,11 @@ pub(super) enum PaneDrag {
     /// A minimap scrub: every tracked cell centres the viewport through the
     /// same [`minimap_scroll_to`] mapping a click uses — no press base.
     Minimap,
+    /// A tab-strip drag: the CURRENT index of the grabbed tab — the strip
+    /// re-hit-tests each tracked cell, so the tab slides under the pointer
+    /// (the index mutates as it moves). The press cell picks the tab; the
+    /// home tab (index 0) never starts one.
+    TabMove(usize),
 }
 
 /// The live splitter drag: which boundary was grabbed plus the pointer's
@@ -90,8 +95,8 @@ pub(super) fn reconcile_hover_tip(
 }
 
 /// Resolve a drag's press cell to the [`PaneDrag`] it starts — `None` on a
-/// surface with no drag meaning (the list, the strip, the status bar, pane
-/// chrome). The same resolution runs for `DragStart` and the `DragEnd`
+/// surface with no drag meaning (the list, the status bar, pane chrome, the
+/// home tab's cell). The same resolution runs for `DragStart` and the `DragEnd`
 /// flick-fallback (a terminal that delivered no Drag events still reports
 /// the release's displacement).
 pub(super) fn begin_pane_drag(
@@ -121,32 +126,53 @@ pub(super) fn begin_pane_drag(
             })
         }
         HitTarget::Minimap => Some(PaneDrag::Minimap),
+        // A press on a tab cell grabs it for reordering — the `×` column
+        // included (the whole cell is the tab). The home tab can't be
+        // dragged, so index 0 starts nothing (a flick off it stays inert).
+        HitTarget::Tab(i) | HitTarget::TabClose(i) if i > 0 => Some(PaneDrag::TabMove(i)),
         _ => None,
     }
 }
 
 /// Apply one tracked step of a live [`PaneDrag`]: the splitter writes its
 /// width, the pan replays `pan_offset` 1:1, the minimap centres on the
-/// scrubbed cell. The stored offsets then take the loop's per-frame
+/// scrubbed cell, and the tab drag re-hit-tests the pointer's cell — a hit
+/// on another tab slides the grabbed one there (the stored index tracks
+/// where it now sits). The stored offsets then take the loop's per-frame
 /// `clamp_lineage` like every other scroll writer.
 pub(super) fn apply_pane_drag(
     app: &mut App,
-    drag: PaneDrag,
+    drag: &mut PaneDrag,
+    chrome: &ChromeGeom,
     lineage: Option<&Layout>,
     area: Rect,
     at: ratatui::layout::Position,
 ) {
     match drag {
-        PaneDrag::Splitter(d) => apply_splitter_drag(app, d, at.x, area),
+        PaneDrag::Splitter(d) => apply_splitter_drag(app, *d, at.x, area),
         PaneDrag::LineagePan {
             origin,
             scroll_x,
             scroll_y,
         } => app.ui_state.pan_lineage(
-            pan_offset(scroll_x, origin.x, at.x),
-            pan_offset(scroll_y, origin.y, at.y),
+            pan_offset(*scroll_x, origin.x, at.x),
+            pan_offset(*scroll_y, origin.y, at.y),
         ),
         PaneDrag::Minimap => minimap_scroll_at(app, lineage, area, at.x, at.y),
+        PaneDrag::TabMove(from) => {
+            // Re-hit-test each tracked cell against the strip the frame
+            // drew: the grabbed tab takes the hovered tab's slot (hovering
+            // the home cell lands at index 1 — the leftmost movable slot —
+            // and off-strip cells just hold the last landing).
+            let g = chrome.hit_geometry(app, lineage, area, None);
+            if let Some(HitTarget::Tab(to) | HitTarget::TabClose(to)) = hit_target(&g, at.x, at.y) {
+                let to = to.max(1);
+                if to != *from {
+                    app.move_tab(*from, to);
+                    *from = to;
+                }
+            }
+        }
     }
 }
 
@@ -395,7 +421,7 @@ pub(super) fn handle_mouse(
             // '_' fallback arm is the last place a stale splitter drag can
             // hide (the stale-drag carry-over), so no abandoned drag resizes
             // or pans on a later unrelated event.
-            let continues_drag = sel
+            let continues_drag = panes_own
                 && match &gesture {
                     MouseOutcome::DragStart { button, .. }
                     | MouseOutcome::DragEnd { button, .. } => *button == MouseButton::Left,
@@ -594,31 +620,37 @@ pub(super) fn handle_mouse(
                 // past a bound keeps the grabbed surface's tracking. The
                 // assignment also clears any drag a superseding press left
                 // (a press on a non-drag surface begins nothing).
-                MouseOutcome::DragStart { button, origin, at } if sel => {
+                MouseOutcome::DragStart { button, origin, at } if panes_own => {
                     if *button == MouseButton::Left {
                         *pane_drag = begin_pane_drag(app, lineage, area, *origin, chrome);
-                        if let Some(d) = *pane_drag {
-                            apply_pane_drag(app, d, lineage, area, *at);
+                        if let Some(d) = pane_drag.as_mut() {
+                            apply_pane_drag(app, d, chrome, lineage, area, *at);
                         }
                     }
                 }
-                MouseOutcome::DragMove { at, .. } if sel => {
-                    if let Some(d) = *pane_drag {
-                        apply_pane_drag(app, d, lineage, area, *at);
+                MouseOutcome::DragMove { at, .. } if panes_own => {
+                    if let Some(d) = pane_drag.as_mut() {
+                        apply_pane_drag(app, d, chrome, lineage, area, *at);
                     }
                 }
                 MouseOutcome::DragEnd { button, origin, at }
-                    if sel && *button == MouseButton::Left =>
+                    if panes_own && *button == MouseButton::Left =>
                 {
-                    // A terminal can deliver no Drag events for a fast
-                    // flick (press → release elsewhere): the router still
-                    // reports DragEnd, so resolve the press cell like
-                    // DragStart before finishing.
-                    let d = (*pane_drag)
-                        .or_else(|| begin_pane_drag(app, lineage, area, *origin, chrome));
-                    if let Some(d) = d {
-                        apply_pane_drag(app, d, lineage, area, *at);
+                    if pane_drag.is_none() {
+                        // A terminal can deliver no Drag events for a fast
+                        // flick (press → release elsewhere): the router
+                        // still reports DragEnd, so resolve the press cell
+                        // like DragStart before finishing.
+                        let mut d = begin_pane_drag(app, lineage, area, *origin, chrome);
+                        if let Some(d) = d.as_mut() {
+                            apply_pane_drag(app, d, chrome, lineage, area, *at);
+                        }
                     }
+                    // A tracked drag needs NO release apply: its last
+                    // DragMove already committed the release cell's slot —
+                    // re-resolving would hit-test a surface the last slide
+                    // just rearranged (the dragged tab's own cell may no
+                    // longer cover the pointer).
                     *pane_drag = None;
                 }
                 _ => {}

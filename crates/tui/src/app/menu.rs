@@ -112,7 +112,7 @@ impl App {
             m => Some(Box::new(m)),
         };
         self.mode = Mode::Menu(MenuState {
-            target: uid.to_string(),
+            target: MenuTarget::Node(uid.to_string()),
             name,
             items,
             selected,
@@ -125,5 +125,80 @@ impl App {
     /// open path `a` uses, with the pointer cell as the anchor.
     pub(super) fn open_menu_for(&mut self, uid: &str, col: u16, row: u16) {
         self.open_menu(uid, MenuAnchor::Cell { col, row });
+    }
+
+    // ---- tab context menu -------------------------------------
+
+    /// The menu rows for the tab at `idx`, generated from
+    /// [`TAB_MENU_LAYOUT`]: every item slot resolves to the `(mode, action)`
+    /// BINDINGS row it names — the menu can never drift from the keymap.
+    /// Rows that can't fire for THIS tab are dropped: the home tab can't be
+    /// closed (no "close tab"), a rightmost tab has no right neighbours,
+    /// and a tab alone with home has no siblings to spare.
+    fn tab_menu_entries(&self, idx: usize) -> Vec<MenuEntry> {
+        let Some(tab) = self.tabs.get(idx) else {
+            return Vec::new();
+        };
+        let mut entries: Vec<MenuEntry> = Vec::new();
+        for slot in TAB_MENU_LAYOUT {
+            match slot {
+                MenuSlot::Separator => {
+                    if matches!(entries.last(), Some(MenuEntry::Item { .. })) {
+                        entries.push(MenuEntry::Separator);
+                    }
+                }
+                MenuSlot::Item(mode, action) => {
+                    let available = match action {
+                        crate::Action::TabClose => !tab.home,
+                        crate::Action::TabCloseOthers => {
+                            self.tabs.len() > if tab.home { 1 } else { 2 }
+                        }
+                        crate::Action::TabCloseRight => idx + 1 < self.tabs.len(),
+                        _ => true,
+                    };
+                    if !available {
+                        continue;
+                    }
+                    let Some(binding) = crate::action::BINDINGS
+                        .iter()
+                        .position(|b| b.mode == *mode && b.action == *action)
+                    else {
+                        continue; // layout slot names a missing row — see tests
+                    };
+                    let label = menu_slot_label(menu_slot_mark(*action), false);
+                    entries.push(MenuEntry::Item { binding, label });
+                }
+            }
+        }
+        if matches!(entries.last(), Some(MenuEntry::Separator)) {
+            entries.pop();
+        }
+        entries
+    }
+
+    /// Right-click on tab `idx`: activate it FIRST (the tab-close actions
+    /// all act on the ACTIVE tab — the menu's items can then reuse `X`/`W`/`R`
+    /// verbatim), then open its context menu anchored at the pointer cell.
+    /// The home tab answers too — it just drops the rows it can't run.
+    pub(super) fn open_tab_menu(&mut self, idx: usize, col: u16, row: u16) {
+        self.activate_tab(idx);
+        let items = self.tab_menu_entries(idx);
+        if items.is_empty() {
+            self.set_notice("no actions for this tab");
+            return;
+        }
+        let name = self.tab_labels().get(idx).cloned().unwrap_or_default();
+        let selected = items
+            .iter()
+            .position(|e| matches!(e, MenuEntry::Item { .. }))
+            .unwrap_or(0);
+        self.mode = Mode::Menu(MenuState {
+            target: MenuTarget::Tab(idx),
+            name,
+            items,
+            selected,
+            back: None,
+            anchor: MenuAnchor::Cell { col, row },
+        });
     }
 }

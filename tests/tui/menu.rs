@@ -285,6 +285,32 @@ pub(super) fn node_menu_renders_title_items_and_key_hints() {
 }
 
 #[test]
+pub(super) fn tab_menu_renders_title_items_and_key_hints() {
+    // Right-clicking a tab activates it, then opens its context menu at the
+    // pointer — the same box chrome the node menu draws.
+    use dbtl::ui::HitTarget;
+    use ratatui::crossterm::event::MouseButton;
+    let mut app = menu_app();
+    // Grow the strip so a mid-strip tab carries all three rows.
+    app.open_node_as_tab("model.sample.fct_orders");
+    app.open_node_as_tab("model.sample.fct_daily_orders");
+    app.click_target(&HitTarget::Tab(1), MouseButton::Right, (20, 0));
+    let buffer = render_app(&app, 140, 50);
+    let text = buffer_to_string(&buffer);
+    assert!(
+        text.contains("stg_orders"),
+        "the tab's name is the box title: {text}"
+    );
+    for label in ["Close tab", "Close other tabs", "Close tabs to the right"] {
+        assert!(text.contains(label), "menu item {label:?} missing: {text}");
+    }
+    // The rows carry their real binding keys — X/W/R mirror BINDINGS.
+    for key in ["X", "W", "R"] {
+        assert!(text.contains(key), "key hint {key:?} missing: {text}");
+    }
+}
+
+#[test]
 pub(super) fn help_filter_narrows_to_matching_bindings() {
     // `/copy` inside help: only the matching (Yank) section's rows stay —
     // a section with no match drops its header AND its rows, and the title

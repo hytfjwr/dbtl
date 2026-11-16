@@ -665,6 +665,249 @@ fn non_splitter_drag_and_right_button_are_inert() {
     assert!(drag.is_none());
 }
 
+// ------------------------------------------------------------------
+// Tab-strip drag: the press cell picks the tab, each tracked cell
+// re-hit-tests, and the grabbed tab slides under the pointer.
+// ------------------------------------------------------------------
+
+/// The wide-enough strip the tab tests feed: the fixture's model names are
+/// ~26-cell labels, so the default 100 columns can't show four tabs at
+/// once — the overflow arrows shed the cells these tests aim at.
+const WIDE_STRIP: Rect = Rect::new(0, 0, 160, 30);
+
+/// The first cell on the strip hit-testing as `HitTarget::Tab(want)` —
+/// aimed by the test like [`list_row_cell`], never hardcoded.
+fn tab_cell(app: &App, want: usize) -> (u16, u16) {
+    let chrome = ChromeGeom::default();
+    let g = chrome.hit_geometry(app, None, WIDE_STRIP, None);
+    let strip = g.panes.tab_bar;
+    for x in strip.x..strip.x + strip.width {
+        if hit_target(&g, x, strip.y) == Some(HitTarget::Tab(want)) {
+            return (x, strip.y);
+        }
+    }
+    panic!("no Tab({want}) cell resolved in the strip");
+}
+
+/// [`feed`] at the tab tests' [`WIDE_STRIP`].
+fn feed_w(
+    app: &mut App,
+    router: &mut MouseRouter,
+    drag: &mut Option<PaneDrag>,
+    kind: MouseEventKind,
+    x: u16,
+    y: u16,
+) {
+    feed_area(app, router, drag, kind, x, y, None, WIDE_STRIP);
+}
+
+/// The strip's labels with the `{n} ` position prefix stripped — the
+/// reorder tests' order assertion (labels re-number on every structure
+/// change, so the NAME part is the identity).
+fn strip_names(app: &App) -> Vec<String> {
+    app.tab_labels()
+        .iter()
+        .map(|l| match l.split_once(' ') {
+            Some((head, tail)) if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) => {
+                tail.to_string()
+            }
+            _ => l.clone(),
+        })
+        .collect()
+}
+
+/// Open two more tabs past the seeded one: `[home, root0, m1, m2]`.
+fn three_tab_app() -> (App, Vec<String>) {
+    let mut app = fixture_app();
+    for i in [1, 2] {
+        let uid = app.active_list().models[i].unique_id.clone();
+        app.open_node_as_tab(&uid);
+    }
+    let names = strip_names(&app);
+    (app, names)
+}
+
+#[test]
+fn tab_drag_slides_the_tab_under_the_pointer() {
+    let (mut app, before) = three_tab_app();
+    let mut router = MouseRouter::new();
+    let mut drag = None;
+    use MouseEventKind as K;
+    // Press tab 2, drag onto tab 3's cell, release — the grabbed tab
+    // takes the hovered slot and the order is [home, root0, m2, m1].
+    let (px, py) = tab_cell(&app, 2);
+    let (tx, _) = tab_cell(&app, 3);
+    for (kind, x) in [
+        (K::Down(MouseButton::Left), px),
+        (K::Drag(MouseButton::Left), tx),
+        (K::Up(MouseButton::Left), tx),
+    ] {
+        feed_w(&mut app, &mut router, &mut drag, kind, x, py);
+    }
+    assert_eq!(
+        strip_names(&app),
+        vec![
+            before[0].clone(),
+            before[1].clone(),
+            before[3].clone(),
+            before[2].clone()
+        ],
+        "the dragged tab took the hovered slot"
+    );
+    assert!(drag.is_none(), "release ends the drag");
+}
+
+#[test]
+fn tab_drag_walks_one_slot_per_cell_and_stays_off_home() {
+    let (mut app, before) = three_tab_app();
+    let mut router = MouseRouter::new();
+    let mut drag = None;
+    use MouseEventKind as K;
+    // Drag tab 3 left across tab 2's cell onto tab 1's: two single-cell
+    // slides through the re-hit-test, ending at index 1.
+    let (px, py) = tab_cell(&app, 3);
+    let (mx, _) = tab_cell(&app, 2);
+    let (tx, _) = tab_cell(&app, 1);
+    for (kind, x) in [
+        (K::Down(MouseButton::Left), px),
+        (K::Drag(MouseButton::Left), mx),
+        (K::Drag(MouseButton::Left), tx),
+        (K::Up(MouseButton::Left), tx),
+    ] {
+        feed_w(&mut app, &mut router, &mut drag, kind, x, py);
+    }
+    assert_eq!(
+        strip_names(&app),
+        vec![
+            before[0].clone(),
+            before[3].clone(),
+            before[1].clone(),
+            before[2].clone()
+        ],
+        "the tab walked to the left of every cell it crossed"
+    );
+
+    // Dragging a tab onto the HOME cell lands it at index 1 — the
+    // leftmost movable slot — never on home itself.
+    let (hx, _) = tab_cell(&app, 0);
+    let (px, py) = tab_cell(&app, 3);
+    for (kind, x) in [
+        (K::Down(MouseButton::Left), px),
+        (K::Drag(MouseButton::Left), hx),
+        (K::Up(MouseButton::Left), hx),
+    ] {
+        feed_w(&mut app, &mut router, &mut drag, kind, x, py);
+    }
+    let names = strip_names(&app);
+    assert_eq!(names[1], before[2].clone(), "the drop clamped onto index 1");
+    assert_eq!(names[0], before[0], "home never moved");
+}
+
+#[test]
+fn home_cell_and_clicks_stay_inert_to_the_drag() {
+    let (mut app, before) = three_tab_app();
+    let mut router = MouseRouter::new();
+    let mut drag = None;
+    use MouseEventKind as K;
+    // A press on the home cell arms NO drag — the strip is unchanged and
+    // the release doesn't reorder either.
+    let (hx, hy) = tab_cell(&app, 0);
+    let (tx, _) = tab_cell(&app, 2);
+    for (kind, x) in [
+        (K::Down(MouseButton::Left), hx),
+        (K::Drag(MouseButton::Left), tx),
+        (K::Up(MouseButton::Left), tx),
+    ] {
+        feed_w(&mut app, &mut router, &mut drag, kind, x, hy);
+    }
+    assert_eq!(strip_names(&app), before, "home can't be dragged");
+    assert!(drag.is_none());
+    assert_eq!(app.active_tab(), 3, "and a dragged-off press never clicks");
+
+    // A click (press + release on the same cell, no motion) still
+    // activates — the reorder never eats plain click semantics.
+    let (cx, cy) = tab_cell(&app, 2);
+    for kind in [K::Down(MouseButton::Left), K::Up(MouseButton::Left)] {
+        feed_w(&mut app, &mut router, &mut drag, kind, cx, cy);
+    }
+    assert_eq!(app.active_tab(), 2, "a plain click still activates");
+    assert_eq!(strip_names(&app), before, "and it never reorders");
+}
+
+#[test]
+fn tab_flick_without_drag_events_still_reorders() {
+    // A fast press -> release-on-another-cell reports no Drag motion at
+    // all; the DragEnd fallback resolves the press cell and drops anyway
+    // (the same flick path the splitter keeps).
+    let (mut app, before) = three_tab_app();
+    let mut router = MouseRouter::new();
+    let mut drag = None;
+    use MouseEventKind as K;
+    let (px, py) = tab_cell(&app, 2);
+    let (tx, _) = tab_cell(&app, 3);
+    for (kind, x) in [
+        (K::Down(MouseButton::Left), px),
+        (K::Up(MouseButton::Left), tx),
+    ] {
+        feed_w(&mut app, &mut router, &mut drag, kind, x, py);
+    }
+    assert_eq!(
+        strip_names(&app),
+        vec![
+            before[0].clone(),
+            before[1].clone(),
+            before[3].clone(),
+            before[2].clone()
+        ],
+        "the release cell decided the landing"
+    );
+    assert!(drag.is_none());
+}
+
+#[test]
+fn abandoned_tab_drag_clears_on_a_superseding_press() {
+    let (mut app, before) = three_tab_app();
+    let mut router = MouseRouter::new();
+    let mut drag = None;
+    use MouseEventKind as K;
+    // Arm a tab drag, then press the RIGHT button mid-gesture — the
+    // orphaned drag must not keep reordering on the new press's motion.
+    let (px, py) = tab_cell(&app, 2);
+    let (tx, _) = tab_cell(&app, 3);
+    for (kind, x) in [
+        (K::Down(MouseButton::Left), px),
+        (K::Drag(MouseButton::Left), tx),
+    ] {
+        feed_w(&mut app, &mut router, &mut drag, kind, x, py);
+    }
+    let mid = strip_names(&app);
+    assert_ne!(mid, before, "the first slide landed");
+    let (ox, _) = tab_cell(&app, 1);
+    let (nx, _) = tab_cell(&app, 2);
+    feed_w(
+        &mut app,
+        &mut router,
+        &mut drag,
+        K::Down(MouseButton::Right),
+        ox,
+        py,
+    );
+    feed_w(
+        &mut app,
+        &mut router,
+        &mut drag,
+        K::Drag(MouseButton::Right),
+        nx,
+        py,
+    );
+    assert_eq!(
+        strip_names(&app),
+        mid,
+        "the abandoned drag stopped tracking"
+    );
+    assert!(drag.is_none());
+}
+
 #[test]
 fn wheel_over_the_list_adopts_the_cursor_model_as_tab_root() {
     // Browsing is selecting: a wheel notch over the list moves the CURSOR, and

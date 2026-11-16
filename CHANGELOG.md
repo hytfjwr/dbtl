@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The tab strip gains a context menu and drag-and-drop reordering.
+  Right-clicking a tab — on its body or its `×` — activates it and
+  opens a menu with `Close tab`, `Close other tabs`, and `Close tabs
+  to the right`; the last two also sit on `W` and `R`. Items hide
+  when they can't act (the fixed `⌂` home tab offers no `Close
+  tab`, and the rightmost tab no `Close tabs to the right`). A
+  left-button drag reorders a tab live, carrying its whole per-tab
+  state — root, lineage view, cursor, history, collapse set, path
+  anchor, column trace, and scroll — with it; home stays pinned at
+  the left edge, so a drop onto it lands at the first model slot.
 - `dbtl lint --fix` / `--fix-dry-run` now list every edit the run
   refused, not just warn on stderr. The text summary ends with a
   `N fix edits refused:` line followed by one `file: rule — reason`
