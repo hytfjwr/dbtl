@@ -791,7 +791,9 @@ pub(super) fn order_by_without_limit(
 /// exists (raw or compiled) but wouldn't parse or resolve, so every
 /// SQL-backed judgment silently passed it. One finding per skipped model,
 /// carrying the [`UnparsedReason`] the analysis recorded — the same reason
-/// the summary's `unparsed` tally prints. The rule asks for every model's
+/// the summary's `unparsed` tally prints — plus that reason's own fix
+/// advice ([`UnparsedReason::help`]: a `JinjaGenerated` model compiles,
+/// a `ParseError` one repairs its Jinja). The rule asks for every model's
 /// facts itself rather than reading the tally other rules filled, so
 /// running it alone (`--rules unparsable_sql`) still names every skipped
 /// model — and still feeds `unparsed`, keeping the summary count honest.
@@ -820,15 +822,21 @@ pub(super) fn unparsable_sql(
             continue;
         }
         record_unparsed(dag, uid, sql, unparsed);
-        out.push(Finding::new(
-            LintRule::UnparsableSql,
-            (*uid).clone(),
-            vec![],
-            format!(
-                "{} was skipped by SQL rules: {}",
-                display_name(dag, uid),
-                unparsed_reason(sql, uid)
-            ),
-        ));
+        let reason = unparsed_reason(sql, uid);
+        out.push(
+            Finding::new(
+                LintRule::UnparsableSql,
+                (*uid).clone(),
+                vec![],
+                format!(
+                    "{} was skipped by SQL rules: {}",
+                    display_name(dag, uid),
+                    reason
+                ),
+            )
+            // The remedy is the reason's own — a macro-generating model
+            // compiles where a plain parse error edits its Jinja.
+            .with_help(reason.help()),
+        );
     }
 }

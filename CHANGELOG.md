@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- A model whose SQL statement body a `{{ }}` macro generates — a
+  whole-model `{{ pkg.macro() }}`, a macro supplying a whole `( … )`
+  subquery, or a macro writing the final `SELECT` after a written
+  `with` — now reports its own skip reason, `Jinja generates the query
+  ({{…}} at L:C)`, instead of an ordinary `parse error`, and
+  `unparsable_sql` findings carry per-reason help: generated bodies are
+  told to compile (`dbt compile` → `compiled_code` or the
+  `target/compiled/` files source mode reads), plain parse errors keep
+  the fix-your-Jinja advice. `ref()`/`source()`/`this`-only bodies and
+  ordinary syntax errors still report `parse error`.
+- The `unparsed_models` summary tally (count, names, reasons — and the
+  text summary's `N models skipped SQL rules` line) now excludes models
+  whose `enabled` value source mode could not evaluate, matching the
+  unprovable-finding drop those models already got. A run that used to
+  count such a model reports one fewer skipped model.
+
 ### Fixed
 
 - `--source` no longer links a two-argument `ref('pkg', 'name')` to a

@@ -9021,6 +9021,85 @@ fn unparsable_sql_never_judges_when_sql_is_absent() {
     );
 }
 
+#[test]
+fn unparsable_sql_help_matches_the_reason() {
+    // A macro generating the statement body gets compile advice; a
+    // plain parse error gets Jinja-repair advice — the finding's help
+    // is the reason's own, and the tally carries the reason with it.
+    let m = manifest(
+        vec![
+            model_sql("macro_body", "{{ some_pkg.union_all('a','b') }}"),
+            model_sql("broken", "select from where or"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only_opt_in(
+        LintRule::UnparsableSql,
+        "lint:\n  rules:\n    unparsable_sql: true\n",
+    );
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(matches!(
+        out.unparsed.get("model.p.macro_body"),
+        Some(UnparsedReason::JinjaGenerated { .. })
+    ));
+    let f = finding_on(&out.findings, LintRule::UnparsableSql, "model.p.macro_body");
+    assert!(f.help.is_some(), "the finding carries the reason's help");
+    assert!(
+        f.message.contains("Jinja generates the query"),
+        "{}",
+        f.message
+    );
+    assert!(
+        f.effective_help().contains("dbt compile"),
+        "{}",
+        f.effective_help()
+    );
+    let f = finding_on(&out.findings, LintRule::UnparsableSql, "model.p.broken");
+    assert!(f.help.is_some(), "the finding carries the reason's help");
+    assert!(f.message.contains("parse error"), "{}", f.message);
+    assert!(
+        f.effective_help().contains("renders valid SQL"),
+        "{}",
+        f.effective_help()
+    );
+}
+
+#[test]
+fn enabled_unverifiable_models_leave_the_unparsed_tally() {
+    // A model whose `enabled` couldn't be evaluated keeps nothing in
+    // the tally: a finding claiming its skip would be dropped too, so
+    // counting it could only mislead.
+    let mut m = manifest(
+        vec![
+            model_sql("certain", "select from where or"),
+            model_sql("uncertain", "select from where or"),
+        ],
+        vec![],
+        &[],
+    );
+    m.enabled_unverifiable.insert("model.p.uncertain".into());
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only_opt_in(
+        LintRule::UnparsableSql,
+        "lint:\n  rules:\n    unparsable_sql: true\n",
+    );
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnparsableSql),
+        vec!["model.p.certain"],
+        "the unverifiable model's finding drops like every other's"
+    );
+    assert_eq!(
+        out.unparsed.keys().collect::<Vec<_>>(),
+        vec!["model.p.certain"],
+        "…and the tally drops it the same way"
+    );
+}
+
 // ---- pathological SQL depth ------------------------------------------------
 //
 // A flat infix/set-op chain (`x and …`, `x || …`, `union all …`) builds
