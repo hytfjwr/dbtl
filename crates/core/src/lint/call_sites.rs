@@ -17,7 +17,8 @@ use std::rc::Rc;
 use crate::dag::{normalize_version, versioned_model_segs, Dag};
 use crate::source::{
     arms_exclusive, call_sites_masked, config_arg, jinja_branches, kwarg, lit_value,
-    mask_jinja_comments, ArmKind, ArmStep, CallKind, CallSite, JinjaBranches,
+    mask_jinja_comments, scan_python, ArmKind, ArmStep, CallKind, CallSite, JinjaBranches,
+    PyCallKind,
 };
 
 use super::{Finding, Label};
@@ -143,6 +144,10 @@ struct Sites<'a> {
     parents: &'a [String],
     masked: Cow<'a, str>,
     sites: Vec<CallSite>,
+    /// A `.py` file's "calls `dbt.ref`/`dbt.source` at all" fact —
+    /// [`CallSites::has_dependency_calls`] reads it; `sites` stays empty
+    /// because call spans index SQL text, not Python.
+    py_dep_calls: bool,
     /// The `{% if %}`/`{% for %}` arm structure — which `sites` can never
     /// execute in one render (`multiple_sources_joined` reads it through
     /// [`CallSites::simultaneous_parents`]).
@@ -197,10 +202,12 @@ impl<'a> CallSiteResolver<'a> {
 
     /// The calls `uid`'s raw SQL makes — `None` for a node without raw
     /// code (sources/seeds/exposures), without a declared file, or whose
-    /// file isn't SQL (`dbt.ref()` in a Python model gets no position).
-    /// YAML-defined snapshots carry the `.yml` file, so their synthesized
-    /// `select * from {{ ref(…) }}` never reaches here either — call
-    /// spans index `raw_code`, which wouldn't name real `.yml` offsets.
+    /// file is neither SQL nor Python. A Python model's `dbt.*` calls get
+    /// no position — only the dep-call fact `has_dependency_calls` reads
+    /// is extracted. YAML-defined snapshots carry the `.yml` file, so
+    /// their synthesized `select * from {{ ref(…) }}` never reaches here
+    /// either — call spans index `raw_code`, which wouldn't name real
+    /// `.yml` offsets.
     pub(crate) fn for_node(&self, uid: &str) -> Option<CallSites<'a>> {
         if let Some(entry) = self.memo.borrow().get(uid) {
             return entry.as_ref().map(|sites| self.make(sites.clone()));
@@ -218,10 +225,28 @@ impl<'a> CallSiteResolver<'a> {
     /// edge set per call/parent pair.
     fn extract(&self, uid: &str) -> Option<Sites<'a>> {
         let file = self.dag.detail(uid)?.original_file_path.as_deref()?;
+        let text = self.dag.raw_code(uid)?;
+        if file.ends_with(".py") {
+            // A `.py` model's `dbt.*` calls carry no SQL spans — only the
+            // dep-call fact `has_dependency_calls` reports is extracted.
+            let py_dep_calls = scan_python(text)
+                .calls
+                .iter()
+                .any(|c| matches!(c.kind, PyCallKind::Ref | PyCallKind::Source));
+            return Some(Sites {
+                file,
+                text,
+                parents: self.dag.direct_parents(uid),
+                masked: Cow::Borrowed(text),
+                sites: Vec::new(),
+                py_dep_calls,
+                branches: JinjaBranches::default(),
+                lines: std::cell::OnceCell::new(),
+            });
+        }
         if !file.ends_with(".sql") {
             return None;
         }
-        let text = self.dag.raw_code(uid)?;
         // One mask pass feeds both the call scan and the arg parsing —
         // free when the file carries no `{#` comments.
         let masked = mask_jinja_comments(text);
@@ -233,6 +258,7 @@ impl<'a> CallSiteResolver<'a> {
             parents: self.dag.direct_parents(uid), // &[String] — no clone
             masked,
             sites,
+            py_dep_calls: false,
             branches,
             lines: std::cell::OnceCell::new(),
         })
@@ -296,17 +322,20 @@ impl<'a> CallSites<'a> {
         (idx as u32 + 1, column)
     }
 
-    /// Whether the node's raw SQL calls `ref()` or `source()` at all —
+    /// Whether the node's raw code calls `ref()`/`source()` (`dbt.ref`/
+    /// `dbt.source` in `.py`) at all —
     /// regardless of whether any call produced a graph edge. `root_models`
     /// uses it to tell a genuinely parentless model from one whose only
     /// refs failed to resolve (source mode never parses installed
     /// packages, so a `ref('pkg_model')` drops without an edge — the model
     /// is not a root, it is under-connected).
     pub(crate) fn has_dependency_calls(&self) -> bool {
-        self.sites
-            .sites
-            .iter()
-            .any(|c| matches!(c.kind, CallKind::Ref { .. } | CallKind::Source { .. }))
+        self.sites.py_dep_calls
+            || self
+                .sites
+                .sites
+                .iter()
+                .any(|c| matches!(c.kind, CallKind::Ref { .. } | CallKind::Source { .. }))
     }
 
     /// Every literal `ref()`/`source()` call in the node's raw SQL — the

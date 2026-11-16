@@ -9,3 +9,15 @@ models:
           - unique
           - not_null
       - name: status
+  - name: sbx_py_probe
+    description: "Sandbox probe — a python model under the folder's `+enabled` expression"
+    config:
+      # A schema `config:` still beats the python `table` default —
+      # the only materialization channel above it is `dbt.config()`.
+      materialized: view
+    columns:
+      - name: shipment_id
+        description: "Shipment number"
+        tests:
+          - unique
+          - not_null

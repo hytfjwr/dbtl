@@ -53,6 +53,9 @@ pub(super) struct Synthesis {
     /// (uid, Jinja-comment-masked SQL) deferred to the ref/source pass —
     /// masking preserves byte length, so call-site offsets index the raw text.
     node_sql: Vec<(String, String)>,
+    /// `.py` models' parsed `dbt.*` calls deferred to the edge pass — the
+    /// python half of `node_sql`.
+    node_python: Vec<DeferredPy>,
     /// uid -> dbt_project.yml tree materialization, applied AFTER schema.yml
     /// (precedence: in-file config() > schema.yml > project tree > default view).
     tree_mat: HashMap<String, String>,
@@ -107,6 +110,18 @@ pub(super) struct EdgeExtras {
     /// The unresolvable-call record — `unresolved_adjacent`'s raw
     /// material.
     pub unresolved: UnresolvedCalls,
+}
+
+/// A `.py` model's parsed `dbt.*` calls deferred to the edge pass — the
+/// python half of `node_sql`. `jinja` flags a file dbt itself rejects
+/// (Jinja markup is a parse error in a `.py`): its calls are still read,
+/// but the file may hide adjacency the text can't show.
+pub(super) struct DeferredPy {
+    pub(super) uid: String,
+    /// The `dbt.ref`/`dbt.source` calls — `dbt.config` calls configure the
+    /// node at collection and never produce edges.
+    pub(super) calls: Vec<PyCall>,
+    pub(super) jinja: bool,
 }
 
 /// `resolve_edges`'s product — the two adjacency maps plus the extra
@@ -251,6 +266,7 @@ impl Synthesis {
             name_index: HashMap::new(),
             unit_tests: HashMap::new(),
             node_sql: Vec::new(),
+            node_python: Vec::new(),
             tree_mat: HashMap::new(),
             tree_meta: HashMap::new(),
             tree_uk: HashMap::new(),
@@ -370,6 +386,133 @@ impl Synthesis {
             );
             self.name_index.insert(name, uid.clone());
             self.node_sql.push((uid, masked));
+        }
+    }
+
+    /// The python half of model discovery: every `.py` under `model-paths`
+    /// becomes a `model.*` node — `language: "python"`, `raw_code` the file's
+    /// whole text, and `dbt.config(...)` literals as the in-file config
+    /// (kwargs or a positional dict — dbt accepts both). A `.sql` file of
+    /// the same stem claims the name first (models are collected before
+    /// python files, both in path order), matching the duplicate-name
+    /// stance `collect_models` takes. `def model`-missing files and
+    /// Jinja-marked files are dbt parse errors — kept with warnings, like
+    /// every other recoverable oddity.
+    pub(super) fn collect_python_models(&mut self) {
+        for (file, root) in collect_with_root(&self.dir, &self.model_paths, "py") {
+            let raw = read(&file);
+            let name = file_stem(&file);
+            // A `<name>_v<ver>` stem declares the `<name>` family — same
+            // convention as `.sql` stems.
+            if let Some(family) = version_family(&name) {
+                self.assumed_names.insert(family.to_string());
+            }
+            let uid = format!("model.{}.{name}", self.proj);
+            let path = rel_path(&root, &file);
+            let ofp = rel_path(&self.dir, &file);
+            let tree = resolve_tree_config(
+                &self.project.models,
+                &tree_segments(&self.proj, &path),
+                "models".to_string(),
+                &mut self.warnings,
+                Some(&self.vars),
+            );
+            let scan = scan_python(&raw);
+            if scan.model_defs != 1 {
+                self.warnings.push(format!(
+                    "{ofp}: dbt expects exactly one 'def model' per python file (found {}); the model is kept anyway",
+                    scan.model_defs
+                ));
+            }
+            if scan.has_jinja {
+                self.warnings.push(format!(
+                    "{ofp}: Jinja markup is not allowed in a python model (a dbt parse error); its dbt.* calls may be misread"
+                ));
+            }
+            let cfg = py_file_config(&scan, &mut self.warnings, &ofp);
+            // `enabled` parks like the SQL `disabled` path: a proven
+            // literal `False` in `dbt.config(...)`, or the tree's
+            // `+enabled: false`. A declared-but-unreadable or non-bool
+            // value warns and stays enabled — an unproven value never
+            // disables (the stance `Patterns::disabled` takes).
+            let disabled = match cfg.enabled {
+                Some(Some(serde_json::Value::Bool(b))) => !b,
+                Some(Some(v)) => {
+                    self.warnings.push(format!(
+                        "{ofp}: config(enabled={v}) is not a boolean literal; the resource stays enabled"
+                    ));
+                    false
+                }
+                Some(None) => {
+                    self.warnings.push(format!(
+                        "{ofp}: config(enabled=...) could not be evaluated as a boolean; the resource stays enabled"
+                    ));
+                    false
+                }
+                None => false,
+            };
+            if disabled || tree.enabled == Some(false) {
+                self.disabled_names
+                    .entry(name)
+                    .or_default()
+                    .insert("model".to_string());
+                continue;
+            }
+            if self.name_index.contains_key(&name) {
+                self.warnings
+                    .push(format!("duplicate resource name '{name}': ignoring {ofp}"));
+                continue;
+            }
+            // The tree's other `+` keys DO reach a python model — but
+            // `+materialized` deliberately does not: dbt's python default
+            // `table` outranks the tree (verified: a `+materialized:
+            // view` tree still yields `table` on a config-less `.py`), so
+            // `tree_mat` never gains an entry for it.
+            if !tree.meta.is_empty() {
+                self.tree_meta.insert(uid.clone(), tree.meta.clone());
+            }
+            if let Some(uk) = &tree.unique_key {
+                self.tree_uk.insert(uid.clone(), uk.clone());
+            }
+            self.tree_gov.insert(uid.clone(), tree.clone());
+            self.nodes.insert(
+                uid.clone(),
+                RawNode {
+                    name: name.clone(),
+                    resource_type: "model".to_string(),
+                    path: Some(path),
+                    original_file_path: Some(ofp),
+                    config: RawConfig {
+                        // In-file `dbt.config(...)` is the HIGHEST
+                        // precedence level — schema.yml and the python
+                        // `table` default fill below it.
+                        materialized: cfg.materialized,
+                        unique_key: cfg.unique_key,
+                        incremental_strategy: cfg.incremental_strategy.clone(),
+                    },
+                    access: cfg.access,
+                    group: cfg.group,
+                    contract: cfg.contract,
+                    // dbt records `language: "python"` on a .py-defined model.
+                    language: Some("python".to_string()),
+                    meta: cfg.meta,
+                    raw_code: Some(raw),
+                    alias: cfg.alias,
+                    ..Default::default()
+                },
+            );
+            self.name_index.insert(name, uid.clone());
+            self.node_python.push(DeferredPy {
+                uid,
+                // `dbt.config` calls configure the node at collection;
+                // only the dependency calls defer to the edge pass.
+                calls: scan
+                    .calls
+                    .into_iter()
+                    .filter(|c| c.kind != PyCallKind::Config)
+                    .collect(),
+                jinja: scan.has_jinja,
+            });
         }
     }
 
@@ -799,6 +942,82 @@ impl Synthesis {
                 parent_map.insert(uid.clone(), parents);
             }
         }
+        // The `.py` models' `dbt.ref`/`dbt.source` calls — resolved like
+        // the SQL pass: a literal call names its target (an unresolvable
+        // name drops like an unresolved SQL ref), and a call that can't
+        // literal-eval — a variable, an f-string arg, a `*`/`**` spread,
+        // an unbalanced shape — fabricates no edge but counts into the
+        // unprovable-adjacency record (its string literals stay
+        // source-table candidates), the same stance the macro path takes.
+        for d in &self.node_python {
+            let mut parents: Vec<String> = Vec::new();
+            if d.jinja {
+                *extras.unresolved.parents.entry(d.uid.clone()).or_default() += 1;
+            }
+            for call in &d.calls {
+                match call.kind {
+                    PyCallKind::Config => {}
+                    PyCallKind::Ref => match &call.args {
+                        Some(args) if args.is_literal() => {
+                            match ref_name(args) {
+                                Some(name) => {
+                                    if let Some(parent) = self.name_index.get(name) {
+                                        parents.push(parent.clone());
+                                    }
+                                }
+                                // A literal call dbt itself would reject
+                                // (>2 positionals, a non-string name).
+                                None => {
+                                    *extras.unresolved.parents.entry(d.uid.clone()).or_default() +=
+                                        1;
+                                }
+                            }
+                        }
+                        Some(args) => {
+                            *extras.unresolved.parents.entry(d.uid.clone()).or_default() += 1;
+                            extras
+                                .unresolved
+                                .candidates
+                                .extend(args.literals.iter().cloned());
+                        }
+                        None => {
+                            *extras.unresolved.parents.entry(d.uid.clone()).or_default() += 1;
+                        }
+                    },
+                    PyCallKind::Source => match &call.args {
+                        Some(args) if args.is_literal() => match source_name(args) {
+                            Some((src, tbl)) => {
+                                parents.push(format!("source.{}.{}.{}", self.proj, src, tbl));
+                            }
+                            None => {
+                                *extras.unresolved.parents.entry(d.uid.clone()).or_default() += 1;
+                            }
+                        },
+                        Some(args) => {
+                            *extras.unresolved.parents.entry(d.uid.clone()).or_default() += 1;
+                            extras
+                                .unresolved
+                                .candidates
+                                .extend(args.literals.iter().cloned());
+                        }
+                        None => {
+                            *extras.unresolved.parents.entry(d.uid.clone()).or_default() += 1;
+                        }
+                    },
+                }
+            }
+            if !parents.is_empty() {
+                parents.sort();
+                parents.dedup();
+                for parent in &parents {
+                    child_map
+                        .entry(parent.clone())
+                        .or_default()
+                        .push(d.uid.clone());
+                }
+                parent_map.insert(d.uid.clone(), parents);
+            }
+        }
         for children in child_map.values_mut() {
             children.sort();
             children.dedup();
@@ -1186,11 +1405,19 @@ impl Synthesis {
     pub(super) fn apply_tree_fallback(&mut self) {
         for (uid, node) in self.nodes.iter_mut() {
             if node.resource_type == "model" && node.config.materialized.is_none() {
-                node.config.materialized = self
-                    .tree_mat
-                    .get(uid)
-                    .cloned()
-                    .or_else(|| Some("view".to_string()));
+                node.config.materialized = if node.language.as_deref() == Some("python") {
+                    // A python model's default is `table`, and the
+                    // project tree's `+materialized` never reaches it
+                    // (verified: a `+materialized: view` tree still
+                    // yields `table` on a config-less `.py`). Only
+                    // schema.yml `config: materialized:` sits above it.
+                    Some("table".to_string())
+                } else {
+                    self.tree_mat
+                        .get(uid)
+                        .cloned()
+                        .or_else(|| Some("view".to_string()))
+                };
             }
             if let Some(tree) = self.tree_meta.get(uid) {
                 for (k, v) in tree {
