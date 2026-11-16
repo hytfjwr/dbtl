@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-16
+
 ### Added
 
 - An opt-in `unparsable_sql` lint rule (off under `standard`, on under
@@ -1033,7 +1035,8 @@ Maintenance release — dependency updates only.
 - Initial release: a terminal UI for dbt model lineage, from a compiled
   `target/manifest.json` or straight from project source.
 
-[Unreleased]: https://github.com/hytfjwr/dbtl/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/hytfjwr/dbtl/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/hytfjwr/dbtl/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/hytfjwr/dbtl/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/hytfjwr/dbtl/compare/v0.6.4...v0.7.0
 [0.6.4]: https://github.com/hytfjwr/dbtl/compare/v0.6.3...v0.6.4
