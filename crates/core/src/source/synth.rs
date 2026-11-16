@@ -881,6 +881,21 @@ impl Synthesis {
                 ));
                 continue;
             }
+            // A `<fam>_v<v>` stem whose family declared `versions:` but
+            // left this file unclaimed names an undeclared version of a
+            // versioned model — a dbt parse error, never an independent
+            // `fam_v` model. Drop it the same way.
+            if let Some(family) = version_family(&p.name) {
+                if declared.contains(family) {
+                    self.warnings.push(format!(
+                        "{}: '{}' is an implementation file for versioned model '{}' but matches no declared version (a dbt parse error); ignoring it",
+                        rel_path(&self.dir, &p.file),
+                        p.name,
+                        family
+                    ));
+                    continue;
+                }
+            }
             self.materialize_unversioned(p);
         }
     }
