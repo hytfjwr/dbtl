@@ -25,6 +25,7 @@ pub struct FixEdit {
 /// What [`plan_node_edits`] decided on one node: the safe edits plus,
 /// per flagged finding that produced none, why — the refusal rows the
 /// report lists.
+#[derive(Debug)]
 pub struct NodeFixPlan {
     /// The deletions `--fix` may make — same contract the bare
     /// `Vec<FixEdit>` return had.
@@ -55,6 +56,19 @@ pub fn plan_node_edits(
         return plan;
     };
     let dialect = sql.dialect();
+    if sql.sql_facts(dag, uid).is_some_and(|f| f.elided_clauses) {
+        // A `{{ }}` at a clause boundary rendered to whitespace — the
+        // parse every edit would be computed on can't see the clause
+        // the tag emits (a JOIN arm, a LIMIT, a WHERE arm), so no
+        // finding it produced is safe to act on.
+        for rule in rules {
+            plan.refused.push((
+                *rule,
+                "a `{{ }}` at a clause boundary rendered to whitespace — the parse can't see the clause the tag emits".to_string(),
+            ));
+        }
+        return plan;
+    }
     if rules.contains(&LintRule::TrailingSemicolon) {
         match semicolon_delete(raw, dialect) {
             Ok(range) => plan.edits.push(FixEdit {
@@ -67,7 +81,17 @@ pub fn plan_node_edits(
         }
     }
     if rules.contains(&LintRule::UnusedCte) {
-        if let (Some(facts), Some(pos)) = (sql.sql_facts(dag, uid), sql.sql_positions(dag, uid)) {
+        if sql.sql_facts(dag, uid).is_some_and(|f| f.in_rhs) {
+            // `(NULL)` stands in for the tag's `IN`/`ANY`/`SOME`/`ALL`
+            // right-hand side — the macro could return a subquery
+            // reading the CTE the parse counted unread.
+            plan.refused.push((
+                LintRule::UnusedCte,
+                "a `{{ }}` on an `IN` right-hand side may read the CTE through a subquery the parse can't see".to_string(),
+            ));
+        } else if let (Some(facts), Some(pos)) =
+            (sql.sql_facts(dag, uid), sql.sql_positions(dag, uid))
+        {
             // Pair judged names with raw declaration ranges exactly like
             // the rule's own position pass: a judged name underlines the
             // raw decls that count it the same — or the lone one — so a

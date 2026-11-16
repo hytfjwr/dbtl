@@ -132,6 +132,7 @@ Two rules are auto-fixable today. `trailing_semicolon` removes the statement's f
 A fix is only ever applied when it is provably safe — the edit is refused, and the finding simply stays, when:
 
 - the finding's span does not map to literal source bytes (a `;` inside an `{% if %}` arm or a CTE definition the Jinja template produces),
+- the model's render dropped a `{{ }}` at a clause boundary, or stood `(NULL)` in on an `IN`/`ANY`/`SOME`/`ALL` right-hand side — the parse can't see the clause or subquery the tag emits, so no edit computed on it is safe,
 - deleting the range would split a Jinja tag or a paired `{% … %}`/`{% end… %}` block,
 - the result would not re-parse, or would introduce a finding under any other rule (a deleted CTE holding the last `ref()` to a model is left in place — removing it would orphan that model),
 - the file on disk no longer matches the graph's raw text (a stale `manifest.json` or a mid-run edit), or the planned edits overlap.
