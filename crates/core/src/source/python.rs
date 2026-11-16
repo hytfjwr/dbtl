@@ -21,8 +21,8 @@ use super::*;
 
 /// The calls and file-level facts one `.py` scan produces — `calls` are
 /// `dbt.ref`/`dbt.source`/`dbt.config` invocations in file order.
-pub(super) struct PyScan {
-    pub(super) calls: Vec<PyCall>,
+pub(crate) struct PyScan {
+    pub(crate) calls: Vec<PyCall>,
     /// `def model(` count — dbt requires exactly one.
     pub(super) model_defs: usize,
     /// `{{`/`{%`/`{#` anywhere in the file — Jinja in a python model is a
@@ -31,15 +31,15 @@ pub(super) struct PyScan {
 }
 
 /// One `dbt.ref`/`dbt.source`/`dbt.config` call the scan found.
-pub(super) struct PyCall {
-    pub(super) kind: PyCallKind,
+pub(crate) struct PyCall {
+    pub(crate) kind: PyCallKind,
     /// The call's literal-evaluated arguments — `None` when the balanced
     /// paren scan couldn't read the call (a dbt syntax error).
     pub(super) args: Option<PyArgs>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PyCallKind {
+pub(crate) enum PyCallKind {
     Ref,
     Source,
     Config,
@@ -171,7 +171,7 @@ pub(super) struct PyFileConfig {
 }
 
 /// Scan `text` (a `.py` model file) for the calls dbt tracks.
-pub(super) fn scan_python(text: &str) -> PyScan {
+pub(crate) fn scan_python(text: &str) -> PyScan {
     let masked = mask_python(text);
     let mut calls = Vec::new();
     for c in dbt_call_re().captures_iter(&masked) {

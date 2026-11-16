@@ -240,4 +240,5 @@ pub use patterns::{
 };
 pub(crate) use patterns::{config_arg, kwarg, lit_value};
 pub(crate) use patterns::{find_subslice, jinja_set_assigns, jinja_tag_close, tag_word};
+pub(crate) use python::{scan_python, PyCallKind};
 pub use vars::CliVars;

@@ -1747,6 +1747,37 @@ fn python_nonliteral_call_marks_unverifiable() {
     );
 }
 
+/// A `.py` model whose every `dbt.*` call is literal but unresolvable —
+/// a typo'd `ref`, a `ref` to an installed-package model (source mode
+/// never reads `dbt_packages/`), a `source` nothing declares — is
+/// under-connected, not parentless: `root_models` must not claim "no
+/// parents" on it, the same stance `has_dependency_calls` already takes
+/// for a `.sql` file's calls.
+#[test]
+fn python_unresolvable_calls_still_suppress_root_models() {
+    let tmp = tiny_project(&[
+        (
+            "models/py_ref.py",
+            "def model(dbt, session):\n    return dbt.ref('no_such_model')\n",
+        ),
+        (
+            "models/py_src2.py",
+            "def model(dbt, session):\n    return dbt.source('no_such_src', 'tbl')\n",
+        ),
+    ]);
+    let dag = load_dag_from_source(tmp.path()).unwrap();
+    assert!(
+        dag.direct_parents("model.d.py_ref").is_empty()
+            && dag.direct_parents("model.d.py_src2").is_empty(),
+        "unresolvable calls produce no edges"
+    );
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    assert!(
+        findings.iter().all(|f| f.rule != LintRule::RootModels),
+        "root_models may not fire on under-connected python models: {findings:?}"
+    );
+}
+
 /// `dbt.config` kwargs AND a positional dict literal are both the
 /// highest-precedence in-file channel (over schema `config:` — which
 /// itself beats the python `table` default).
