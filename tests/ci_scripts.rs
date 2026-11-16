@@ -1290,8 +1290,9 @@ fn a_newest_attempt_without_jobs_is_left_alone() {
 /// annotation, so nothing retries them.
 #[test]
 fn cancellations_are_left_alone() {
-    // A run-level cancel (a person or the concurrency group) fails the
-    // conclusion gate before any job is even read.
+    // A run-level cancel (a person or the concurrency group) ran no jobs
+    // at all, so the zero-jobs gate reports it first — it shares the
+    // queued/empty shape; the conclusion gate would veto it regardless.
     let map = retry_decision(
         &run_json("cancelled", 1, "aaaa0000"),
         &jobs_json(&[]),
@@ -1494,6 +1495,105 @@ fn sweep_evaluates_only_recent_bot_failures() {
     assert_eq!(kv(&out)["swept"], "1");
 }
 
+/// Every watched workflow's bot failures are candidates — the listing
+/// filter must admit Dogfood and Security rows, not only CI's.
+#[test]
+fn sweep_evaluates_each_watched_workflow() {
+    let dir = tempfile::tempdir().unwrap();
+    let listing = runs_listing(&[
+        listed_run(
+            9001,
+            "CI",
+            "failure",
+            "github-actions[bot]",
+            "2026-11-17T10:00:00Z",
+        ),
+        listed_run(
+            9002,
+            "Dogfood",
+            "failure",
+            "github-actions[bot]",
+            "2026-11-17T09:00:00Z",
+        ),
+        listed_run(
+            9003,
+            "Security",
+            "failure",
+            "github-actions[bot]",
+            "2026-11-17T08:00:00Z",
+        ),
+    ]);
+    for id in ["9001", "9002", "9003"] {
+        let run_dir = dir.path().join(id);
+        std::fs::create_dir(&run_dir).unwrap();
+        bot_run_fixture(&run_dir);
+    }
+
+    let out = sweep(dir.path(), &listing, "2026-11-17T00:00:00Z", &["--dry-run"]);
+    let text = stdout(&out);
+    // Newest first — the cap reads off the top of this order.
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.starts_with("evaluated="))
+            .collect::<Vec<_>>(),
+        vec!["evaluated=9001", "evaluated=9002", "evaluated=9003"],
+        "all three watched workflows evaluate, newest first: {text}"
+    );
+    assert_eq!(kv(&out)["swept"], "3");
+}
+
+/// A candidate the decision vetoes still counts as evaluated — the sweep
+/// reports it and moves on: no `rerun=`, no `issued=`, and no `error=`
+/// (a veto is a verdict, not a decision failure).
+#[test]
+fn sweep_reports_a_vetoed_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let listing = runs_listing(&[listed_run(
+        9001,
+        "CI",
+        "failure",
+        "github-actions[bot]",
+        "2026-11-17T10:00:00Z",
+    )]);
+    let run_dir = dir.path().join("9001");
+    std::fs::create_dir(&run_dir).unwrap();
+    // A real job failure mixed in with the lost runner — vetoed.
+    write_run_fixtures(
+        &run_dir,
+        &run_json("failure", 1, "aaaa0000"),
+        &jobs_json(&[
+            (1, "changes", "success"),
+            (2, "Build & Test (macos-latest)", "cancelled"),
+            (3, "Build & Test (ubuntu-latest)", "failure"),
+            (4, "CI result", "failure"),
+        ]),
+        &[
+            (2, annotations_json(&[ACQUIRED])),
+            (3, annotations_json(&["1 test failed"])),
+        ],
+        Some("aaaa0000"),
+        &[],
+    );
+
+    let out = sweep(dir.path(), &listing, "2026-11-17T00:00:00Z", &[]);
+    let text = stdout(&out);
+    assert!(
+        text.lines().any(|l| l == "evaluated=9001"),
+        "the vetoed run is still evaluated: {text}"
+    );
+    assert!(
+        !text
+            .lines()
+            .any(|l| l.starts_with("rerun=") || l.starts_with("issued=")),
+        "a vetoed run is never re-issued: {text}"
+    );
+    assert!(
+        !text.lines().any(|l| l.starts_with("error=")),
+        "a veto is not a decision error: {text}"
+    );
+    assert_eq!(kv(&out)["swept"], "1");
+}
+
 /// Without `--dry-run` the accepted run is actually re-issued — the
 /// schedule's whole point. The listing and the per-run decision are
 /// unchanged from the dry-run case.
@@ -1546,6 +1646,35 @@ fn sweep_run_id_evaluates_the_pinned_run() {
         "the pinned run is evaluated by its own fixtures: {text}"
     );
     assert!(text.lines().any(|l| l == "rerun=123"), "{text}");
+}
+
+/// The sweep's watched-workflow set lives in the shell script, while the
+/// event path's lives in the workflow trigger — the two are the same set
+/// by contract, and drift would leave a gating workflow reachable by
+/// neither path.
+#[test]
+fn sweep_watches_the_same_workflows_the_event_path_does() {
+    let wf = workflow("retry-runner-failures.yml");
+    let mut triggered: Vec<String> = wf["on"]["workflow_run"]["workflows"]
+        .as_sequence()
+        .expect("workflow_run.workflows is a list")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    triggered.sort();
+
+    let text = std::fs::read_to_string(script("retry-runner-sweep.sh")).unwrap();
+    let marker = "WATCHED_NAMES='";
+    let start = text.find(marker).expect("the sweep declares WATCHED_NAMES") + marker.len();
+    let end = start + text[start..].find('\'').expect("WATCHED_NAMES closes");
+    let mut swept: Vec<String> =
+        serde_json::from_str(&text[start..end]).expect("WATCHED_NAMES is a JSON list");
+    swept.sort();
+
+    assert_eq!(
+        triggered, swept,
+        "the sweep's listing filter must name exactly the workflow_run set"
+    );
 }
 
 /// The retry workflow keeps the event path for human-authored runs and

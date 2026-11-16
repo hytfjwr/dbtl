@@ -40,9 +40,10 @@
 #
 # With `--run-id` the fixture directory IS the run's fixture directory.
 # stdout reports `evaluated=<id>` per run inspected, `rerun=<id>` per
-# run the decision accepted, and `issued=<id>` per re-run dispatched (in
-# offline mode: would be dispatched). `--summary <file>` appends a
-# Markdown bullet list with one line per evaluated run.
+# run the decision accepted, `issued=<id>` per re-run dispatched (in
+# offline mode: would be dispatched), and `error=<id>` per run whose
+# decision itself failed. `--summary <file>` appends a Markdown bullet
+# list with one line per evaluated run.
 set -euo pipefail
 
 BOT_ACTOR='github-actions[bot]'
@@ -142,10 +143,15 @@ candidates() {
     if [ -n "$FIXTURES" ]; then
         list_json="$FIXTURES/runs.json"
     else
-        gh api "repos/$GH_REPO/actions/runs" \
+        # -X GET keeps the -f fields in the query string — without it
+        # `gh api` turns the call into a POST, and this endpoint has no
+        # POST handler. `>=` matches the local re-filter below: a run
+        # created exactly at the boundary may be evaluated twice, which
+        # the idempotent decision absorbs.
+        gh api -X GET "repos/$GH_REPO/actions/runs" \
             -f status=failure \
             -f "actor=$BOT_ACTOR" \
-            -f "created=>$SINCE" \
+            -f "created=>=$SINCE" \
             -f per_page=100 >"$list_json"
     fi
     [ -f "$list_json" ] || {
@@ -161,9 +167,12 @@ candidates() {
             and .actor.login == $bot
             and (.name | IN($watched[]))
             and (.created_at // "") >= $since))
+        # Dedupe before sorting: unique_by re-sorts by its key, so running
+        # it after the newest-first sort would silently undo it and the
+        # --max cap would starve recent runs.
+        | unique_by(.id)
         | sort_by(.created_at)
         | reverse
-        | unique_by(.id)
         | .[] | [.id, .name, (.html_url // "")] | @tsv' "$list_json"
 }
 
@@ -189,10 +198,11 @@ while IFS=$'\t' read -r rid rname rurl; do
         out=$(bash "$DECISION" --fixtures "$dir")
     else
         # A live API hiccup inside one decision must not kill the sweep —
-        # that run is recorded and the rest still evaluate.
+        # that run is recorded and the rest still evaluate. `error=`
+        # stays distinct from the decision's own `failed=<jobs>` key.
         if ! out=$(bash "$DECISION" --run-id "$rid"); then
             echo "evaluated=$rid"
-            echo "failed=$rid"
+            echo "error=$rid"
             SUM_LINES+=("- [${rname} run ${rid}](${rurl}) — **decision error**, left for a human")
             continue
         fi
@@ -203,19 +213,21 @@ while IFS=$'\t' read -r rid rname rurl; do
     echo "evaluated=$rid"
     if [ "$rerun" = "true" ]; then
         echo "rerun=$rid"
-        if [ "$DRY_RUN" = 0 ]; then
-            if [ -n "$FIXTURES" ]; then
-                echo "issued=$rid"
-            elif gh run rerun "$rid" --failed >&2; then
-                echo "issued=$rid"
-            else
-                # The dispatch failed; nothing advanced, so the next
-                # sweep evaluates this run again and records it here.
-                SUM_LINES+=("- [${rname} run ${rid}](${rurl}) — **re-run could not be dispatched** — ${reason}")
-                continue
-            fi
+        marker="**re-run**"
+        if [ "$DRY_RUN" = 1 ]; then
+            # Nothing was dispatched — say so on the summary line.
+            marker="**would re-run (dry run)**"
+        elif [ -n "$FIXTURES" ]; then
+            echo "issued=$rid"
+        elif gh run rerun "$rid" --failed >&2; then
+            echo "issued=$rid"
+        else
+            # The dispatch failed; nothing advanced, so the next
+            # sweep evaluates this run again and records it here.
+            SUM_LINES+=("- [${rname} run ${rid}](${rurl}) — **re-run could not be dispatched** — ${reason}")
+            continue
         fi
-        SUM_LINES+=("- [${rname} run ${rid}](${rurl}) — **re-run** — ${reason}")
+        SUM_LINES+=("- [${rname} run ${rid}](${rurl}) — ${marker} — ${reason}")
     else
         SUM_LINES+=("- [${rname} run ${rid}](${rurl}) — no re-run — ${reason}")
     fi

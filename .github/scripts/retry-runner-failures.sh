@@ -209,6 +209,14 @@ veto() {
 # belongs to a human. An unreadable earlier attempt proves nothing either
 # — the script stays out, same as an unresolvable branch tip.
 
+# A malformed attempt number means the history cannot be probed at all —
+# fail closed rather than guessing which attempts ran jobs.
+case "$ATTEMPT" in
+    '' | *[!0-9]* | 0)
+        veto "the run's attempt number is unreadable — cannot prove the retry is unspent"
+        ;;
+esac
+
 if [ "$ATTEMPT" -gt 1 ]; then
     EARLIER=""
     for ((K = 1; K < ATTEMPT; K++)); do
@@ -225,7 +233,9 @@ if [ "$ATTEMPT" -gt 1 ]; then
                 veto "attempt $K's jobs could not be listed — cannot prove the retry is unspent"
         fi
         case "$KJOBS" in
-            '' | *[!0-9]*) KJOBS=0 ;;
+            '' | *[!0-9]*)
+                veto "attempt $K's job count is unreadable — cannot prove the retry is unspent"
+                ;;
         esac
         if [ "$KJOBS" -gt 0 ]; then
             EARLIER="$K"
