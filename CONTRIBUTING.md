@@ -106,7 +106,7 @@ each job runs only when its scope changed:
 
 | Scope | What counts | What runs |
 | ----- | ----------- | --------- |
-| code | Anything outside the docs and site buckets: Rust sources, `Cargo.*`, `tests/`, `crates/`, `xtask/`, `benches/`, `action/`, `demo/`, `.github/` (except a change to `docs-site.yml` alone), and config files. | Everything: `Lint`, `Build & Test` on Linux, Windows, and macOS, `MSRV`, `Hygiene`, `Docs reference`, `Coverage (report)`, `TUI E2E`, and the shared `Release build` that the Action self-test and Dogfood E2E run against. |
+| code | Anything outside the docs and site buckets: Rust sources, `Cargo.*`, `tests/`, `crates/`, `xtask/`, `benches/`, `action/`, `demo/`, `.github/` (except a change to `docs-site.yml` alone), and config files. | Everything: `Lint`, `Build & Test` on Linux, Windows, and macOS, `MSRV`, `Hygiene`, `Docs reference`, `Coverage (report)`, `TUI E2E`, and `Build and dogfood` (the release build, then the Action self-test and Dogfood E2E on that binary). |
 | docs | Repository prose: top-level `*.md`, one level of `.github/*.md`, `docs/**`, and `schema/**`. Site content docs also set `site`. | `Markdown tests` (the suites that read repository Markdown), the spell check, and `Docs reference` when `docs/` or `schema/` changed. |
 | site | `site/**` and `docs-site.yml`. | The spell check and the security jobs. The site build lives in the docs-site workflow. |
 
@@ -117,11 +117,21 @@ If you add a job that must gate merges, add it to the aggregate's `needs` —
 `tests/ci_scripts.rs` fails when a job sits outside every aggregate's
 `needs` without being declared report-only.
 
-Shell scripts are linted by the `shellcheck` job in `security.yml`, pinned to
-shellcheck v0.11.0. The job also checks every one-line `run:` value in the
+`security.yml` runs the small static checks as one `Security checks` job: it
+installs the tools, runs the shell-script lint, `pinact`, and `cargo deny` as
+one `parallel:` group of `run:` steps, then runs the jactionlint action
+(workflows and composite actions, with the profile pinned in
+`.github/jactionlint.yaml`). Keep `uses:` steps out of `parallel:` groups and
+`background: true` steps — `tests/ci_scripts.rs` fails on them, because the
+runner races them. zizmor and the advisory scan stay separate jobs.
+
+Shell scripts are linted by the shell-script step of that job, pinned to
+shellcheck v0.11.0. The step also checks every one-line `run:` value in the
 composite action file, so a multi-line `run:` block must move into a script.
-`bash .github/scripts/run-shellcheck.sh` reproduces the job locally (needs
-`shellcheck` on PATH).
+`bash .github/scripts/run-shellcheck.sh` reproduces it locally (needs
+`shellcheck` on PATH). To lint the workflows locally, install jactionlint
+(`go install github.com/jdx/jactionlint/v2/cmd/jactionlint@v2.6.0`) and run
+`jactionlint` from the repository root.
 
 
 ## Testing notes
