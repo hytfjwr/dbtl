@@ -27,6 +27,13 @@
 //!   comparison that takes the list. Currently empty for both fixtures:
 //!   `ref()` inside pre/post-hook strings IS captured by the source
 //!   loader's `ref()` scan (see `tests/logistics_fixture.rs`).
+//! - Source-only edges (`source_only_edges` argument): the mirror case —
+//!   a `ref()`/`source()` inside a Jinja arm real dbt never rendered (a
+//!   `target.name`/`{% if execute %}` branch), which the source loader
+//!   records as a real edge but dbt omits from `depends_on`. Subtracted
+//!   from the SOURCE adjacency for every comparison that takes the list;
+//!   lint's possible-edge rules treat the same calls as possible reads
+//!   without touching the graph.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -38,6 +45,9 @@ use dbtl::{
 
 /// No manifest-only edges — the fully-consistent case.
 pub const NO_DROPPED_EDGES: &[(&str, &str)] = &[];
+
+/// No source-only edges — the fully-consistent case.
+pub const NO_SOURCE_ONLY_EDGES: &[(&str, &str)] = &[];
 
 /// (manifest Dag, source Dag) of the same project, the manifest side
 /// pre-scoped to the root project — source mode never sees installed-package
@@ -76,8 +86,10 @@ pub fn node_map(dag: &Dag) -> BTreeMap<String, NodeInfo> {
         .collect()
 }
 
-/// 1-hop (parents, children) adjacency with `manifest_only_edges` removed —
-/// the adjacency the source loader would have produced.
+/// 1-hop (parents, children) adjacency with `dropped` edges removed —
+/// pass the manifest-only list for the manifest side (what the source
+/// loader would have produced) and the source-only list for the source
+/// side (what dbt's `depends_on` recorded).
 pub fn adjacency(
     dag: &Dag,
     dropped: &[(&str, &str)],
@@ -123,17 +135,24 @@ fn closure(adj: &BTreeMap<String, BTreeSet<String>>, start: &str) -> BTreeSet<St
 }
 
 /// Nodes whose full-lineage subgraph contains at least one dropped edge —
-/// i.e. descendants-or-self of the edge's parent that are also
-/// ancestors-or-self of its child. Their renders legitimately differ across
-/// modes and are skipped by `assert_renders_identical_except`.
+/// an edge renders in `subgraph(uid)` exactly when BOTH endpoints sit in
+/// the subgraph ({uid} ∪ ancestors ∪ descendants), so the affected set is
+/// `sub(p) ∩ sub(c)`, not just the between-cone: a shared ancestor of p
+/// and c draws the edge too. Renders there legitimately differ across
+/// modes and are skipped by `assert_renders_identical_except`-style loops.
 pub fn affected_by_dropped_edges(dag: &Dag, dropped: &[(&str, &str)]) -> BTreeSet<String> {
+    let subgraph = |uid: &str| -> BTreeSet<String> {
+        let mut set: BTreeSet<String> = dag.upstream(uid).into_iter().collect();
+        set.extend(dag.downstream(uid));
+        set.insert(uid.to_string());
+        set
+    };
     let mut out = BTreeSet::new();
     for (p, c) in dropped {
-        let down = dag.downstream(p);
-        let up = dag.upstream(c);
-        for uid in dag.nodes().keys() {
-            if (uid == p || down.contains(uid)) && (uid == c || up.contains(uid)) {
-                out.insert(uid.clone());
+        let sub_p = subgraph(p);
+        for uid in subgraph(c) {
+            if sub_p.contains(&uid) {
+                out.insert(uid);
             }
         }
     }
@@ -142,9 +161,15 @@ pub fn affected_by_dropped_edges(dag: &Dag, dropped: &[(&str, &str)]) -> BTreeSe
 
 /// The strongest single check: node id sets and every NodeInfo field —
 /// unique_id, name, resource_type, path, materialized, direct_up/down (edge
-/// degrees), and test_count — after subtracting the documented manifest-only
-/// contributions (dropped edges, singular tests).
-pub fn assert_node_infos_identical(m: &Dag, s: &Dag, dropped: &[(&str, &str)]) {
+/// degrees), and test_count — after subtracting the documented one-sided
+/// edge contributions (manifest-only `dropped` edges, `source_only` edges
+/// the loader records but dbt never rendered, singular tests).
+pub fn assert_node_infos_identical(
+    m: &Dag,
+    s: &Dag,
+    dropped: &[(&str, &str)],
+    source_only: &[(&str, &str)],
+) {
     let mm = node_map(m);
     let sm = node_map(s);
     let m_ids: BTreeSet<&String> = mm.keys().collect();
@@ -153,27 +178,38 @@ pub fn assert_node_infos_identical(m: &Dag, s: &Dag, dropped: &[(&str, &str)]) {
         m_ids, s_ids,
         "node id sets diverge between manifest and source modes"
     );
-    let (parents, children) = adjacency(m, dropped);
+    let (m_parents, m_children) = adjacency(m, dropped);
+    let (s_parents, s_children) = adjacency(s, source_only);
     for (uid, mi) in &mm {
+        let mut actual = mi.clone();
+        actual.direct_up = m_parents[uid].len();
+        actual.direct_down = m_children[uid].len();
         let mut expected = sm[uid].clone();
-        expected.direct_up = parents[uid].len();
-        expected.direct_down = children[uid].len();
+        expected.direct_up = s_parents[uid].len();
+        expected.direct_down = s_children[uid].len();
         expected.test_count += m.tests(uid).iter().filter(|t| t.kind == "singular").count();
-        assert_eq!(mi, &expected, "NodeInfo diverges for {uid}");
+        assert_eq!(actual, expected, "NodeInfo diverges for {uid}");
     }
 }
 
 /// Same transitive upstream/downstream closure for every node — the pruned
-/// adjacency is the same graph, not merely the same degrees. The manifest
-/// side is compared through its `manifest_only_edges`-subtracted adjacency.
-pub fn assert_closures_identical(m: &Dag, s: &Dag, dropped: &[(&str, &str)]) {
-    let (parents, children) = adjacency(m, dropped);
+/// adjacency is the same graph, not merely the same degrees. Each side is
+/// compared through its own subtracted adjacency (`dropped` for the
+/// manifest, `source_only` for the source load).
+pub fn assert_closures_identical(
+    m: &Dag,
+    s: &Dag,
+    dropped: &[(&str, &str)],
+    source_only: &[(&str, &str)],
+) {
+    let (m_parents, m_children) = adjacency(m, dropped);
+    let (s_parents, s_children) = adjacency(s, source_only);
     for uid in node_map(m).keys() {
-        let m_up = closure(&parents, uid);
-        let s_up: BTreeSet<String> = s.upstream(uid).into_iter().collect();
+        let m_up = closure(&m_parents, uid);
+        let s_up = closure(&s_parents, uid);
         assert_eq!(m_up, s_up, "upstream({uid}) diverges");
-        let m_down = closure(&children, uid);
-        let s_down: BTreeSet<String> = s.downstream(uid).into_iter().collect();
+        let m_down = closure(&m_children, uid);
+        let s_down = closure(&s_children, uid);
         assert_eq!(m_down, s_down, "downstream({uid}) diverges");
     }
 }

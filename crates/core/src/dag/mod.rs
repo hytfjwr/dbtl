@@ -712,6 +712,13 @@ pub struct Dag {
     /// resolves against doesn't shrink when a `--select` narrows the
     /// displayed graph).
     ref_scope: RefScope,
+    /// Whether the graph came from the source loader's synthesized
+    /// manifest rather than a real `manifest.json`. A synthesized manifest
+    /// is the only `RawManifest` that carries its own `ref_scope` (the
+    /// field is `#[serde(skip)]`, so nothing on disk ever sets it) — its
+    /// presence is the load's provenance marker. [`filtered`](Dag::filtered)
+    /// carries it over untouched.
+    from_source: bool,
 }
 
 /// A manifest macro's diff-relevant payload. The [`Dag`] stores these keyed by

@@ -11,8 +11,11 @@ use super::*;
 /// on a chain END: a node at/above the threshold with no view/ephemeral
 /// model child — and no package-severed child at all (the
 /// [`PrunedAdjacent`](crate::PrunedAdjacent) record: a pruned consumer's
-/// materialization is invisible, so the END can't be established).
-/// `related` is the full longest chain upstream→downstream (the
+/// materialization is invisible, so the END can't be established). A
+/// possible view/ephemeral consumer blocks the same way — a literal
+/// `ref()` the manifest never recorded ([`CallSiteResolver::possible_children`])
+/// means a branch's reader may extend the chain, so it isn't a proven
+/// END. `related` is the full longest chain upstream→downstream (the
 /// flagged node last — it IS one of the chained views); several equal parents
 /// resolve to the smallest `unique_id`. The memoized DFS walks the whole
 /// graph once (O(nodes + edges)).
@@ -21,6 +24,7 @@ pub(super) fn chained_views(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     let threshold = config
@@ -71,6 +75,10 @@ pub(super) fn chained_views(
             .iter()
             .any(|c| dag.get(c).is_some_and(is_view_or_ephemeral))
             || dag.pruned_adjacent(uid).is_some_and(|a| a.children > 0)
+            || sites
+                .possible_children(uid)
+                .iter()
+                .any(|c| dag.get(c).is_some_and(is_view_or_ephemeral))
         {
             continue;
         }

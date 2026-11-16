@@ -151,6 +151,18 @@ impl Dag {
         &self.ref_scope
     }
 
+    /// Whether the graph was inferred from project source (the loader's
+    /// synthesized manifest) rather than loaded from a real
+    /// `manifest.json` — the graph-level counterpart of the app's
+    /// `is_source_mode` check. Source mode records every literal
+    /// `ref()`/`source()` it can resolve as an edge — including calls in
+    /// `{% if %}` arms real dbt never rendered — so a lint pass asking
+    /// "which calls did the graph NOT record" is a manifest-mode question;
+    /// on a source-mode Dag the answer is empty by construction.
+    pub fn is_source_mode(&self) -> bool {
+        self.from_source
+    }
+
     /// Test-only seam: inject a compiled-SQL entry directly. A `stale` flag
     /// cannot be expressed in a manifest literal, and forging
     /// `target/compiled/` mtimes inside a unit test needs `filetime`-grade APIs
@@ -370,6 +382,8 @@ impl Dag {
             // The ref/source name universe describes the load, not the
             // kept set — carried whole like `root_project`.
             ref_scope: self.ref_scope.clone(),
+            // Provenance doesn't change when the graph is narrowed.
+            from_source: self.from_source,
             // The root identity is a property of the source manifest, not of
             // the kept uid set — a `--project-only` view is still that project.
             root_project: self.root_project.clone(),

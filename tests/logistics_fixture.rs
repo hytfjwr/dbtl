@@ -48,6 +48,22 @@ use common::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Edges the source loader records but real dbt's manifest never does —
+/// the `target.name == 'prod'` arm of each branch-split model (verified
+/// against the generated manifests: dbt keeps the `dev`-rendered arm
+/// only). Lint sees the same calls as possible consumers without adding
+/// them to the graph.
+const SOURCE_ONLY_EDGES: &[(&str, &str)] = &[
+    (
+        "source.logistics.raw.prod_orders",
+        "model.logistics.stg_order_feed",
+    ),
+    (
+        "model.logistics.stg_prod_orders",
+        "model.logistics.int_order_split",
+    ),
+];
+
 use dbtl::{
     build_model_list, layout, load_dag, run_rules, Dag, LintConfig, LintInput, PackageScope,
     SortMode, SqlDialect, SqlParseResolver,
@@ -66,13 +82,13 @@ fn dags() -> (Dag, Dag) {
 #[test]
 fn node_sets_and_infos_are_identical() {
     let (m, s) = dags();
-    cmp::assert_node_infos_identical(&m, &s, cmp::NO_DROPPED_EDGES);
+    cmp::assert_node_infos_identical(&m, &s, cmp::NO_DROPPED_EDGES, SOURCE_ONLY_EDGES);
 }
 
 #[test]
 fn full_lineage_closures_are_identical() {
     let (m, s) = dags();
-    cmp::assert_closures_identical(&m, &s, cmp::NO_DROPPED_EDGES);
+    cmp::assert_closures_identical(&m, &s, cmp::NO_DROPPED_EDGES, SOURCE_ONLY_EDGES);
 }
 
 #[test]
@@ -190,8 +206,8 @@ fn cli_vars_flip_enabled_identically_in_both_modes() {
          --vars '<common::LOGISTICS_VARS literal>' \
          --out tests/fixtures/logistics_vars_manifest.json",
     );
-    cmp::assert_node_infos_identical(&m, &s, cmp::NO_DROPPED_EDGES);
-    cmp::assert_closures_identical(&m, &s, cmp::NO_DROPPED_EDGES);
+    cmp::assert_node_infos_identical(&m, &s, cmp::NO_DROPPED_EDGES, SOURCE_ONLY_EDGES);
+    cmp::assert_closures_identical(&m, &s, cmp::NO_DROPPED_EDGES, SOURCE_ONLY_EDGES);
     cmp::assert_tests_identical(&m, &s);
     // The flips themselves, pinned — a silently-dropped vars map would
     // still compare equal and must NOT pass.
@@ -371,13 +387,15 @@ fn model_list_groups_are_identical() {
 
 #[test]
 fn lineage_renders_identical_outside_the_singular_badge_cone() {
-    // The only render-visible divergence is the `tests:N` badge on
+    // Two render-visible divergences are expected: the `tests:N` badge on
     // `ops_run_log` (the manifest's singular test registers there; source
-    // mode never synthesizes it). A node's badge shows in its own lineage
-    // and every ancestor/descendant's, so exactly the nodes whose subgraph
-    // contains it are skipped — pinned to the two expected uids.
+    // mode never synthesizes it), and the source-only branch edges — a
+    // node's subgraph draws every parent/child it has, so the cone around
+    // each `target.name`-omitted edge legitimately differs. A node's badge
+    // shows in its own lineage and every ancestor/descendant's, so exactly
+    // the nodes whose subgraph contains it are skipped — pinned below.
     let (m, s) = dags();
-    let mut skip = BTreeSet::new();
+    let mut skip = cmp::affected_by_dropped_edges(&s, SOURCE_ONLY_EDGES);
     for uid in cmp::node_map(&m).keys() {
         if m.tests(uid).iter().any(|t| t.kind == "singular") {
             skip.insert(uid.clone());
@@ -394,8 +412,17 @@ fn lineage_renders_identical_outside_the_singular_badge_cone() {
             "model.logistics.fct_shipments".to_string(),
             "model.logistics.ops_run_log".to_string(),
             "snapshot.logistics.shipment_status_snap".to_string(),
+            // The two branch edges' cones — every subgraph drawing the
+            // edge only source mode records: the endpoints and their
+            // shared seed ancestor (test nodes are side-map entries, not
+            // graph nodes, so they never join the set).
+            "model.logistics.int_order_split".to_string(),
+            "model.logistics.stg_order_feed".to_string(),
+            "model.logistics.stg_prod_orders".to_string(),
+            "seed.logistics.orders".to_string(),
+            "source.logistics.raw.prod_orders".to_string(),
         ]),
-        "the singular-test badge cone grew — re-check the fixture"
+        "the render-divergent cone grew — re-check the fixture"
     );
     for uid in cmp::node_map(&m).keys() {
         if skip.contains(uid) {
@@ -448,10 +475,17 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
     // the new leaf inside unused_models' unchanged 5 (it also gives
     // stg_rate_cards the downstream that was keeping it flagged).
     //
-    // The latest additions shift the counts on purpose: the two
-    // `loaded_at_field`-semantics source tables sit unreferenced
-    // (unused_sources 3→5), lane_review's `ref('stg_lane_updates')` gives
-    // that model a consumer (unused_models 5→4), and the two exposures
+    // The latest additions shift the counts on purpose: the branch-split
+    // `stg_order_feed`/`int_order_split` read a source and a staging model
+    // through `target.name` arms — real dbt records only the `dev` arm, so
+    // `raw.prod_orders`/`stg_prod_orders` have no recorded consumer. They
+    // still don't flag: lint counts them as possible reads, matching
+    // source mode's real edges (unused_sources 5→6 covers `raw.unused_t`
+    // only; unused_models 4→6 adds the two leaf reader models
+    // themselves). The earlier `loaded_at_field`-semantics source tables
+    // sit unreferenced (unused_sources 3→5), lane_review's
+    // `ref('stg_lane_updates')` gives that model a consumer
+    // (unused_models 5→4), and the two exposures
     // fire the exposure rules — both depend on access-undeclared
     // (protected) models (exposures_dependent_on_private_models 2), and
     // lane_review's parent list mixes a staging view
@@ -474,8 +508,8 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
             ("undocumented_columns", 12),
             ("undocumented_models", 16),
             ("unused_cte", 1),
-            ("unused_models", 4),
-            ("unused_sources", 5),
+            ("unused_models", 6),
+            ("unused_sources", 6),
         ]),
         "manifest-mode rule counts drifted"
     );
@@ -495,11 +529,65 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
             ("staging_depends_on_staging", 1),
             ("undocumented_columns", 12),
             ("undocumented_models", 16),
-            ("unused_models", 4),
-            ("unused_sources", 5),
+            ("unused_models", 6),
+            ("unused_sources", 6),
         ]),
         "source-mode rule counts drifted"
     );
+}
+
+#[test]
+fn branch_only_consumers_count_as_uses_in_manifest_mode() {
+    // The core guarantee, against the real-dbt manifest: the
+    // `target.name == 'prod'` arms never rendered, so the manifest records
+    // no consumer for `raw.prod_orders` or `stg_prod_orders` — yet neither
+    // flags, because lint counts the literal branch calls as possible
+    // reads. Source mode records the same calls as real edges, so both
+    // modes agree. `raw.unused_t` — nothing anywhere reads it — still
+    // flags in both.
+    let (m, s) = dags();
+    // The manifest's depends_on stays dbt-faithful — the possible edges
+    // never became real ones.
+    assert_eq!(
+        m.direct_parents("model.logistics.stg_order_feed"),
+        &["source.logistics.raw.orders".to_string()],
+        "manifest keeps only the rendered arm"
+    );
+    assert_eq!(
+        m.direct_parents("model.logistics.int_order_split"),
+        &["model.logistics.stg_orders".to_string()],
+    );
+    assert!(
+        s.direct_parents("model.logistics.stg_order_feed")
+            .iter()
+            .any(|p| p == "source.logistics.raw.prod_orders"),
+        "source mode records both arms"
+    );
+    let findings = |dag: &Dag, rule: dbtl::LintRule| -> Vec<String> {
+        let cfg = LintConfig::default();
+        run_rules(LintInput::new(dag, &cfg))
+            .findings
+            .iter()
+            .filter(|f| f.rule == rule)
+            .map(|f| f.node_uid.clone())
+            .collect()
+    };
+    for (mode, dag) in [("manifest", &m), ("source", &s)] {
+        let unused_sources = findings(dag, dbtl::LintRule::UnusedSources);
+        assert!(
+            !unused_sources.contains(&"source.logistics.raw.prod_orders".to_string()),
+            "{mode} mode flags a branch-only source read"
+        );
+        assert!(
+            unused_sources.contains(&"source.logistics.raw.unused_t".to_string()),
+            "{mode} mode lost the truly-unused source"
+        );
+        let unused_models = findings(dag, dbtl::LintRule::UnusedModels);
+        assert!(
+            !unused_models.contains(&"model.logistics.stg_prod_orders".to_string()),
+            "{mode} mode flags a branch-only ref target"
+        );
+    }
 }
 
 #[test]

@@ -50,6 +50,25 @@ models:
     description: "Lane rate updates staged from the TMS feed"
     columns:
       - name: lane_id
+  # Branch-split reads — the `target.name` arms below exist so a real-dbt
+  # manifest (compiled under the `dev` target) omits the prod arm's calls
+  # from `depends_on.nodes` while the source loader keeps both.
+  - name: stg_order_feed
+    description: "Order rows staged from the environment's raw extract"
+    columns:
+      - name: order_id
+        description: "Order identifier"
+        tests:
+          - unique
+          - not_null
+  - name: stg_prod_orders
+    description: "Order rows read only by int_order_split's prod branch"
+    columns:
+      - name: order_id
+        description: "Order identifier"
+        tests:
+          - unique
+          - not_null
   # Macro-carried staging models — every body is a single macro call; the
   # schema entry pins docs + key tests the same as a literal-select model.
   - name: stg_ops_events

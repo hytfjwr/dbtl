@@ -230,7 +230,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 modeling::source_fanout(dag, &uids, &in_scope, config, &mut out)
             }
             LintRule::ModelFanout => {
-                modeling::model_fanout(dag, &uids, &in_scope, config, &mut out)
+                modeling::model_fanout(dag, &uids, &in_scope, config, &sites, &mut out)
             }
             LintRule::RootModels => modeling::root_models(dag, &uids, &in_scope, &sites, &mut out),
             LintRule::RejoiningUpstream => modeling::rejoining_upstream(
@@ -252,7 +252,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 structure::naming_conventions(dag, &uids, &in_scope, config, &mut out)
             }
             LintRule::LayerViolation => modeling::layer_violation(dag, &sites, &mut out),
-            LintRule::UnusedSources => modeling::unused_sources(dag, &uids, &in_scope, &mut out),
+            LintRule::UnusedSources => {
+                modeling::unused_sources(dag, &uids, &in_scope, &sites, &mut out)
+            }
             LintRule::DuplicateSources => {
                 modeling::duplicate_sources(dag, &uids, &in_scope, &mut out)
             }
@@ -263,7 +265,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 modeling::too_many_joins(dag, &uids, &in_scope, config, &sites, &mut out)
             }
             LintRule::ChainedViews => {
-                performance::chained_views(dag, &uids, &in_scope, config, &mut out)
+                performance::chained_views(dag, &uids, &in_scope, config, &sites, &mut out)
             }
             LintRule::ExposureParentsMaterializations => {
                 performance::exposure_parents_materializations(dag, &uids, &in_scope, &mut out)
@@ -347,7 +349,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 &mut out,
             ),
             LintRule::UnusedModels => {
-                modeling::unused_models(dag, &uids, &in_scope, config, &mut out)
+                modeling::unused_models(dag, &uids, &in_scope, config, &sites, &mut out)
             }
             LintRule::ReferencesDeprecatedModel => {
                 governance::references_deprecated_model(dag, &uids, &in_scope, &sites, &mut out)
