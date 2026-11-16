@@ -364,10 +364,7 @@ fn dep_target(dep: &BodyDep, bound: &[Option<String>]) -> Option<DepTarget> {
             // that stays non-literal can't be proven — the call may
             // name any package.
             let package = if args.pos.len() > 1 {
-                match args.pos.first().and_then(|e| eval(e, bound)) {
-                    Some(p) => Some(p),
-                    None => return None,
-                }
+                Some(args.pos.first().and_then(|e| eval(e, bound))?)
             } else {
                 None
             };
