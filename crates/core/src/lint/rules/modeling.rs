@@ -973,12 +973,16 @@ pub(super) fn unresolved_references(
                         let target = package
                             .as_deref()
                             .map_or_else(|| name.clone(), |p| format!("{p}.{name}"));
-                        let name_resolved = match package.as_deref() {
-                            None => scope.refs.contains_key(name) || scope.assumed.contains(name),
-                            Some(p) => {
-                                scope.refs.get(name).is_some_and(|pkgs| pkgs.contains(p))
-                                    || (root == Some(p) && scope.assumed.contains(name))
-                            }
+                        // The shared package-scope verdict — a call
+                        // resolving anywhere (the caller's own project
+                        // or an installed package) is resolved; only
+                        // `assumed` spellings widen it past that.
+                        let name_resolved = !matches!(
+                            scope.ref_owner(root.unwrap_or(""), package.as_deref(), name),
+                            crate::manifest::RefVerdict::Missing
+                        ) || match package.as_deref() {
+                            None => scope.assumed.contains(name),
+                            Some(p) => root == Some(p) && scope.assumed.contains(name),
                         };
                         // A version pin checks against the recorded
                         // `(package, name, rendered-version)` uids —
