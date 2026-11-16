@@ -62,7 +62,7 @@ The fallback is per model. A model whose SQL is missing or unparsable resolves b
 
 - `select *` and `t.*` expand over the parent's known columns, taken from the catalog first, then documented columns, then the parent's own resolved outputs. A parent with entirely unknown columns contributes nothing. `dbtl` does not invent names.
 - An unqualified column that matches several bindings keeps all candidates. This over-connection is documented behavior for genuine ambiguity. A binding with an unknown column list cannot disprove a reference, so it joins the candidates too.
-- `{% if %}` and `{% for %}` bodies all resolve, so every branch's refs count. A `{{ macro(...) }}` call renders as `NULL` where a value is expected, and as a generated name where SQL needs a name, such as after `FROM`. Either way, macro-emitted SQL stays opaque.
+- `{% if %}` and `{% for %}` bodies all resolve, so every branch's refs count. A `{{ macro(...) }}` call renders by position: `NULL` where a value is expected, a generated name where SQL needs a name such as after `FROM`, `(NULL)` on an `IN`/`ANY`/`SOME`/`ALL` right-hand side, and whitespace where only a whole clause can stand — directly after a complete expression. When every strict render fails to parse, the same renders retry under a looser boundary that also counts `null`/`true`/`false` and column-named keywords as completing the expression. Either way, macro-emitted SQL stays opaque.
 
 ## In the TUI
 

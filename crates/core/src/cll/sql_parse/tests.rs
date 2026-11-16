@@ -3708,3 +3708,183 @@ fn a_quoted_relation_after_a_comma_keeps_its_cartesian_fact() {
     );
     assert!(!facts.elided_clauses);
 }
+
+// -- the loose-boundary second pass -------------------------------------------
+//
+// The strict boundary refuses to complete on ANY keyword — so a `{{ }}`
+// behind `is not null` or a column named `id`/`status`/`value` rendered
+// ` NULL ` and the model went unparsed. When all four strict stages fail,
+// `jinja_parse` runs them once more under the loose rule (any word except
+// an operand-awaiting one completes). A rescued parse carries
+// `elided_clauses` like every other elision.
+
+/// The literal words and the column-shaped non-reserved words a clause
+/// macro can trail — every dialect must now parse the shape.
+#[test]
+fn a_tag_after_a_literal_or_keyword_named_column_elides_on_every_dialect() {
+    let shapes = [
+        // The reported shape — `{{ group_by_macro() }}` behind
+        // `IS NOT NULL`.
+        "select id, count(*) as n from {{ ref('base') }}\n\
+         where id is not null\n\
+         {{ group_by_macro(n=1) }}",
+        // `true`/`false` literals and the non-reserved words real
+        // schemas use — `id`/`name`/`status`/`value`.
+        "select id from {{ ref('base') }} where v = true {{ m() }}",
+        "select id from {{ ref('base') }} where v = false {{ m() }}",
+        "select id from {{ ref('base') }} where v = null {{ m() }}",
+        "select id from {{ ref('base') }} where v = id {{ m() }}",
+        "select id from {{ ref('base') }} where v = name {{ m() }}",
+        "select id from {{ ref('base') }} where v = status {{ m() }}",
+        "select id from {{ ref('base') }} where v = value {{ m() }}",
+        // `ORDER BY` inside a CTE body, and a window's `PARTITION BY` —
+        // the keyword-vs-column call happens at paren depth too.
+        "with x as (select id from {{ ref('base') }} order by id {{ limit_macro() }})\n\
+         select * from x",
+        "select row_number() over (partition by id {{ part_macro() }} order by v) as rn\n\
+         from {{ ref('base') }}",
+    ];
+    for d in [
+        SqlDialect::Generic,
+        SqlDialect::Redshift,
+        SqlDialect::Postgres,
+        SqlDialect::Snowflake,
+        SqlDialect::BigQuery,
+        SqlDialect::DuckDb,
+    ] {
+        for sql in shapes {
+            let (r, _stmts) = jinja_parse(sql, JinjaMark::Plain, d)
+                .unwrap_or_else(|e| panic!("{sql:?} parses under {d:?}: {e:?}"));
+            assert!(r.elided_clauses, "{sql:?} marks under {d:?}");
+        }
+    }
+}
+
+#[test]
+fn the_loose_pass_never_runs_for_a_model_the_strict_pass_answers() {
+    // Arm 1 ends `and v = status {{ m() }}` — under the loose boundary
+    // `status` would complete and the tag would elide, leaving a
+    // UNION-parseable arm. The strict UNION render can't parse — but
+    // the strict COLLAPSE render (arm 0 only) does, so the second pass
+    // must never touch the model: the collapse render wins, its CTE
+    // reports, and no elision mark is set.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with dead as (select 1) select id from {{ ref('a') }} \
+                 where id > 0\n\
+                 {% if var('flag', false) %} and v = 'a' \
+                 {% else %} and v = status {{ m() }} {% endif %}",
+                &[],
+            ),
+        ],
+        &[("model.t.a", "model.t.m")],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert!(
+        !facts.elided_clauses,
+        "the collapse render won before the loose pass could"
+    );
+    assert_eq!(
+        facts.unused_ctes,
+        vec!["dead".to_string()],
+        "the collapse arm's dead CTE still reports"
+    );
+    // The `is null` spelling of the same arm collapses identically.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with dead as (select 1) select id from {{ ref('a') }} \
+                 where id > 0\n\
+                 {% if var('flag', false) %} and v = 'a' \
+                 {% else %} and v is null {{ m() }} {% endif %}",
+                &[],
+            ),
+        ],
+        &[("model.t.a", "model.t.m")],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert!(!facts.elided_clauses);
+    assert_eq!(facts.unused_ctes, vec!["dead".to_string()]);
+}
+
+#[test]
+fn the_loose_pass_keeps_the_value_shape_where_the_operand_waits() {
+    // Words that await an operand — `zone`/`interval`/`date`/`any`/
+    // `first` — render ` NULL ` in both passes, and `NULLS FIRST`'s
+    // tail stays unparsed: the loose boundary must not blank the
+    // operand a keyword awaits into a fake "complete" clause.
+    for sql in [
+        "select id from t where ts at time zone {{ var('tz') }} > '2020-01-01'",
+        "select id from t where ts - interval {{ var('n') }} > '2020-01-01'",
+        "select id from t where ts = date {{ var('d') }}",
+        "select id from t where name like any {{ var('p') }}",
+    ] {
+        let r = render_jinja_mapped(sql, JinjaMark::Plain, SqlDialect::Generic);
+        assert!(r.text.contains(" NULL "), "{sql:?} -> {}", r.text);
+        assert!(!r.elided_clauses, "{sql:?}");
+        let (r, _stmts) = jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic)
+            .unwrap_or_else(|e| panic!("{sql:?} parses: {e:?}"));
+        assert!(!r.elided_clauses, "{sql:?} parsed on the value shape");
+    }
+    // `NULLS FIRST` — `first` awaits its operand in the loose set too,
+    // so the tag keeps the value shape and the model stays unparsed.
+    let sql = "select id from t order by v nulls first {{ m() }}";
+    assert!(
+        jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_err(),
+        "order by v nulls first {{ m() }} stays unparsed"
+    );
+}
+
+#[test]
+fn a_loose_rescued_model_empties_the_absence_facts() {
+    // `where v = status {{ m() }}` — the rescued parse can't see the
+    // clause the tag emits, so every absence fact stays unproven — and
+    // CLL takes the name-match fallback an unparsable model would.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id", "status"]),
+            model("model.t.b", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with dead as (select 1) \
+                 select a.id, a.missing from \"a\" a, \"b\" b \
+                 where v = status {{ m() }} order by id",
+                &["id"],
+            ),
+        ],
+        &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert!(facts.elided_clauses);
+    assert!(facts.cartesian.is_empty() && facts.cartesian_count == 0);
+    assert!(facts.unresolved.is_empty());
+    assert!(facts.unused_ctes.is_empty());
+    assert!(!facts.unlimited_order_by);
+    let _ = r.resolve(&dag, "model.t.m");
+    assert!(r.is_fallback("model.t.m"));
+}
+
+#[test]
+fn a_loose_render_still_marks_an_operator_shaped_tag() {
+    // `where status {{ var('op') }} 'active'` — the tag elides under
+    // the loose boundary and Postgres reads `status 'active'` as a
+    // typed-string expression, exactly like `amount {{ var('op') }}
+    // 'active'` already could. The parse carries `elided_clauses`, so
+    // the approximation reports nothing absent.
+    for sql in [
+        "select id from {{ ref('base') }} where status {{ var('op') }} 'active'",
+        "select id from {{ ref('base') }} where amount {{ var('op') }} 'active'",
+    ] {
+        let (r, _stmts) = jinja_parse(sql, JinjaMark::Plain, SqlDialect::Postgres)
+            .unwrap_or_else(|e| panic!("{sql:?} parses under Postgres: {e:?}"));
+        assert!(r.elided_clauses, "{sql:?}");
+    }
+}
