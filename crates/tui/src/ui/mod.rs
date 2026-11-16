@@ -4,7 +4,7 @@
 //!
 //! - `state`  — `UiState`, `Focus`, `KeyOutcome`, `reduce_selection`, `handle_key`.
 //! - `geom`   — pane rects / interiors / centered-overlay rect.
-//! - `render` — `RenderCtx`, `draw`, and the base panes (list, status).
+//! - `render` — `RenderCtx`, `draw`, and the base panes (list, status, tab strip).
 //! - `lineage`— the lineage pane renderer.
 //! - `overlay`— modal overlays (`?` help, structure modal; search is inline).
 //! - [`theme`]  — the colour palette (semantic constants; pub so tests assert
