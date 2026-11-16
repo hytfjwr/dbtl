@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fewer models are skipped as unparsable SQL: a `{{ }}` standing where a
+  whole clause goes (directly after a complete expression) renders as
+  whitespace, and a `{{ }}` on an `IN`/`ANY`/`SOME`/`ALL` right-hand side
+  renders as `(NULL)` — both shapes parse under every supported dialect,
+  including a manifest's `adapter_type` dialect for models carrying only
+  `raw_code`.
+
 ## [0.7.1] - 2026-11-16
 
 ### Added

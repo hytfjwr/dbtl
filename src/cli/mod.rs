@@ -473,10 +473,12 @@ pub enum Commands {
         /// `trailing_semicolon`, `unused_cte`) have their violations
         /// deleted from the model files, then lint re-runs to a fixpoint
         /// and reports what remains. Edits refuse Jinja-covered text,
-        /// overlapping ranges, stale manifest/disk drift, and anything
-        /// that would introduce a new finding — those findings simply
-        /// stay, and each refused edit is listed (file, rule, reason)
-        /// in the summary and under `summary.fix_refused` in JSON.
+        /// overlapping ranges, stale manifest/disk drift, anything
+        /// that would introduce a new finding, and models whose `{{ }}`
+        /// render dropped a clause or `IN`-side list the parse can't
+        /// see — those findings simply stay, and each refused edit is
+        /// listed (file, rule, reason) in the summary and under
+        /// `summary.fix_refused` in JSON.
         /// Writes are atomic; LF/CRLF and a missing final newline
         /// are preserved byte for byte. Cannot combine with
         /// `--write-baseline`, `--list-rules`, `--explain`, or
