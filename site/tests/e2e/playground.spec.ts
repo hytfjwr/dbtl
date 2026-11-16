@@ -162,6 +162,10 @@ test("a worker crash restarts the engine and keeps edits", async ({ page }) => {
 
   // An uncaught error inside the worker is the same signal a wasm trap
   // sends: the client respawns it and replays the load plus the edits.
+  // The "restarting" status is a brief transient that polling can miss, so
+  // the proof of the respawn is the new Worker object — registered before
+  // the throw so a fast crash can't slip past the wait.
+  const respawned = page.waitForEvent("worker");
   const worker = page.workers()[0]!;
   await worker.evaluate(() =>
     setTimeout(() => {
@@ -170,7 +174,7 @@ test("a worker crash restarts the engine and keeps edits", async ({ page }) => {
   );
 
   const status = page.locator("#pg-status");
-  await expect(status).toHaveAttribute("data-kind", "restarting");
+  const newWorker = await respawned;
   await expect(status).toHaveAttribute("data-kind", "ready", { timeout: 30_000 });
 
   // The recovered engine kept the project, the open node and the edit.
@@ -178,6 +182,10 @@ test("a worker crash restarts the engine and keeps edits", async ({ page }) => {
   await expect(page.locator("#pg-ed-sql")).toHaveValue("select 1 as id");
   await page.locator("#pt-sel").click();
   await page.fill("#pg-sel", "tag:marts");
+  // The re-lint and this select share the worker's single event loop —
+  // drain it before asserting so the check reads the settled state, not
+  // whatever the queue was still holding when the poll started.
+  await newWorker.evaluate(() => null);
   await expect(page.locator("#pg-match-title")).toContainText("matched 9 of 93");
 });
 

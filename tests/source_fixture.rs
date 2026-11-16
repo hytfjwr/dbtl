@@ -1911,3 +1911,52 @@ fn python_file_shape_oddities_warn_but_load() {
         );
     }
 }
+
+/// Same exclusive-arm rule one level down: same-named columns written in
+/// `{% if %}`/`{% else %}` arms inside a CTE carry their arms through
+/// `select *` expansion — no fabricated `duplicate_output_columns` —
+/// while an unconditional duplicate inside the CTE still reports.
+#[test]
+fn jinja_branch_cte_columns_collapse_across_wildcard() {
+    let dag = load_dag_from_source(BRANCH_PROJECT).expect("project loads");
+    let res = SqlParseResolver::for_dag(None, &dag);
+    for uid in [
+        "model.branchproj.dup_cte",
+        "model.branchproj.dup_cte_nested",
+        "model.branchproj.dup_cte_union",
+        "model.branchproj.dup_cte_real",
+    ] {
+        assert!(
+            res.sql_facts(&dag, uid).is_some(),
+            "{uid} parses — a CTE written inside a branch can't degrade"
+        );
+    }
+    let findings =
+        run_rules(LintInput::new(&dag, &LintConfig::default()).with_sql(Some(&res))).findings;
+    let on = |rule: LintRule, uid: &str| {
+        findings
+            .iter()
+            .filter(|f| f.rule == rule && f.node_uid == uid)
+            .count()
+    };
+    for uid in [
+        "model.branchproj.dup_cte",
+        "model.branchproj.dup_cte_nested",
+        "model.branchproj.dup_cte_union",
+    ] {
+        assert_eq!(
+            on(LintRule::DuplicateOutputColumns, uid),
+            0,
+            "{uid}: one `refund_total` per render — exclusive arms never \
+             coexist, even after `select *` expands the CTE"
+        );
+    }
+    assert_eq!(
+        on(
+            LintRule::DuplicateOutputColumns,
+            "model.branchproj.dup_cte_real"
+        ),
+        1,
+        "an unconditional duplicate inside the CTE still reports"
+    );
+}

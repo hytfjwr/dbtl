@@ -146,7 +146,12 @@ const lintNote = s.built ? "" : `the engine is not built — ${s.reason}`;
     </div>
     <div class="pane pg-lin">
       <p class="pane-title" id="pg-lin-title" set:html={`lineage: <b>${esc(s.project)}</b>`} />
-      <div class="lin-scroll" tabindex="0" aria-label="Lineage with matched nodes highlighted">
+      <div
+        class="lin-scroll"
+        role="region"
+        tabindex="0"
+        aria-label="Lineage with matched nodes highlighted"
+      >
         <div class="lin-host" id="pg-lin">
           {lineage ? <Fragment set:html={lineage} /> : <p class="pg-note">{note}</p>}
         </div>

@@ -40,7 +40,9 @@ fn leftmost_select(e: &SetExpr) -> Option<&Select> {
 /// the span the name part covers so a duplicate can point at its
 /// occurrence. `None` when the expr contributes no name (a positional
 /// literal `1` is named by position, `*` contributes nothing concrete).
-fn name_span(e: &Expr) -> Option<(String, Span)> {
+/// The resolution side also reads the span half: it marks the written
+/// position an output name came from (`OutCol::span`).
+pub(super) fn name_span(e: &Expr) -> Option<(String, Span)> {
     match e {
         Expr::Identifier(i) => Some((norm_ident(i), i.span)),
         Expr::CompoundIdentifier(parts) => parts.last().map(|i| (norm_ident(i), i.span)),

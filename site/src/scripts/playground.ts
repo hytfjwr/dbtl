@@ -304,7 +304,10 @@ if (ctl && input && linHost) {
 
   const refreshAll = () => {
     void refreshSelection();
-    scheduleLint(0);
+    // A connect's re-lint is background work — run it on the usual debounce
+    // so a selector typed right after the load reaches the worker first
+    // (the worker is single-threaded; a queued lint delays every call).
+    scheduleLint();
     renderDetail();
     renderCols();
     renderCfg();
@@ -324,6 +327,11 @@ if (ctl && input && linHost) {
       // the editor shows that project's SQL until the reset — lock it.
       clearTimeout(sqlTimer);
       sqlEl.disabled = true;
+      // The status line reads "ready" while this fetch + load are still
+      // underway — a node picked inside the window carries a newer detail
+      // generation, so the reset below can see it was raced and re-issue it
+      // instead of swallowing the click.
+      const startDet = seqDet;
       const input = await projectInput(S.project);
       if (my !== seqLoad) return;
       // A respawned worker already holds this very input — the replay also
@@ -332,6 +340,9 @@ if (ctl && input && linHost) {
       if (engine.restoredInput() !== input) {
         const load = await engine.load(input);
         if (my !== seqLoad) return;
+        // `S.picked` is whatever the racing pick chose last; the reset must
+        // not bury it — it's re-issued against the loaded project below.
+        const raced = seqDet !== startDet ? S.picked : null;
         S.total = load.nodes;
         S.loadWarnings = load.warnings;
         S.nodesAll = null;
@@ -347,6 +358,7 @@ if (ctl && input && linHost) {
         S.edited.clear();
         fillNodePicker();
         $("#pg-col-col")!.innerHTML = `<option value="">— pick a column —</option>`;
+        if (raced) void pick(raced);
       } else {
         // The worker replayed the edits but the page's copies are pre-crash
         // — re-read the open node and the columns target so every pane shows

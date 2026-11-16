@@ -253,6 +253,7 @@ impl SqlParseResolver {
                         sources: ColSources::new(),
                         synthetic: false,
                         derived: false,
+                        span: None,
                     })
                     .collect();
                 Some(QueryRes { out, foj })
@@ -284,6 +285,7 @@ impl SqlParseResolver {
                                     sources: BTreeSet::from([(p.uid.clone(), c.clone())]),
                                     synthetic: false,
                                     derived: false,
+                                    span: None,
                                 });
                             }
                         }
@@ -409,20 +411,24 @@ impl SqlParseResolver {
                             sources,
                             synthetic: false,
                             derived: ewa.expr.alias.is_none() && derived_name(&ewa.expr.expr),
+                            span: ewa
+                                .expr
+                                .alias
+                                .as_ref()
+                                .map(|a| a.span)
+                                .or_else(|| facts::name_span(&ewa.expr.expr).map(|(_, s)| s)),
                         });
                     }
                     res.out = out;
                 }
                 P::Rename { mappings } => {
-                    let pairs: Vec<(String, String)> = mappings
-                        .iter()
-                        .map(|ia| (norm_ident(&ia.ident), norm_ident(&ia.alias)))
-                        .collect();
                     for o in &mut res.out {
-                        if let Some((_, to)) = pairs.iter().find(|(from, _)| from == &o.name) {
-                            o.name = to.clone();
+                        if let Some(ia) = mappings.iter().find(|ia| norm_ident(&ia.ident) == o.name)
+                        {
+                            o.name = norm_ident(&ia.alias);
                             o.synthetic = false;
                             o.derived = false;
+                            o.span = Some(ia.alias.span);
                         }
                     }
                 }
@@ -552,6 +558,7 @@ impl SqlParseResolver {
                         sources,
                         synthetic: false,
                         derived: false,
+                        span: Some(value_column.span),
                     });
                     res.out.push(OutCol {
                         name: norm_ident(name_column),
@@ -559,6 +566,7 @@ impl SqlParseResolver {
                         sources: ColSources::new(),
                         synthetic: false,
                         derived: false,
+                        span: Some(name_column.span),
                     });
                 }
                 P::TableSample { .. } => {
@@ -656,6 +664,7 @@ impl SqlParseResolver {
                         sources: lv_refs,
                         synthetic: true,
                         derived: false,
+                        span: None,
                     }]
                 } else {
                     lv.lateral_col_alias
@@ -666,6 +675,7 @@ impl SqlParseResolver {
                             sources: lv_refs.clone(),
                             synthetic: false,
                             derived: false,
+                            span: Some(a.span),
                         })
                         .collect()
                 };
@@ -847,6 +857,7 @@ impl SqlParseResolver {
                     sources,
                     synthetic: false,
                     derived: derived_name(e),
+                    span: facts::name_span(e).map(|(_, s)| s),
                 });
             }
             SelectItem::ExprWithAlias { expr, alias } => {
@@ -857,6 +868,7 @@ impl SqlParseResolver {
                     sources,
                     synthetic: false,
                     derived: false,
+                    span: Some(alias.span),
                 });
             }
             SelectItem::ExprWithAliases { expr, aliases } => {
@@ -868,6 +880,7 @@ impl SqlParseResolver {
                         sources: sources.clone(),
                         synthetic: false,
                         derived: false,
+                        span: Some(a.span),
                     });
                 }
             }
@@ -892,6 +905,7 @@ impl SqlParseResolver {
                         sources,
                         synthetic: false,
                         derived: false,
+                        span: None,
                     });
                 }
             },

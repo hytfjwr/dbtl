@@ -69,6 +69,40 @@ test("a <pre> is a tab stop only while it scrolls", async ({ page }) => {
   }
 });
 
+// Same rule for the 404 page's lineage box: a scroller only gets a tab stop
+// while its diagram is wider than the pane.
+test("the 404 lineage scroller is a tab stop only while it scrolls", async ({ page }) => {
+  const check = () =>
+    page.evaluate(() => {
+      const el = document.querySelector<HTMLElement>(".scroll")!;
+      return {
+        tab: el.tabIndex,
+        scrolls: el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1,
+      };
+    });
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/dbtl/404.html");
+  await page.waitForLoadState("networkidle");
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+  });
+  const wide = await check();
+  expect(wide.tab === 0, `tabindex ${wide.tab} but scrolls=${wide.scrolls}`).toBe(wide.scrolls);
+
+  // A longer missing path draws a wider diagram, so the pane scrolls at 320px.
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto(`/dbtl/${"missing/".repeat(6)}`);
+  await page.waitForLoadState("networkidle");
+  await expect
+    .poll(async () => (await check()).scrolls, "lineage pane overflows at 320px")
+    .toBe(true);
+  const narrow = await check();
+  expect(narrow.tab === 0, `tabindex ${narrow.tab} but scrolls=${narrow.scrolls}`).toBe(
+    narrow.scrolls,
+  );
+});
+
 test("interactive targets are at least 24px", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/dbtl/cli/lint/");
@@ -92,6 +126,16 @@ test("interactive targets are at least 24px", async ({ page }) => {
     const box = (await el.boundingBox())!;
     expect(Math.min(box.width, box.height), "demo list button target").toBeGreaterThanOrEqual(24);
   }
+
+  // The playground match rows are click targets too — one pick opens the detail.
+  await page.goto("/dbtl/playground/");
+  await page.waitForLoadState("networkidle");
+  const rows = page.locator(".pg-match li[data-id]");
+  expect(await rows.count()).toBeGreaterThan(3);
+  for (const el of await rows.all()) {
+    const box = (await el.boundingBox())!;
+    expect(box.height, "match row target height").toBeGreaterThanOrEqual(24);
+  }
 });
 
 // The lineage diagrams (pre.lin) dim their context nodes below the contrast
@@ -101,6 +145,7 @@ for (const [name, path] of [
   ["home", "/dbtl/"],
   ["docs", "/dbtl/cli/lint/"],
   ["playground", "/dbtl/playground/"],
+  ["404", "/dbtl/404.html"],
 ] as const) {
   test(`axe: ${name} page has no violations`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
