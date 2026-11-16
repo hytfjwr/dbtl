@@ -2037,7 +2037,7 @@ fn call_display(e: &str) -> Option<String> {
             // A literal pin displays like the versioned uid segment —
             // `x.v2`, `x.v1.1` — while a dynamic pin (or none) resolves
             // to the family's latest: bare `x`.
-            if let Some(v) = site.args.and_then(|a| call_version(&e[a])) {
+            if let Some(v) = site.args.and_then(|a| call_version(&masked[a])) {
                 d = format!("{d}.v{v}");
             }
             Some(d)
