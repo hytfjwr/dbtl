@@ -16,9 +16,9 @@ use std::rc::Rc;
 
 use crate::dag::{normalize_version, versioned_model_segs, Dag};
 use crate::source::{
-    arms_exclusive, call_sites_masked, config_arg, jinja_branches, kwarg, lit_value,
-    mask_jinja_comments, scalar_to_string, scan_python, ArmKind, ArmStep, CallKind, CallSite,
-    JinjaBranches, PyCallKind,
+    arms_exclusive, call_sites_masked, call_version, config_arg, jinja_branches, kwarg, lit_value,
+    mask_jinja_comments, scan_python, ArmKind, ArmStep, CallKind, CallSite, JinjaBranches,
+    PyCallKind,
 };
 
 use super::{Finding, Label};
@@ -372,7 +372,7 @@ impl<'a> CallSites<'a> {
                         versioned: args.is_some_and(|a| {
                             kwarg(a, "v").is_some() || kwarg(a, "version").is_some()
                         }),
-                        version: args.and_then(rendered_version),
+                        version: args.and_then(call_version),
                     }
                 }
                 CallKind::Source { source, table } => DepCallKind::Source {
@@ -482,7 +482,7 @@ impl<'a> CallSites<'a> {
                 match call
                     .args
                     .as_ref()
-                    .and_then(|a| rendered_version(&self.sites.masked[a.clone()]))
+                    .and_then(|a| call_version(&self.sites.masked[a.clone()]))
                 {
                     Some(v) => {
                         let Some(uv) = uid_version else { return false };
@@ -640,16 +640,4 @@ pub(crate) enum DepCallKind {
         source: String,
         table: String,
     },
-}
-
-/// A `ref()` call's `v=`/`version=` literal rendered the way dbt spells
-/// the version — a number's `str()` (`1.10` → `"1.1"`), a string
-/// verbatim (`'v3'` → `"v3"`, `'1.10'` stays `"1.10"`). `None` when the
-/// kwarg is absent or isn't a literal (the dynamic pin the loader
-/// resolves to the family's latest).
-fn rendered_version(args: &str) -> Option<String> {
-    kwarg(args, "v")
-        .or_else(|| kwarg(args, "version"))
-        .and_then(lit_value)
-        .and_then(|v| scalar_to_string(&v))
 }

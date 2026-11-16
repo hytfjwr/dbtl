@@ -35,6 +35,11 @@ pub struct SqlPositions {
     /// Conditionless JOIN arms, the joined relation's range (the JOIN
     /// keyword itself isn't in the span) — `cartesian_join`.
     pub cartesian: Vec<Range<usize>>,
+    /// The message text of each `cartesian` range — the written arm with
+    /// `{{ ref('x') }}`/`{{ source('s','t') }}` spelled as the relation
+    /// name and any other `{{ }}` collapsed to `{{…}}` — parallel to
+    /// `cartesian`.
+    pub cartesian_display: Vec<String>,
     /// `(normalized last part, range)` of every column reference — the
     /// pool `unknown_column_reference` matches names against.
     pub columns: Vec<(String, Range<usize>)>,
@@ -114,6 +119,7 @@ pub(super) fn plain_positions(
     let scan = scan_statements_positions(&stmts, Some(&rendered));
     for span in &scan.cartesian_spans {
         if let Some(r) = rendered.span_source(*span) {
+            out.cartesian_display.push(rendered.src_display(raw, &r));
             out.cartesian.push(r);
         }
     }

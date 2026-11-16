@@ -9475,17 +9475,16 @@ fn cartesian_join_skips_correlated_and_file_factors() {
 }
 
 #[test]
-fn cartesian_join_message_uses_the_raw_join_text() {
+fn cartesian_join_message_names_the_ref_relation() {
     // The judged text renders `{{ ref('up') }}` to the relation name —
-    // the message quotes the WRITTEN arm `{{ ref('up') }} b` when the
-    // raw render's arm count matches the judged count (positions pair).
+    // the message quotes the WRITTEN arm when the raw render's arm
+    // count matches the judged count (positions pair), spelling the
+    // `ref` call as the relation it reads rather than the Jinja text.
+    let raw = "select * from {{ ref('up') }} a, {{ ref('up') }} b";
     let m = manifest(
         vec![
             model_sql("up", "select 1 as id"),
-            model_sql_pos(
-                "paired",
-                "select * from {{ ref('up') }} a, {{ ref('up') }} b",
-            ),
+            model_sql_pos("paired", raw),
         ],
         vec![],
         &[("model.p.up", "model.p.paired")],
@@ -9496,9 +9495,22 @@ fn cartesian_join_message_uses_the_raw_join_text() {
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
     let f = finding_on(&out.findings, LintRule::CartesianJoin, "model.p.paired");
     assert!(
-        f.message.contains("{{ ref('up') }} b"),
-        "the written join arm text, not the rendered name: {}",
+        f.message.contains("up b"),
+        "the ref call spelled as its relation, not its Jinja text: {}",
         f.message
+    );
+    assert!(
+        !f.message.contains("{{"),
+        "no Jinja text survives the rewrite: {}",
+        f.message
+    );
+    // The rewrite is message-only — the underline still covers the
+    // written tag and its alias.
+    let (l, c, el, ec) = needle_pos(raw, "{{ ref('up') }} b", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/paired.sql".to_string(), l, c, el, ec),
+        "the written join arm is still the position"
     );
 
     // Without raw SQL there's nothing to slice — the judged text (the
@@ -9522,6 +9534,90 @@ fn cartesian_join_message_uses_the_raw_join_text() {
     assert!(
         f.message.contains("up b"),
         "unpaired positions keep the judged text: {}",
+        f.message
+    );
+}
+
+#[test]
+fn cartesian_join_message_rewrites_each_jinja_expression() {
+    // Every `{{ }}` in a quoted arm is rewritten for the reader:
+    // `ref`/`source` name the relation they read (a `v=`/`version=`
+    // pin reads `x.vN`, the versioned-model spelling), any other
+    // expression collapses to `{{…}}`, and written relation text
+    // stays verbatim.
+    let raw = concat!(
+        "select * from literal.base a, {{ ref('pkg', 'up') }} b,",
+        " {{ ref('up', v=2) }} c, {{ source('raw', 'events') }} d,",
+        " {{ var('tbl') }} e, written.f f"
+    );
+    let m = manifest(
+        vec![
+            model_sql("up", "select 1 as id"),
+            model_sql_pos("multi", raw),
+        ],
+        vec![],
+        &[("model.p.up", "model.p.multi")],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    let f = finding_on(&out.findings, LintRule::CartesianJoin, "model.p.multi");
+    for want in ["up b", "up.v2 c", "raw.events d", "{{…}} e", "written.f f"] {
+        assert!(f.message.contains(want), "{want:?} missing: {}", f.message);
+    }
+    // The positions still cover each written arm verbatim.
+    for needle in [
+        "{{ ref('pkg', 'up') }} b",
+        "{{ ref('up', v=2) }} c",
+        "{{ source('raw', 'events') }} d",
+        "{{ var('tbl') }} e",
+        "written.f f",
+    ] {
+        let (l, c, el, ec) = needle_pos(raw, needle, 0);
+        let span = (Some(l), Some(c), Some(el), Some(ec));
+        let on_location = f
+            .location
+            .as_ref()
+            .is_some_and(|loc| (loc.line, loc.column, loc.end_line, loc.end_column) == span);
+        let on_label = f
+            .labels
+            .iter()
+            .any(|lbl| (Some(lbl.line), lbl.column, lbl.end_line, lbl.end_column) == span);
+        assert!(
+            on_location || on_label,
+            "{needle:?} is no position or label: {f:?}"
+        );
+    }
+}
+
+#[test]
+fn cartesian_join_message_manifest_mode_matches_source_mode() {
+    // Facts judge `compiled_code` (real compiled names), positions
+    // pair on the raw render — the message spells the same relations
+    // source mode does and never leaks the compiled name.
+    let raw = "select * from {{ ref('up') }} a, {{ ref('up') }} b";
+    let mut n = model_sql_pos("compiled", raw);
+    n.1.compiled_code =
+        Some("select * from \"db\".\"sch\".\"up\" a, \"db\".\"sch\".\"up\" b".into());
+    let m = manifest(
+        vec![model_sql("up", "select 1 as id"), n],
+        vec![],
+        &[("model.p.up", "model.p.compiled")],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    let f = finding_on(&out.findings, LintRule::CartesianJoin, "model.p.compiled");
+    assert!(
+        f.message.contains("up b"),
+        "the message shows the source-mode spelling: {}",
+        f.message
+    );
+    assert!(
+        !f.message.contains("sch"),
+        "the compiled relation name never leaks: {}",
         f.message
     );
 }

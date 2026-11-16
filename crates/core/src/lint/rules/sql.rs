@@ -282,22 +282,23 @@ pub(super) fn cartesian_join(
         // conditionless joins the facts were computed on — a macro-added
         // arm can't misalign i↔i. When it does, the raw source's own
         // spans give both the underline and the message's offender text:
-        // `from {{ ref('x') }} x, b` names `b` — the written join arm —
-        // where the render-substituted judgment text would show the
-        // compiled name instead. Without pairing, positions and message
-        // both keep the judged text (a file-scoped finding).
+        // `from a.t, {{ ref('x') }} b` names `x b` — the written join
+        // arm, with `ref()`/`source()` spelled as the relation they read
+        // and any other `{{ }}` elided — where the render-substituted
+        // judgment text would show the compiled name instead. Without
+        // pairing, positions and message both keep the judged text (a
+        // file-scoped finding).
         let anchor = sql_anchor(dag, uid);
         let pos = anchor
             .as_ref()
             .and_then(|_| sql.sql_positions(dag, uid))
             .filter(|p| p.cartesian.len() == facts.cartesian_count);
-        let offenders: Vec<String> = match (&anchor, &pos) {
-            (Some((_, raw)), Some(p)) => {
+        let offenders: Vec<String> = match &pos {
+            Some(p) => {
                 let mut v: Vec<String> = Vec::new();
-                for r in &p.cartesian {
-                    let s = raw[r.clone()].to_string();
-                    if !v.contains(&s) {
-                        v.push(s);
+                for s in &p.cartesian_display {
+                    if !v.contains(s) {
+                        v.push(s.clone());
                     }
                 }
                 v
