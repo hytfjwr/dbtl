@@ -38,14 +38,14 @@ async function init(): Promise<void> {
   };
   if (!data.built || !data.layouts) return; // the SSR'd notice stands
 
-  const lins = new Map<string, Lin>();
+  const cache = new Map<string, Lin>();
   const linOf = (root: string): Lin | null => {
-    let L = lins.get(root);
+    let L = cache.get(root);
     if (L) return L;
     const d = data.layouts![root];
     if (!d) return null;
     L = cells(d, names);
-    lins.set(root, L);
+    cache.set(root, L);
     return L;
   };
 
