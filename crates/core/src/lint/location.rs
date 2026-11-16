@@ -47,6 +47,7 @@ pub const YAML_ATTRIBUTE_RULE_IDS: &[&str] = &[
     "unused_models",
     "undeclared_warehouse_columns",
     "models_without_unit_tests",
+    "suppressions_without_reason",
 ];
 
 /// The 1-based `(line, column)` span of `text[start..end]` — `start`'s

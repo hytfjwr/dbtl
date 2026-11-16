@@ -16,6 +16,7 @@ use std::ops::Range;
 use sqlparser::ast::{Spanned, Statement};
 
 use super::ast::query_wildcard_items;
+use super::depth::ParseFailure;
 use super::dialect::SqlDialect;
 use super::facts::{outer_order_by_span, output_name_occurrences};
 use super::jinja::{jinja_parse, JinjaMark};
@@ -62,9 +63,12 @@ pub struct MarkedRelations {
     pub spans: Vec<(String, Range<usize>)>,
 }
 
-/// Render `raw` (`Plain`) and extract the positions — `None` when the
+/// Render `raw` (`Plain`) and extract the positions — `Err` when the
 /// text doesn't parse: a positionless finding, never a guessed one.
-pub(super) fn plain_positions(raw: &str, dialect: SqlDialect) -> Option<SqlPositions> {
+pub(super) fn plain_positions(
+    raw: &str,
+    dialect: SqlDialect,
+) -> Result<SqlPositions, ParseFailure> {
     let (rendered, stmts) = jinja_parse(raw, JinjaMark::Plain, dialect)?;
     let mut out = SqlPositions::default();
     for s in &stmts {
@@ -123,12 +127,15 @@ pub(super) fn plain_positions(raw: &str, dialect: SqlDialect) -> Option<SqlPosit
             out.unused_ctes.push((name.clone(), r));
         }
     }
-    Some(out)
+    Ok(out)
 }
 
 /// Render `raw` (`Marked`) and return the hand-coded relation scan —
-/// `None` like [`plain_positions`].
-pub(super) fn marked_relations(raw: &str, dialect: SqlDialect) -> Option<MarkedRelations> {
+/// `Err` like [`plain_positions`].
+pub(super) fn marked_relations(
+    raw: &str,
+    dialect: SqlDialect,
+) -> Result<MarkedRelations, ParseFailure> {
     let (rendered, stmts) = jinja_parse(raw, JinjaMark::Marked, dialect)?;
     let scan = scan_statements(&stmts, Some(&rendered));
     let spans = scan
@@ -136,7 +143,7 @@ pub(super) fn marked_relations(raw: &str, dialect: SqlDialect) -> Option<MarkedR
         .iter()
         .filter_map(|(n, s)| rendered.span_source(*s).map(|r| (n.clone(), r)))
         .collect();
-    Some(MarkedRelations {
+    Ok(MarkedRelations {
         names: scan.hard_coded.iter().cloned().collect(),
         spans,
     })

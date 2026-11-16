@@ -10,9 +10,9 @@
 use crate::{GateResult, GateStatus, LintTally, Report};
 use dbtl_core::{
     Baseline, Catalog, Dag, FailOn, Finding, LintConfig, LintInput, LintRule, Severity,
-    SkippedRule, SqlParseResolver,
+    SkippedRule, SqlParseResolver, UnparsedReason,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Does a `severity` finding fail under `fail_on`? `warn` gates on every
 /// counted finding (warnings included); `error` on errors only; `never` on
@@ -88,10 +88,14 @@ pub struct LintGateOutcome {
     /// catalog), in `LintRule::ALL` order — `check` prints `SKIP` rows and
     /// `lint` a `skipped:` section; they never count toward the gate.
     pub skipped: Vec<SkippedRule>,
-    /// SQL models `run_rules` couldn't parse (the `unparsed` tally both
-    /// reports print — a model that never reached a SQL rule, not a
-    /// finding).
-    pub unparsed: BTreeSet<String>,
+    /// SQL models `run_rules` couldn't parse, each mapped to the
+    /// [`UnparsedReason`] it recorded (the `unparsed` tally both reports
+    /// print — a model that never reached a SQL rule, not a finding).
+    pub unparsed: BTreeMap<String, UnparsedReason>,
+    /// `.dbtl.yml` `exclude:` entries declaring no reason — counted even
+    /// though they can never be findings; the summary reports them when
+    /// `suppressions_without_reason` ran.
+    pub reasonless_excludes: usize,
     /// Evaluation-time warnings from `run_rules` (the `path:` legacy-form
     /// deprecation notes `exclude:`/selector params surface), merged
     /// across the current and baseline-side evaluations — sorted, deduped.
@@ -141,7 +145,7 @@ pub fn evaluate_lint(
         findings.retain(|f| sel.contains(&f.node_uid));
         suppressed.retain(|f| sel.contains(&f.node_uid));
         // The tally counts models the report's selection could have shown.
-        unparsed.retain(|u| sel.contains(u));
+        unparsed.retain(|u, _| sel.contains(u));
     }
     if let Some(b) = baseline {
         b.apply(&mut findings);
@@ -219,6 +223,7 @@ pub fn evaluate_lint(
         suppressed,
         skipped,
         unparsed,
+        reasonless_excludes: outcome.reasonless_excludes,
         warnings: warnings.into_iter().collect(),
         rules,
     }
@@ -413,15 +418,28 @@ pub fn lint_assembly(inputs: &LintRunInputs<'_>) -> LintAssembly {
             suppressed.without_reason += 1;
         }
     }
+    let unparsed_models: Vec<String> = outcome
+        .unparsed
+        .keys()
+        .map(|u| dbtl_core::display_name(inputs.dag, u))
+        .collect();
+    let unparsed_reasons: BTreeMap<String, String> = outcome
+        .unparsed
+        .iter()
+        .map(|(u, r)| (dbtl_core::display_name(inputs.dag, u), r.to_string()))
+        .collect();
     let tally = LintTally {
         pre_existing: outcome.rules.iter().map(|r| r.pre_existing).sum(),
         has_diff: outcome.has_diff,
         skipped: outcome.skipped,
-        unparsed_models: outcome
-            .unparsed
-            .iter()
-            .map(|u| dbtl_core::display_name(inputs.dag, u))
-            .collect(),
+        unparsed_models,
+        unparsed_reasons,
+        // The exclude-entry count only reports when the audit rule ran —
+        // the entries themselves can never be its findings.
+        reasonless_excludes: inputs
+            .cfg
+            .enabled(LintRule::SuppressionsWithoutReason)
+            .then_some(outcome.reasonless_excludes),
         suppressed,
         // `--fix` fills these in after the fact — report assembly can't
         // see file edits.
@@ -870,6 +888,45 @@ mod tests {
         assert_eq!(
             v["summary"]["unparsed_models"]["names"],
             serde_json::json!(["a"])
+        );
+        // `reasons` is additive alongside `count`/`names` — each name maps
+        // to the reason its analysis recorded.
+        let reason = v["summary"]["unparsed_models"]["reasons"]["a"]
+            .as_str()
+            .expect("each unparsed name carries its reason");
+        assert!(
+            reason.starts_with("parse error"),
+            "a parse rejection reports as one: {reason}"
+        );
+    }
+
+    /// While `suppressions_without_reason` runs, reasonless `.dbtl.yml`
+    /// `exclude:` entries count on `summary.exclude_entries_without_reason`
+    /// — `0` when every entry reasons — and the key stays absent when the
+    /// audit rule isn't enabled.
+    #[test]
+    fn reasonless_excludes_lift_into_the_json_summary_only_when_the_audit_runs() {
+        let config = "lint:\n  rules:\n    root_models:\n      exclude:\n        - staging_*\n        - {select: \"marts_*\", reason: marts exempt}\n    suppressions_without_reason: true\n";
+        let dag = Dag::build(&manifest(vec![model("staging_a", "staging/a.sql")], &[]));
+        let cfg = dbtl_core::ProjectConfig::from_yaml(config).unwrap().lint;
+        let run = lint_report("p", "s", &inputs(&dag, &cfg, no_aux(), false));
+        let v = serde_json::to_value(&run.report).unwrap();
+        assert_eq!(
+            v["summary"]["exclude_entries_without_reason"],
+            serde_json::json!(1),
+            "the bare `staging_*` entry counts; the reasoned object doesn't"
+        );
+        // The audit off — the key never serializes.
+        let cfg = dbtl_core::ProjectConfig::from_yaml(
+            "lint:\n  rules:\n    root_models:\n      exclude: [staging_*]\n",
+        )
+        .unwrap()
+        .lint;
+        let run = lint_report("p", "s", &inputs(&dag, &cfg, no_aux(), false));
+        let v = serde_json::to_value(&run.report).unwrap();
+        assert!(
+            v["summary"].get("exclude_entries_without_reason").is_none(),
+            "the audit not running — the count is out of the summary entirely"
         );
     }
 

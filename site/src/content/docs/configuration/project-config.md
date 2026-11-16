@@ -181,6 +181,8 @@ models:
 
 `meta.dbtl.reason` is the fallback reason for the list form, for `"all"`, and for map entries whose value is `~`. In a map, a rule's own key wins over `all`. Reasons appear under `--show-suppressed`. See [suppressed findings](../cli/lint.md#suppressed-findings).
 
+The opt-in [`suppressions_without_reason`](../reference/lint-rules.md#suppressions_without_reason) rule enforces this convention — one finding per node whose suppression records no reason. It audits the suppression machinery itself, so neither `meta.dbtl.ignore` (naming it or via `all`) nor an `exclude:` entry can suppress it.
+
 A value that suppresses nothing is reported once per node as a load warning:
 
 - `ignore` is none of the three forms, including an empty map or a map value that is not a string.

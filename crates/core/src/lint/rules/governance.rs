@@ -190,6 +190,85 @@ pub(super) fn contract_columns_without_type(
     }
 }
 
+/// `suppressions_without_reason`: a node's `meta.dbtl` suppression that
+/// records no reason — `ignore: all`, a listed rule id, or a
+/// `{rule|all: reason}` map entry (`~` falls back to `meta.dbtl.reason`,
+/// so a `~` entry flags only when the fallback is absent too). One
+/// finding per node listing the rule ids its declarations suppress
+/// without a reason; `all` reports as the `all` id. The `meta` block is
+/// the dag's merged value, so node-yml, in-file `config(meta=)`, and
+/// project-tree `+meta` declarations all reach it identically. The rule
+/// audits the suppression machinery itself, so `run_rules` never
+/// suppresses its findings — `ignore: all` and `exclude:` must not
+/// erase the audit.
+pub(super) fn suppressions_without_reason(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if !in_scope(n) {
+            continue;
+        }
+        let Some((ignore, fallback)) = meta_dbtl(dag, uid) else {
+            continue;
+        };
+        // The rule ids each reasonless declaration suppresses — `all`
+        // reports as one id, never expanded into a wall of names.
+        let mut reasonless: Vec<String> = Vec::new();
+        match ignore {
+            MetaIgnore::All => {
+                if fallback.is_none() {
+                    reasonless.push("all".to_string());
+                }
+            }
+            MetaIgnore::List(ids) => {
+                if fallback.is_none() {
+                    reasonless.extend(ids);
+                }
+            }
+            MetaIgnore::Map(entries) => {
+                for (id, value) in &entries {
+                    // `meta_suppression`'s effective reason: the entry's
+                    // own non-empty string, else `meta.dbtl.reason`.
+                    let reasoned =
+                        value.as_str().is_some_and(|s| !s.is_empty()) || fallback.is_some();
+                    if !reasoned {
+                        reasonless.push(id.clone());
+                    }
+                }
+            }
+            MetaIgnore::Absent | MetaIgnore::Malformed => {}
+        }
+        if reasonless.is_empty() {
+            continue;
+        }
+        reasonless.sort();
+        reasonless.dedup();
+        let message = if reasonless == ["all"] {
+            format!(
+                "{} suppresses all rules without a reason",
+                display_name(dag, uid)
+            )
+        } else {
+            format!(
+                "{} suppresses {} without a reason: {}",
+                display_name(dag, uid),
+                pluralize(reasonless.len(), "rule"),
+                reasonless.join(", ")
+            )
+        };
+        out.push(Finding::new(
+            LintRule::SuppressionsWithoutReason,
+            (*uid).clone(),
+            Vec::new(),
+            message,
+        ));
+    }
+}
+
 /// `references_deprecated_model`: a node directly depends on a model
 /// carrying `deprecation_date` — the upstream's scheduled retirement.
 /// Every resource kind that CAN parent a model is checked (models,

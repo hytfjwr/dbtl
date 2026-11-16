@@ -8,7 +8,7 @@ use std::ops::Range;
 use sqlparser::ast::Statement;
 use sqlparser::tokenizer::Span;
 
-use super::depth::parse_statements;
+use super::depth::{parse_statements, ParseFailure};
 use super::SqlDialect;
 use crate::source::{
     find_subslice, jinja_branches, jinja_set_assigns, jinja_tag_close, mask_jinja_comments,
@@ -1501,27 +1501,34 @@ pub(super) fn render_arms(
 ///    unparsable or phantom-fact union, and
 /// 4. the collapse render stripped the same way.
 ///
-/// `None` when all four fail — the caller's unparsed-model path.
+/// `Err` when all four fail — the caller's unparsed-model path, and the
+/// failure the UNION render produced (the faithful text a compile would
+/// run; the fallbacks exist for Jinja artifacts, so its error is the
+/// honest reason) rather than whichever retry failed last.
 pub(super) fn jinja_parse(
     sql: &str,
     mark: JinjaMark,
     dialect: SqlDialect,
-) -> Option<(RenderedSql, Vec<Statement>)> {
+) -> Result<(RenderedSql, Vec<Statement>), ParseFailure> {
     let lex = Lex::new(dialect);
     let mut rendered = render_jinja_mapped(sql, mark, dialect);
-    if let Some(stmts) = parse_statements(dialect, &rendered.text) {
-        return Some((rendered, stmts));
-    }
+    let first_failure = match parse_statements(dialect, &rendered.text) {
+        Ok(stmts) => return Ok((rendered, stmts)),
+        Err(e) => e,
+    };
     strip_dangling(&mut rendered, &lex);
-    if let Some(stmts) = parse_statements(dialect, &rendered.text) {
-        return Some((rendered, stmts));
+    if let Ok(stmts) = parse_statements(dialect, &rendered.text) {
+        return Ok((rendered, stmts));
     }
     let mut rendered = render_arms(sql, mark, dialect, RenderArms::Collapse);
-    if let Some(stmts) = parse_statements(dialect, &rendered.text) {
-        return Some((rendered, stmts));
+    if let Ok(stmts) = parse_statements(dialect, &rendered.text) {
+        return Ok((rendered, stmts));
     }
     strip_dangling(&mut rendered, &lex);
-    parse_statements(dialect, &rendered.text).map(|stmts| (rendered, stmts))
+    match parse_statements(dialect, &rendered.text) {
+        Ok(stmts) => Ok((rendered, stmts)),
+        Err(_) => Err(first_failure),
+    }
 }
 
 // ---------------------------------------------------------------------------

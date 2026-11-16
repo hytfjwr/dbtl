@@ -156,6 +156,10 @@ pub enum LintRule {
     /// a typo'd model name, an undeclared source, or a `disabled`
     /// target (reported under its own wording).
     UnresolvedReferences,
+    /// A node's `meta.dbtl` suppression records no reason (opt-in).
+    /// Audits the suppression machinery itself, so `meta.dbtl.ignore`
+    /// (including `all`) and `exclude:` can never suppress it.
+    SuppressionsWithoutReason,
 }
 
 impl LintRule {
@@ -163,7 +167,7 @@ impl LintRule {
     /// order of the enum and of [`REGISTRY`]. The original structure rules
     /// lead; rules added later append in registry order so the emitted
     /// sequence stays stable.
-    pub const ALL: [LintRule; 45] = [
+    pub const ALL: [LintRule; 46] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -209,6 +213,7 @@ impl LintRule {
         Self::LayerMaterializations,
         Self::ModelsWithoutUnitTests,
         Self::UnresolvedReferences,
+        Self::SuppressionsWithoutReason,
     ];
 
     /// This rule's registry row — every rule has exactly one (drift-tested).

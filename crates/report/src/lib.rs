@@ -207,6 +207,11 @@ pub struct ReportSummary {
     /// one model was skipped that way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unparsed_models: Option<UnparsedModels>,
+    /// `.dbtl.yml` `exclude:` entries carrying no reason — present only
+    /// when `suppressions_without_reason` ran (the entries can never be
+    /// findings of their own; the count is their audit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude_entries_without_reason: Option<usize>,
     /// Findings `--fix`/`--fix-dry-run` resolved (or would have) — present
     /// only when a fix run rewrote at least one byte.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -281,6 +286,11 @@ pub struct UnparsedModels {
     pub count: usize,
     /// The models' [`dbtl_core::display_name`]s in `unique_id` order.
     pub names: Vec<String>,
+    /// Why each `names` entry was skipped — display name → the reason its
+    /// analysis recorded (`parse error at 12:5`, `depth limit
+    /// exceeded`, …). Present whenever any model was skipped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasons: Option<BTreeMap<String, String>>,
 }
 
 /// The lint-run tallies the `text`/`concise` summary lines need that the
@@ -307,6 +317,15 @@ pub struct LintTally {
     /// rules hit the same parse failure). The text renderer lists the
     /// first ten then a `+K more` tail.
     pub unparsed_models: Vec<String>,
+    /// Why each `unparsed_models` entry was skipped — display name → the
+    /// reason its analysis recorded; the text line prints
+    /// `name (reason)`, the JSON `summary.unparsed_models.reasons`
+    /// carries the same map. Empty exactly when `unparsed_models` is.
+    pub unparsed_reasons: BTreeMap<String, String>,
+    /// `.dbtl.yml` `exclude:` entries declaring no reason — `Some` only
+    /// when `suppressions_without_reason` ran (enabled); the text summary
+    /// counts them on one line, the JSON summary the same key.
+    pub reasonless_excludes: Option<usize>,
     /// The suppressed-finding rollup — total, mechanism split, and the
     /// count carrying no reason. The text summary's fourth line and the
     /// JSON `summary.suppressed` both read it.
@@ -422,8 +441,10 @@ impl Report {
             self.summary.unparsed_models = Some(UnparsedModels {
                 count: lint.unparsed_models.len(),
                 names: lint.unparsed_models.clone(),
+                reasons: Some(lint.unparsed_reasons.clone()),
             });
         }
+        self.summary.exclude_entries_without_reason = lint.reasonless_excludes;
         if lint.fixed.is_some() {
             self.summary.fixed = lint.fixed.clone();
         }
