@@ -34,6 +34,10 @@ pub(super) struct TreeConfig {
     /// `+incremental_strategy` — `append` / `merge` / `delete+insert` /
     /// `insert_overwrite` / `microbatch`.
     pub(super) incremental_strategy: Option<String>,
+    /// `+tags` — ACCUMULATES down the tree rather than overriding (a
+    /// nested `+tags` extends the outer list — verified on 1.12.6), so
+    /// the list is ordered shallower-first.
+    pub(super) tags: Vec<String>,
 }
 
 impl TreeConfig {
@@ -147,6 +151,22 @@ pub(super) fn resolve_tree_config(
     if let Some(s) = tree["+incremental_strategy"].as_str() {
         out.incremental_strategy = Some(s.to_string());
     }
+    // `+tags` — a bare scalar wraps to a one-element list, elements
+    // stringify (`7` → `"7"`, verified on 1.12.6); a non-scalar member
+    // (a dict, a nested list) warns once per level like `+meta`.
+    let tags_v = &tree["+tags"];
+    if !tags_v.is_null() {
+        let bad = match tags_v {
+            serde_json::Value::Array(items) => items.iter().any(|i| scalar_to_string(i).is_none()),
+            v => scalar_to_string(v).is_none(),
+        };
+        if bad {
+            warnings.push(format!(
+                "dbt_project.yml '+tags' at '{tree_path}' has a non-string member; ignoring it"
+            ));
+        }
+        out.tags = tag_values_of(tags_v);
+    }
     let deeper = segments.split_first().map(|(seg, rest)| {
         resolve_tree_config(
             &tree[seg.as_str()],
@@ -182,6 +202,7 @@ pub(super) fn resolve_tree_config(
         out.group = deeper.group.or(out.group);
         out.contract = deeper.contract.or(out.contract);
         out.incremental_strategy = deeper.incremental_strategy.or(out.incremental_strategy);
+        out.tags.extend(deeper.tags); // shallower-first accumulation
     }
     out
 }

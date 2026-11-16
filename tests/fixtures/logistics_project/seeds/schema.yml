@@ -11,3 +11,8 @@ seeds:
       - name: weight_kg
   - name: carriers
     description: "Carrier master data"
+    # Top-level `tags:` ignored (verified on 1.12.6); `config.tags:` lands
+    # after the `seeds:` tree's `+tags` on the wire.
+    tags: [carr_ignored]
+    config:
+      tags: [carr_yml]

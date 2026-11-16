@@ -1,8 +1,12 @@
+{# `tags:` below is the in-file tag channel — it sits between the `marts:`
+   `+tags` rung and this entry's schema `config.tags:` in the node.tags
+   union; 'mart_tree' duplicates the tree value to pin dedup-by-name. #}
 {{
     config(
         materialized='incremental',
         unique_key='shipment_id',
         incremental_strategy='delete+insert',
+        tags=['ship_in', 'mart_tree'],
         pre_hook="delete from {{ ref('ops_run_log') }} where model_name = 'fct_shipments'",
         post_hook="insert into {{ ref('ops_run_log') }} (model_name, ran_at) values ('fct_shipments', current_timestamp)",
         meta={

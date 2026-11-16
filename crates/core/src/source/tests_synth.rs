@@ -40,6 +40,11 @@ pub(super) fn apply_meta(
     in_file: &HashMap<String, Enabled>,
     tree: &HashMap<String, TreeConfig>,
     unverifiable: &mut std::collections::BTreeSet<String>,
+    // The schema `config.tags:` channel — uid → entries in declaration
+    // order — recorded for `apply_tree_fallback` to merge in dbt's exact
+    // ordering (the node's dedup'd list takes tree → in-file → yml;
+    // `yml_tags` is that last channel).
+    yml_tags: &mut HashMap<String, Vec<String>>,
     warnings: &mut Vec<String>,
 ) {
     for entry in entries {
@@ -143,8 +148,16 @@ pub(super) fn apply_meta(
                 node.constraints = entry.constraints.clone();
             }
         }
-        if !entry.tags.is_empty() {
-            node.tags = entry.tags.clone();
+        // The schema `config.tags:` channel — appended to the node's tag
+        // list LAST of all (tree `+tags` → in-file `config(tags=…)` →
+        // here, dedup'd — verified on 1.12.6). The entry's top-level
+        // `tags:` property is a no-op dbt parses but never applies, so it
+        // has deliberately no field on [`SchemaModel`].
+        if let Some(cfg_tags) = &entry.config.tags {
+            yml_tags
+                .entry(uid.clone())
+                .or_default()
+                .extend(cfg_tags.iter().cloned());
         }
         // Schema `meta:` / `config.meta:` merge per top-level key: the entry's
         // `config.meta` wins over its top-level `meta:` (declaring both is a
@@ -235,6 +248,7 @@ pub(super) fn apply_meta(
 /// The `enabled` verdicts all folded at the claim stage, so a member
 /// whose uid never materialized contributes nothing — its docs/tests
 /// park with it, matching dbt.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_versioned_meta(
     nodes: &mut HashMap<String, RawNode>,
     ctx: &mut TestCtx<'_>,
@@ -242,6 +256,11 @@ pub(super) fn apply_versioned_meta(
     family: &VersionedFamily,
     yml_path: &str,
     docs: &DocBlocks,
+    // The schema `config.tags:` channel — like `apply_meta`'s, but per
+    // member: the version's `config.tags` lands BEFORE the model's on
+    // the node (verified on 1.12.6), so each member records
+    // `ver ++ model` in declaration order.
+    yml_tags: &mut HashMap<String, Vec<String>>,
     warnings: &mut Vec<String>,
 ) {
     let mut applied: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -354,17 +373,14 @@ pub(super) fn apply_versioned_meta(
             if node.constraints.is_empty() {
                 node.constraints = entry.constraints.clone();
             }
-            // `tags` accumulate like `meta:`'s union — the model's then
-            // the version's, config channel then property (the same
-            // shape `source_tags` takes).
-            for tags in [
-                &entry.config.tags,
-                &entry.tags,
-                &ver_entry.config.tags,
-                &ver_entry.tags,
-            ] {
-                push_unique(&mut node.tags, tags);
-            }
+            // `config.tags:` — the version's then the model's, per
+            // member, recorded for `apply_tree_fallback` to merge in
+            // dbt's exact ordering (the `tags:` property on either level
+            // is a no-op dbt never applies — deliberately absent from
+            // [`SchemaModel`]/[`SchemaVersion`]).
+            let mut member_tags = ver_entry.config.tags.clone().unwrap_or_default();
+            member_tags.extend(entry.config.tags.clone().unwrap_or_default());
+            yml_tags.entry(uid.clone()).or_default().extend(member_tags);
             // `meta:`/`config.meta:` merge per key — version level wins
             // over model level, `config.meta` wins over the bare `meta:`
             // spelling at each level; in-file `config(meta=…)` wins over
@@ -706,7 +722,7 @@ pub(super) fn source_tags(src: &SchemaSource, tbl: &SchemaSourceTable) -> Vec<St
 
 /// Append the tags `out` doesn't already carry, preserving `new_tags`
 /// order (dbt's tag union is ordered, first occurrence keeps its slot).
-fn push_unique(tags: &mut Vec<String>, new_tags: &[String]) {
+pub(super) fn push_unique(tags: &mut Vec<String>, new_tags: &[String]) {
     for tag in new_tags {
         if !tags.contains(tag) {
             tags.push(tag.clone());
@@ -715,24 +731,36 @@ fn push_unique(tags: &mut Vec<String>, new_tags: &[String]) {
 }
 
 /// A source table's `loaded_at_field` — resolved down table top-level >
-/// table `config:` > source top-level > source `config:`, each level
-/// three-state (absent inherits, `null` clears, a value overrides).
-/// UNLIKE `meta:`/`freshness:`, the top-level spelling beats `config:`
-/// within each level (verified on 1.12.6: a table's `loaded_at_field:`
-/// wins over its own `config.loaded_at_field`, and the source's top-level
-/// value beats the source's `config.loaded_at_field`; the table's config
-/// still outranks every source level). `+loaded_at_field` on the
-/// `sources:` tree is a key dbt ignores — deliberately not resolved.
+/// table `config:` > source top-level > source `config:`. The top-level
+/// spelling beats `config:` WITHIN each level (verified on 1.12.6: a
+/// table's `loaded_at_field:` wins over its own `config.loaded_at_field`,
+/// and the source's top-level value beats the source's
+/// `config.loaded_at_field`; the table's config still outranks every
+/// source level). Two `null` spellings behave DIFFERENTLY (verified): a
+/// table's TOP-LEVEL `loaded_at_field: null` stops the walk outright —
+/// the cleared value lands on the wire — while a `config.loaded_at_field:
+/// null` (either level) is a silent no-op, inherited through like the key
+/// was never declared. `+loaded_at_field` on the `sources:` tree is a key
+/// dbt ignores — deliberately not resolved.
 pub(super) fn source_loaded_at_field(
     src: &SchemaSource,
     tbl: &SchemaSourceTable,
 ) -> Option<String> {
-    tbl.loaded_at_field
+    // Table top-level — `Some(None)` (explicit `null`) returns the cleared
+    // `None` right here, before any lower level is consulted.
+    if let Some(v) = &tbl.loaded_at_field {
+        return v.clone();
+    }
+    // Table `config:` — a concrete value wins; `Some(None)` falls through.
+    if let Some(Some(v)) = &tbl.config.loaded_at_field {
+        return Some(v.clone());
+    }
+    // Source top-level — `Option<String>`: an explicit `null` already reads
+    // as absent at deserialization (verified: it lets the source config
+    // level apply). Source `config:` fills last, its own `null` a no-op.
+    src.loaded_at_field
         .clone()
-        .or_else(|| tbl.config.loaded_at_field.clone())
-        .or_else(|| src.loaded_at_field.clone().map(Some))
-        .or_else(|| src.config.loaded_at_field.clone())
-        .flatten()
+        .or_else(|| src.config.loaded_at_field.clone().flatten())
 }
 
 /// The source table's effective `freshness` — each threshold (`warn_after`,

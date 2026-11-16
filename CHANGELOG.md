@@ -103,6 +103,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   real-dbt render semantics per scope (the project file and schema
   positions raise on a missing `var()`, while the node render tolerates
   it as `None`).
+- Source mode now resolves model, seed, and snapshot `tags` the way dbt
+  does: the `+tags` rungs of `dbt_project.yml` (accumulated outer level
+  first), the file's `config(tags=…)` / `dbt.config(tags=…)` calls, and
+  the schema entry's `config.tags:` union in that order with
+  dedup-by-name — while a schema entry's bare `tags:` property stays
+  ignored, matching dbt. Exposures read `tags:`/`config.tags` the same
+  way dbt wires them (`config.tags` replaces the `exposures:` tree's
+  `+tags` outright, and the union sorts), and `config.group` — the only
+  group channel dbt accepts — fills from the tree's `+group` when
+  undeclared.
+- Source mode stops clearing `loaded_at_field` on a `config:`-level
+  `null`: only a source table's top-level `loaded_at_field: null`
+  clears the inherited value, like dbt; a `null` under `config:` simply
+  declines to override. `config()` also learned the argument shapes
+  dbt accepts — `config(**{...})`/`config(*[{...}])` spreads and
+  repeated-kwarg or dict-plus-kwarg mixtures now apply-or-ignore the
+  whole call exactly as dbt's extractor does — and `data-paths` alone
+  now emits dbt's rename-to-`seed-paths` deprecation warning.
 
 ## [0.7.0] - 2026-11-15
 

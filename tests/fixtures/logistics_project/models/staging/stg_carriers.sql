@@ -1,4 +1,4 @@
-{{ config(materialized='view') }}
+{{ config(materialized='view', **{'tags': ['carriers_spread']}) }}
 
 select
     carrier_id,

@@ -73,6 +73,18 @@ sources:
         config: {loaded_at_field: cleared_cfg_ts}
         freshness: null
         description: "Append-only feed"
+      # `config.loaded_at_field: null` is a NO-OP in dbt (verified on
+      # 1.12.6) — it clears nothing, so the source's top-level
+      # `loaded_at_field: feed_ts` still lands on the table.
+      - name: kept_via_cfg_null
+        description: "Inherits the source timestamp through a config null"
+        config: {loaded_at_field: null}
+      # …while the TABLE's top-level `loaded_at_field: null` is the only
+      # clearing spelling: it stops the whole chain, source `config:`
+      # included — the wire value is `null`.
+      - name: cleared_via_prop
+        loaded_at_field: null
+        description: "Append-only feed with an explicitly cleared timestamp"
       # `| as_bool` in a table's `config.enabled` — the YAML `{{ }}` render
       # is native, so the filter coerces the string var: vars.yml's
       # "False" parks the table; `--vars '{telematics_flag: "True"}'`

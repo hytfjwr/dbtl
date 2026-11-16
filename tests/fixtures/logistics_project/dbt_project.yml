@@ -11,6 +11,7 @@ data-paths: ["seeds"]
 analysis-paths: ["analyses"]
 test-paths: ["tests"]
 macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
 
 # A run hook is part of the project shape: real dbt records it on the
 # manifest run, source mode simply never reads it.
@@ -25,6 +26,9 @@ models:
       +materialized: ephemeral
     marts:
       +materialized: table
+      # The lowest tag rung: in-file `config(tags=…)` appends on top, the
+      # schema entry's `config.tags:` last — the order node.tags keeps.
+      +tags: [mart_tree]
     pilot:
       # `vars.yml`'s top-level `vars:` is the only var table this render
       # pass consults — `enable_pilot: true` there turns the folder on.
@@ -42,6 +46,7 @@ models:
 
 seeds:
   logistics:
+    +tags: [seed_tree]
     shipments:
       # The column type branches on the adapter: the project file's own
       # render evaluates `target.type` (duckdb in the generated fixture).
@@ -51,10 +56,24 @@ seeds:
       +column_types:
         event_id: integer
 
+snapshots:
+  logistics:
+    +tags: [snap_tree]
+
 analyses:
   logistics:
     deep_audit_probe:
       +enabled: "{{ var('probe_enabled', false) }}"
+
+# Exposure tree keys by the exposure fqn (`<pkg>:<yml dirs>:<name>`):
+# `+tags` unions with the entry's top-level `tags:` — unless the entry
+# declares `config.tags`, which replaces the tree's outright; `+group`
+# fills `config.group` when the entry's own `config.group` is absent.
+exposures:
+  logistics:
+    +tags: [exp_tree]
+    marts:
+      +group: ops_dashboards
 
 # `sources:` is the lowest rung of the source config chain (below the
 # schema.yml properties): the `+meta`/`+freshness` here must lose to every

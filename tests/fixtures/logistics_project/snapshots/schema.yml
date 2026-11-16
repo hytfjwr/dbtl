@@ -1,0 +1,10 @@
+version: 2
+
+snapshots:
+  - name: shipment_status_snap
+    description: "Point-in-time shipment status captured off the fact table"
+    # A `snapshots:` entry's top-level `tags:` is parsed but never applied
+    # by dbt (verified on 1.12.6) — only `config.tags:` reaches the node.
+    tags: [snap_ignored]
+    config:
+      tags: [snap_yml]

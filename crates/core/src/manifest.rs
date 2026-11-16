@@ -403,6 +403,17 @@ pub struct RawFreshnessThreshold {
     pub period: Option<String>,
 }
 
+/// `config` sub-object of an exposure. `group` lives ONLY here on the wire
+/// (the exposure's top-level `group` stays null — verified on 1.12.6) and
+/// `tags` repeats the top-level list verbatim.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RawExposureConfig {
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
 /// `owner` sub-object of an exposure. dbt requires at least one of name/email,
 /// but both stay optional here (exclusion is never a parse failure).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -444,6 +455,16 @@ pub struct RawExposure {
     /// `config: meta:` overlaid per key — so only this field is read.
     #[serde(default)]
     pub meta: serde_json::Map<String, serde_json::Value>,
+    /// The exposure's tag list. Unlike models, an exposure's top-level
+    /// `tags:` DOES apply: with `config.tags` declared the wire list is
+    /// `config.tags` then `tags:`; without it, `tags:` then the
+    /// `exposures:` tree's `+tags` (verified on 1.12.6).
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// The exposure's `config` sub-object — carries `group` (the wire's
+    /// only group home) and a `tags` copy identical to the top-level list.
+    #[serde(default)]
+    pub config: RawExposureConfig,
 }
 
 /// A semantic-layer resource (`semantic_models` / `metrics` / `saved_queries`)

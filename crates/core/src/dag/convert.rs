@@ -181,11 +181,15 @@ pub(super) fn detail_from_node(node: &RawNode) -> NodeDetail {
 /// kind / owner / url live in the [`ExposureInfo`] side map instead).
 /// `meta` is the exposure's merged dict — a real manifest records it at the
 /// exposure top level, and source mode synthesizes the same top-level +
-/// `config: meta:` merge.
+/// `config: meta:` merge. `tags` is the top-level wire list; `group` comes
+/// from `config.group` — the only wire slot dbt writes it to (an exposure's
+/// own `group:`/`config.group` never lands at top level).
 pub(super) fn detail_from_exposure(exposure: &RawExposure) -> NodeDetail {
     NodeDetail {
         description: clean_desc(&exposure.description),
         original_file_path: exposure.original_file_path.clone(),
+        tags: exposure.tags.clone(),
+        group: exposure.config.group.clone(),
         meta: meta_strings(&exposure.meta),
         ..Default::default()
     }

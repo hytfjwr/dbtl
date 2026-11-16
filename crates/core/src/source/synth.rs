@@ -14,8 +14,8 @@ use anyhow::{Context, Result};
 use super::*;
 use crate::{
     dag::{version_scope_key, versioned_model_segs},
-    normalize_version, DisabledRef, RawConfig, RawDoc, RawExposure, RawExposureOwner, RawMetadata,
-    RefScope, UnresolvedAdjacent,
+    normalize_version, DisabledRef, RawConfig, RawDoc, RawExposure, RawExposureConfig,
+    RawExposureOwner, RawMetadata, RefScope, UnresolvedAdjacent,
 };
 
 /// The shared state the source-synthesis stages build up: the parsed project
@@ -93,6 +93,15 @@ pub(super) struct Synthesis {
     /// (`+access`/`+group`/`+contract`/`+incremental_strategy`) — the same
     /// lowest-precedence slot `tree_mat`/`tree_uk` occupy.
     tree_gov: HashMap<String, TreeConfig>,
+    /// uid -> the file's own `config(tags=…)` / `dbt.config(tags=…)` list
+    /// — the middle channel of a node's tag union. Recorded at node
+    /// creation; `apply_tree_fallback` merges all channels in dbt's order
+    /// once every schema file has contributed its share.
+    infile_tags: HashMap<String, Vec<String>>,
+    /// uid -> the schema `config.tags:` channel — the LAST segment of the
+    /// node's tag union (a `versions:` member's is `ver ++ model`,
+    /// recorded by `apply_versioned_meta`).
+    yml_tags: HashMap<String, Vec<String>>,
     /// `enabled: false`-parked refable names — `name -> {(version,
     /// resource kind)}` — recorded instead of dropped:
     /// `unresolved_references` reports a `ref()` to one under its own
@@ -286,6 +295,15 @@ impl Synthesis {
                 .or(project.source_paths.clone())
                 .unwrap_or_else(|| vec!["models".to_string()]),
         );
+        // `data-paths` alone still emits dbt's deprecation warning — the
+        // message dbt itself prints (verified on 1.12.6), recorded here so
+        // source mode's warning surface reads the same.
+        if project.data_paths.is_some() {
+            warnings.push(
+                "The data-paths config has been renamed to seed-paths. Please update your dbt_project.yml configuration to reflect this change."
+                    .to_string(),
+            );
+        }
         // Declaring both spellings is a dbt error — degraded to a warning
         // here like every other recoverable oddity, `seed-paths` winning.
         if project.seed_paths.is_some() && project.data_paths.is_some() {
@@ -382,6 +400,8 @@ impl Synthesis {
             tree_meta: HashMap::new(),
             tree_uk: HashMap::new(),
             tree_gov: HashMap::new(),
+            infile_tags: HashMap::new(),
+            yml_tags: HashMap::new(),
             disabled_names: BTreeMap::new(),
             disabled_sources: BTreeSet::new(),
             in_file_enabled: HashMap::new(),
@@ -668,6 +688,13 @@ impl Synthesis {
                     self.tree_uk.insert(uid.clone(), uk.clone());
                 }
                 self.tree_gov.insert(uid.clone(), tree.clone());
+                // The `{{ config(tags=…) }}` inside a `{% snapshot %}`
+                // block — extracted file-wide like the other pattern
+                // extractors (multi-block files share the config).
+                let tags = config_tags(&masked);
+                if !tags.is_empty() {
+                    self.infile_tags.insert(uid.clone(), tags);
+                }
                 self.nodes.insert(
                     uid.clone(),
                     RawNode {
@@ -1149,6 +1176,10 @@ impl Synthesis {
                 node.language = Some("sql".to_string());
                 node.meta = config_meta(&masked).unwrap_or_default();
                 node.alias = config_alias(&masked);
+                let tags = config_tags(&masked);
+                if !tags.is_empty() {
+                    self.infile_tags.insert(uid.clone(), tags);
+                }
                 self.node_sql.push((uid.clone(), masked));
             }
             PendingKind::Py { cfg, calls, jinja } => {
@@ -1160,6 +1191,9 @@ impl Synthesis {
                     unique_key: cfg.unique_key,
                     incremental_strategy: cfg.incremental_strategy.clone(),
                 };
+                if !cfg.tags.is_empty() {
+                    self.infile_tags.insert(uid.clone(), cfg.tags.clone());
+                }
                 node.access = cfg.access;
                 node.group = cfg.group;
                 node.contract = cfg.contract;
@@ -1241,6 +1275,10 @@ impl Synthesis {
                 node.language = Some("sql".to_string());
                 node.meta = config_meta(&masked).unwrap_or_default();
                 node.alias = config_alias(&masked);
+                let tags = config_tags(&masked);
+                if !tags.is_empty() {
+                    self.infile_tags.insert(uid.clone(), tags);
+                }
                 self.node_sql.push((uid.clone(), masked));
             }
             PendingKind::Py { cfg, calls, jinja } => {
@@ -1253,6 +1291,9 @@ impl Synthesis {
                     unique_key: cfg.unique_key,
                     incremental_strategy: cfg.incremental_strategy.clone(),
                 };
+                if !cfg.tags.is_empty() {
+                    self.infile_tags.insert(uid.clone(), cfg.tags.clone());
+                }
                 node.access = cfg.access;
                 node.group = cfg.group;
                 node.contract = cfg.contract;
@@ -1903,6 +1944,23 @@ impl Synthesis {
                     &mut self.warnings,
                     &format!("{what} config"),
                 ));
+                // `tags` — a `config.tags` DECLARED on the entry replaces
+                // the tree's `+tags` outright (verified on 1.12.6: even
+                // `config: {tags: []}` suppresses it) and the wire list is
+                // `config.tags ++ tags:`; undeclared, it's `tags: ++ +tags`.
+                // Either way the wire sorts + dedups the union (verified —
+                // exposures order tags alphabetically, unlike model nodes).
+                let mut tags: Vec<String> = match &exp.config.tags {
+                    Some(cfg) => cfg.iter().chain(exp.tags.iter()).cloned().collect(),
+                    None => exp.tags.iter().chain(tree.tags.iter()).cloned().collect(),
+                };
+                tags.sort();
+                tags.dedup();
+                // `group` lives only in `config` on the wire — the entry's
+                // own `group:` property never lands (dbt ignores it), and
+                // the tree's `+group` fills only what `config.group`
+                // leaves undeclared (verified on 1.12.6).
+                let group = exp.config.group.clone().or(tree.group);
                 self.exposures.insert(
                     uid,
                     RawExposure {
@@ -1924,6 +1982,11 @@ impl Synthesis {
                             macros: vec![],
                         },
                         meta,
+                        config: RawExposureConfig {
+                            tags: tags.clone(),
+                            group,
+                        },
+                        tags,
                     },
                 );
             }
@@ -1975,6 +2038,7 @@ impl Synthesis {
                         &self.in_file_enabled,
                         &self.tree_gov,
                         &mut self.enabled_unverifiable,
+                        &mut self.yml_tags,
                         &mut self.warnings,
                     );
                 } else if let Some(family) = self.versioned.get(&entry.name) {
@@ -1991,6 +2055,7 @@ impl Synthesis {
                         family,
                         &yml_path,
                         &self.docs,
+                        &mut self.yml_tags,
                         &mut self.warnings,
                     );
                 }
@@ -2006,6 +2071,7 @@ impl Synthesis {
                 &self.in_file_enabled,
                 &self.tree_gov,
                 &mut self.enabled_unverifiable,
+                &mut self.yml_tags,
                 &mut self.warnings,
             );
             apply_meta(
@@ -2019,6 +2085,7 @@ impl Synthesis {
                 &self.in_file_enabled,
                 &self.tree_gov,
                 &mut self.enabled_unverifiable,
+                &mut self.yml_tags,
                 &mut self.warnings,
             );
 
@@ -2096,6 +2163,23 @@ impl Synthesis {
                         gov.and_then(|g| g.incremental_strategy.clone());
                 }
             }
+            // `tags` — the three channels deduplicated in the order dbt's
+            // node list keeps (verified on 1.12.6): the project `+tags`
+            // tree (outer→inner), the file's own `config(tags=…)`, then
+            // the schema entry's `config.tags:`. The wire `config.tags`
+            // holds the same channels in a DIFFERENT order (tree → yml →
+            // in-file, duplicates kept) — nothing downstream reads it, so
+            // only this list is synthesized.
+            let mut tags = gov.map(|g| g.tags.clone()).unwrap_or_default();
+            push_unique(
+                &mut tags,
+                self.infile_tags.get(uid).map_or(&[][..], Vec::as_slice),
+            );
+            push_unique(
+                &mut tags,
+                self.yml_tags.get(uid).map_or(&[][..], Vec::as_slice),
+            );
+            node.tags = tags;
             // Deterministic `semantic_dependents` — stamped per schema file,
             // so sort/dedup once here (a name can't legitimately repeat, but a
             // duplicate `semantic_models:` entry across files must not double).

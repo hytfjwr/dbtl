@@ -388,10 +388,12 @@ fn lineage_renders_identical_outside_the_singular_badge_cone() {
     assert_eq!(
         skip,
         BTreeSet::from([
+            "exposure.logistics.carrier_ops_dashboard".to_string(),
             "model.logistics.fct_delivery_scores".to_string(),
             "model.logistics.fct_py_delivery_risk".to_string(),
             "model.logistics.fct_shipments".to_string(),
             "model.logistics.ops_run_log".to_string(),
+            "snapshot.logistics.shipment_status_snap".to_string(),
         ]),
         "the singular-test badge cone grew — re-check the fixture"
     );
@@ -445,10 +447,21 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
     // second consumer (source_fanout), and stg_py_sensor_scores itself is
     // the new leaf inside unused_models' unchanged 5 (it also gives
     // stg_rate_cards the downstream that was keeping it flagged).
+    //
+    // The latest additions shift the counts on purpose: the two
+    // `loaded_at_field`-semantics source tables sit unreferenced
+    // (unused_sources 3→5), lane_review's `ref('stg_lane_updates')` gives
+    // that model a consumer (unused_models 5→4), and the two exposures
+    // fire the exposure rules — both depend on access-undeclared
+    // (protected) models (exposures_dependent_on_private_models 2), and
+    // lane_review's parent list mixes a staging view
+    // (exposure_parents_materializations 1).
     assert_eq!(
         rule_counts(&m),
         expected(&[
             ("direct_join_to_source", 1),
+            ("exposure_parents_materializations", 1),
+            ("exposures_dependent_on_private_models", 2),
             ("marts_depend_on_source", 1),
             ("missing_primary_key_tests", 18),
             ("model_fanout", 1),
@@ -461,8 +474,8 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
             ("undocumented_columns", 12),
             ("undocumented_models", 16),
             ("unused_cte", 1),
-            ("unused_models", 5),
-            ("unused_sources", 3),
+            ("unused_models", 4),
+            ("unused_sources", 5),
         ]),
         "manifest-mode rule counts drifted"
     );
@@ -470,6 +483,8 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
         rule_counts(&s),
         expected(&[
             ("direct_join_to_source", 1),
+            ("exposure_parents_materializations", 1),
+            ("exposures_dependent_on_private_models", 2),
             ("marts_depend_on_source", 1),
             ("missing_primary_key_tests", 18),
             ("model_fanout", 1),
@@ -480,8 +495,8 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
             ("staging_depends_on_staging", 1),
             ("undocumented_columns", 12),
             ("undocumented_models", 16),
-            ("unused_models", 5),
-            ("unused_sources", 3),
+            ("unused_models", 4),
+            ("unused_sources", 5),
         ]),
         "source-mode rule counts drifted"
     );
