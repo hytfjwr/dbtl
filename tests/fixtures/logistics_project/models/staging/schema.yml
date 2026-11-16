@@ -69,6 +69,18 @@ models:
         tests:
           - unique
           - not_null
+  # The `{% if execute %}` arm's `source()` is this model's only
+  # dependency — parse (execute = false) renders the else arm, so the
+  # manifest's depends_on is empty while compile still resolves the
+  # call. Lint counts it as a possible read.
+  - name: stg_execute_feed
+    description: "Feed rows read only while dbt executes (never at parse)"
+    columns:
+      - name: id
+        description: "Feed row identifier"
+        tests:
+          - unique
+          - not_null
   # Macro-carried staging models — every body is a single macro call; the
   # schema entry pins docs + key tests the same as a literal-select model.
   - name: stg_ops_events

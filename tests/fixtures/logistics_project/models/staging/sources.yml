@@ -107,9 +107,12 @@ sources:
   # Branch-split reads: `stg_order_feed` chooses a table by `target.name` —
   # real dbt records only the rendered arm in `depends_on` (the `dev`
   # profile's `orders`), so `prod_orders` is the "read in prod, absent in
-  # the manifest" shape `unused_sources` must not flag. `unused_t` is the
-  # control: nothing reads it anywhere. `database:` is declared so the wire
-  # value is deterministic (an undeclared one comes from the profile).
+  # the manifest" shape `unused_sources` must not flag. `execute_feed`
+  # reads only inside `stg_execute_feed`'s `{% if execute %}` arm — parse
+  # renders it away, so the manifest omits the edge while compile still
+  # resolves it. `unused_t` is the control: nothing reads it anywhere.
+  # `database:` is declared so the wire value is deterministic (an
+  # undeclared one comes from the profile).
   - name: raw
     database: raw_ops
     description: "Environment-specific order extracts"
@@ -120,6 +123,8 @@ sources:
         description: "Dev-environment order extract"
       - name: prod_orders
         description: "Prod-environment order extract"
+      - name: execute_feed
+        description: "Read only while a model executes (never at parse)"
       - name: unused_t
         description: "Declared but never read"
   # A source-level `config.enabled: false` disables every table that does

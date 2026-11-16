@@ -51,8 +51,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Edges the source loader records but real dbt's manifest never does —
 /// the `target.name == 'prod'` arm of each branch-split model (verified
 /// against the generated manifests: dbt keeps the `dev`-rendered arm
-/// only). Lint sees the same calls as possible consumers without adding
-/// them to the graph.
+/// only), plus `stg_execute_feed`'s `{% if execute %}` arm (parse never
+/// renders it, so `depends_on` stays empty while compile resolves the
+/// source). Lint sees the same calls as possible consumers without
+/// adding them to the graph.
 const SOURCE_ONLY_EDGES: &[(&str, &str)] = &[
     (
         "source.logistics.raw.prod_orders",
@@ -61,6 +63,10 @@ const SOURCE_ONLY_EDGES: &[(&str, &str)] = &[
     (
         "model.logistics.stg_prod_orders",
         "model.logistics.int_order_split",
+    ),
+    (
+        "source.logistics.raw.execute_feed",
+        "model.logistics.stg_execute_feed",
     ),
 ];
 
@@ -412,14 +418,16 @@ fn lineage_renders_identical_outside_the_singular_badge_cone() {
             "model.logistics.fct_shipments".to_string(),
             "model.logistics.ops_run_log".to_string(),
             "snapshot.logistics.shipment_status_snap".to_string(),
-            // The two branch edges' cones — every subgraph drawing the
+            // The three branch edges' cones — every subgraph drawing the
             // edge only source mode records: the endpoints and their
             // shared seed ancestor (test nodes are side-map entries, not
             // graph nodes, so they never join the set).
             "model.logistics.int_order_split".to_string(),
+            "model.logistics.stg_execute_feed".to_string(),
             "model.logistics.stg_order_feed".to_string(),
             "model.logistics.stg_prod_orders".to_string(),
             "seed.logistics.orders".to_string(),
+            "source.logistics.raw.execute_feed".to_string(),
             "source.logistics.raw.prod_orders".to_string(),
         ]),
         "the render-divergent cone grew — re-check the fixture"
@@ -478,11 +486,13 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
     // The latest additions shift the counts on purpose: the branch-split
     // `stg_order_feed`/`int_order_split` read a source and a staging model
     // through `target.name` arms — real dbt records only the `dev` arm, so
-    // `raw.prod_orders`/`stg_prod_orders` have no recorded consumer. They
-    // still don't flag: lint counts them as possible reads, matching
-    // source mode's real edges (unused_sources 5→6 covers `raw.unused_t`
-    // only; unused_models 4→6 adds the two leaf reader models
-    // themselves). The earlier `loaded_at_field`-semantics source tables
+    // `raw.prod_orders`/`stg_prod_orders` have no recorded consumer —
+    // and `stg_execute_feed`'s only dependency sits in `{% if execute %}`,
+    // which parse never renders. The reads still don't flag: lint counts
+    // them as possible, matching source mode's real edges (unused_sources
+    // 5→6 covers `raw.unused_t` only; unused_models 4→7 adds the two leaf
+    // reader models plus `stg_execute_feed`, itself a genuinely
+    // unconsumed leaf in both modes). The earlier `loaded_at_field`-semantics source tables
     // sit unreferenced (unused_sources 3→5), lane_review's
     // `ref('stg_lane_updates')` gives that model a consumer
     // (unused_models 5→4), and the two exposures
@@ -508,7 +518,7 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
             ("undocumented_columns", 12),
             ("undocumented_models", 16),
             ("unused_cte", 1),
-            ("unused_models", 6),
+            ("unused_models", 7),
             ("unused_sources", 6),
         ]),
         "manifest-mode rule counts drifted"
@@ -529,7 +539,7 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
             ("staging_depends_on_staging", 1),
             ("undocumented_columns", 12),
             ("undocumented_models", 16),
-            ("unused_models", 6),
+            ("unused_models", 7),
             ("unused_sources", 6),
         ]),
         "source-mode rule counts drifted"
@@ -557,6 +567,31 @@ fn branch_only_consumers_count_as_uses_in_manifest_mode() {
         m.direct_parents("model.logistics.int_order_split"),
         &["model.logistics.stg_orders".to_string()],
     );
+    // The `{% if execute %}` arm is the sharpest omission: parse never
+    // renders it (execute = false), so `depends_on` is EMPTY — yet
+    // `dbt compile` resolved the source into compiled_code, and the
+    // source loader records the call as a real edge.
+    assert!(
+        m.direct_parents("model.logistics.stg_execute_feed")
+            .is_empty(),
+        "the execute-only dependency leaves depends_on empty"
+    );
+    assert!(
+        m.raw_code("model.logistics.stg_execute_feed")
+            .is_some_and(|sql| sql.contains("execute_feed")),
+        "the literal call is still in raw_code"
+    );
+    assert!(
+        m.compiled_code("model.logistics.stg_execute_feed")
+            .is_some_and(|sql| sql.contains("execute_feed")),
+        "dbt compile resolved the execute arm into compiled_code"
+    );
+    assert!(
+        s.direct_parents("model.logistics.stg_execute_feed")
+            .iter()
+            .any(|p| p == "source.logistics.raw.execute_feed"),
+        "source mode records the execute arm"
+    );
     assert!(
         s.direct_parents("model.logistics.stg_order_feed")
             .iter()
@@ -577,6 +612,10 @@ fn branch_only_consumers_count_as_uses_in_manifest_mode() {
         assert!(
             !unused_sources.contains(&"source.logistics.raw.prod_orders".to_string()),
             "{mode} mode flags a branch-only source read"
+        );
+        assert!(
+            !unused_sources.contains(&"source.logistics.raw.execute_feed".to_string()),
+            "{mode} mode flags the execute-only source read"
         );
         assert!(
             unused_sources.contains(&"source.logistics.raw.unused_t".to_string()),

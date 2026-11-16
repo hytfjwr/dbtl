@@ -11338,6 +11338,79 @@ fn possible_edges_resolve_versioned_pins_and_package_refs() {
 }
 
 #[test]
+fn possible_edges_match_version_pins_the_way_targets_does() {
+    // `ref('x', v='v3')` pins the DECLARED version string verbatim —
+    // the member declared `version: 'v3'` lives on the `.vv3` uid
+    // segment, so the call names `.vv3`, never the `version: 3` member
+    // on `.v3`. The pin compares rendered-as-is against the normalized
+    // `.vN` segment (the same check `targets` runs on a recorded edge);
+    // normalizing BOTH sides would land on the wrong member. A kwarg
+    // that isn't a literal — `v=var('ver')` — takes the same arm a
+    // bare ref does: the family's latest, `x.v3` here (neither member's
+    // `version` field reads its declared `latest_version: 2`, so the
+    // `.vN` max decides).
+    let m = manifest(
+        vec![
+            versioned_model("x", "v3", "staging/x_v3.sql"),
+            versioned_model("x", "vv3", "staging/x_vv3.sql"),
+            dep_model(
+                "pin_reader",
+                "{% if execute %}{{ ref('x', v='v3') }}{% endif %}\nselect 1",
+            ),
+            dep_model(
+                "dyn_reader",
+                "{% if execute %}{{ ref('x', v=var('ver')) }}{% endif %}\nselect 1",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let resolver = super::call_sites::CallSiteResolver::new(&dag);
+    assert_eq!(
+        resolver.possible_children("model.p.x.vv3"),
+        &std::collections::BTreeSet::from(["model.p.pin_reader".to_string()]),
+        "the literal pin names the .vv3 member — and only it"
+    );
+    assert_eq!(
+        resolver.possible_children("model.p.x.v3"),
+        &std::collections::BTreeSet::from(["model.p.dyn_reader".to_string()]),
+        "the dynamic pin lands on the family's latest, .v3 — and only it"
+    );
+}
+
+#[test]
+fn possible_edges_never_point_a_node_at_itself() {
+    // `ref('stg_rec')` inside `stg_rec` resolves to its own uid — a
+    // self-loop no real edge could form. The index drops it: `stg_rec`
+    // keeps judging by the consumers it actually has — none, so it flags
+    // like the truly-unused control.
+    let m = manifest(
+        vec![
+            dep_model(
+                "stg_rec",
+                "{% if execute %}{{ ref('stg_rec') }}{% endif %}\nselect 1",
+            ),
+            model("stg_truly_unused", "staging/stg_truly_unused.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let resolver = super::call_sites::CallSiteResolver::new(&dag);
+    assert!(
+        resolver.possible_children("model.p.stg_rec").is_empty(),
+        "a self-resolving call never becomes a possible edge"
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::UnusedModels),
+        vec!["model.p.stg_rec", "model.p.stg_truly_unused"],
+        "the self-call doesn't count as a consumer: {f:?}"
+    );
+}
+
+#[test]
 fn possible_edges_stay_off_on_a_source_mode_dag() {
     // Source mode records every resolved call — including branch arms —
     // as a REAL edge, so the possible-edge index has nothing to recover:

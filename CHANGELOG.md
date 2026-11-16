@@ -8,15 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- `dbtl lint` in manifest mode no longer reports a node as unread — or a
-  consumer chain as proven — when its only readers are `ref()`/`source()`
+- `dbtl lint` in manifest mode now counts literal `ref()`/`source()`
   calls inside Jinja branches dbt never rendered (`target`-gated arms,
-  `{% if execute %}` bodies): `unused_sources`, `unused_models`,
-  `model_fanout`, `rejoining_upstream`, and `chained_views` now resolve
-  those literal calls in `raw_code` and count them as possible consumers,
-  matching what source mode records as real edges. The lineage graph
-  itself stays dbt-faithful — the possible edges exist only while the
-  lint rules run.
+  `{% if execute %}`) as possible consumers — a lint-only judgment that
+  never joins the dbt-faithful lineage graph.
 - The auto-detected-manifest staleness warning and source-mode `--watch`
   no longer count files `dbt parse` never reads. Both now compare
   against the same input set — the `.sql`/`.py`/`.yml`/`.yaml`/`.csv`/
