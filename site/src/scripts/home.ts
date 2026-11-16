@@ -1,8 +1,12 @@
 // The home page demo: a model list, a lineage with a cursor, and an inspector, on a sample
 // project. The server draws the first state; this makes it live. Keys and clicks follow the TUI:
-// h j k l move the cursor, Enter re-roots on it, Esc returns it to the root.
+// h j k l move the cursor, Enter re-roots on it, Esc returns it to the root. The lineage comes
+// from the layouts the engine produced at build time (home-lineage.json) — fetched once and
+// repainted per re-root, never computed here.
 import { jaffle_finance } from "../data/graph.json";
+import lineageUrl from "../data/home-lineage.json?url";
 import { playWhenVisible } from "./boot.ts";
+import { cells, type Lin, type LineageData } from "./engine-lineage.ts";
 import { index } from "./graph.ts";
 import {
   demoStyle,
@@ -10,7 +14,6 @@ import {
   homeIds,
   impactText,
   inspectorHtml,
-  neighbourhood,
   pathSet,
   titleHtml,
 } from "./home-view.ts";
@@ -20,13 +23,32 @@ import { toProject, type RawSample } from "./samples.ts";
 const project = toProject(jaffle_finance as RawSample);
 const ix = index(project);
 const ids = homeIds(project);
+const names = new Map(project.nodes.map((n) => [n.id, n.name] as const));
 
 const panel = document.getElementById("hero-tui");
 const host = document.getElementById("hero-lin");
 const scroller = document.getElementById("hero-scroll");
 const list = document.getElementById("hero-list");
 
-if (panel && host && scroller && list) {
+async function init(): Promise<void> {
+  if (!panel || !host || !scroller || !list) return;
+  const data = (await (await fetch(lineageUrl)).json()) as {
+    built?: boolean;
+    layouts?: Record<string, LineageData>;
+  };
+  if (!data.built || !data.layouts) return; // the SSR'd notice stands
+
+  const lins = new Map<string, Lin>();
+  const linOf = (root: string): Lin | null => {
+    let L = lins.get(root);
+    if (L) return L;
+    const d = data.layouts![root];
+    if (!d) return null;
+    L = cells(d, names);
+    lins.set(root, L);
+    return L;
+  };
+
   let root = ids.root;
   let cursor = ids.trail[ids.trail.length - 1]!;
   let previous = pathSet(project, root, cursor);
@@ -38,11 +60,12 @@ if (panel && host && scroller && list) {
   });
 
   function render(reveal: { speed?: number; delay?: number } | null = null): number {
-    const graph = neighbourhood(project, root, HOME.depth);
-    if (!graph.nodes.some((n) => n.id === cursor)) cursor = root;
+    const L = linOf(root);
+    if (!L) return 0;
+    if (!L.rects[cursor]) cursor = root;
     const path = pathSet(project, root, cursor);
     const was = previous;
-    const total = view.render(graph, demoStyle(root, cursor, path, was), {
+    const total = view.render(L, demoStyle(root, cursor, path, was), {
       cursor: cursor !== root ? cursor : null,
       reveal,
     });
@@ -111,7 +134,8 @@ if (panel && host && scroller && list) {
     ev.preventDefault();
     ev.stopPropagation();
     const L = view.layout;
-    const here = L.rects[cursor]!;
+    const here = L?.rects?.[cursor];
+    if (!here) return;
     let next = cursor;
     if (dir[0]) {
       // The node in the neighbouring column whose row is nearest to the cursor's.
@@ -150,3 +174,6 @@ if (panel && host && scroller && list) {
     },
   });
 }
+
+// The SSR'd diagram stays useful even if the fetch fails, so this is quiet.
+init().catch(() => {});

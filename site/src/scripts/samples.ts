@@ -1,8 +1,7 @@
 // Sample projects: the build-time graph data (src/data/graph.json, written by
 // scripts/prebuild.mjs) turned into the shapes the lineage renderer and the
 // demo panels read. No DOM and no JSON import, so Node can load it too.
-import type { Graph } from "./graph.ts";
-import type { LineageNode } from "./lineage.ts";
+import type { Graph, GraphNode } from "./graph.ts";
 
 export interface RawNode {
   uid: string;
@@ -24,7 +23,11 @@ export interface RawSample {
   nodes: RawNode[];
 }
 
-export interface ProjectNode extends LineageNode {
+export interface ProjectNode extends GraphNode {
+  /** Materialization tag drawn in the box's top border: View, Table, Source, ... */
+  tag: string;
+  /** Tests declared on this node. */
+  tests: number;
   /** Resource type: model, source, seed, snapshot, exposure. */
   type: string;
   /** Materialization of models, seeds and snapshots. */

@@ -1,8 +1,12 @@
 ---
 // The demo panel in its first state (the cursor at the end of the trail, its path lit).
 // The page works without script; home.ts makes it interactive and replays the walk once per session.
+// The lineage is painted from the layouts the engine produced at build time
+// (src/data/home-lineage.json) — the same placement the TUI uses.
 import graph from "../../data/graph.json";
+import homeLineage from "../../data/home-lineage.json";
 import { index } from "../../scripts/graph.ts";
+import { esc } from "../../scripts/html.ts";
 import {
   coverageText,
   demoStyle,
@@ -11,11 +15,10 @@ import {
   impactText,
   inspectorHtml,
   listHtml,
-  neighbourhood,
   pathSet,
   titleHtml,
 } from "../../scripts/home-view.ts";
-import { layout, stageHtml } from "../../scripts/lineage.ts";
+import { cells, stageHtml, type LineageData } from "../../scripts/engine-lineage.ts";
 import { toProject, type RawSample } from "../../scripts/samples.ts";
 
 const raw = (graph as unknown as Record<string, RawSample>)[HOME.project];
@@ -25,8 +28,15 @@ const ids = homeIds(project);
 const root = ids.root;
 const cursor = ids.trail[ids.trail.length - 1]!;
 const path = pathSet(project, root, cursor);
-const L = layout(neighbourhood(project, root, HOME.depth));
-const stage = stageHtml(L, demoStyle(root, cursor, path, path)(L), cursor);
+const names = new Map(project.nodes.map((n) => [n.id, n.name] as const));
+const data = (homeLineage as { built?: boolean; layouts?: Record<string, LineageData> }).layouts?.[
+  root
+];
+const L = data ? cells(data, names) : null;
+const stage = L
+  ? stageHtml(L, demoStyle(root, cursor, path, path)(L), cursor)
+  : `<div class="lin-stage"><span class="lin-band" aria-hidden="true"></span>` +
+    `<pre class="lin">${esc("engine not built — run node scripts/build-engine.mjs")}</pre></div>`;
 const rootName = index(project).by.get(root)!.name;
 ---
 

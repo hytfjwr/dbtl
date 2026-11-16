@@ -242,6 +242,33 @@ pub struct LineageRect {
     pub h: usize,
 }
 
+/// One dependency edge of the laid-out diagram — `parent` flows into
+/// `child`. [`LineageOutput::cell_edges`] indexes into this list, which
+/// keeps `Subgraph`'s edge order (sorted parent, then child).
+#[derive(Debug, Serialize)]
+pub struct LineageEdge {
+    /// Parent node's `unique_id`.
+    pub parent: String,
+    /// Child node's `unique_id`.
+    pub child: String,
+}
+
+/// The edges routed through one diagram cell, as indices into
+/// [`LineageOutput::edges`]. A cell shared by several edges — a
+/// child-side corner or an arrowhead — lists every one of them, the
+/// completeness a hover or path highlighter needs. Derived by inverting
+/// `Layout::edge_cells`' per-edge runs, with the arrow cell re-owned by
+/// exactly the child's in-edges.
+#[derive(Debug, Serialize)]
+pub struct LineageCellEdges {
+    /// Cell x.
+    pub x: usize,
+    /// Cell y.
+    pub y: usize,
+    /// Indices into `edges`, ascending.
+    pub edges: Vec<usize>,
+}
+
 /// The laid-out lineage diagram: the character grid as row strings plus
 /// parallel per-cell attribute grids, and the node label rectangles.
 #[derive(Debug, Serialize)]
@@ -259,6 +286,21 @@ pub struct LineageOutput {
     pub classes: Vec<String>,
     /// Per-cell emphasis flag (`'1'` = the selected node's label).
     pub emphasis: Vec<String>,
+    /// Per-cell kind, one char per cell, parallel to `rows`: ` ` blank,
+    /// `b` box border, `p` box padding, `n` node label, `x` test-count
+    /// label, `e` connector, `a` arrowhead. Derived from `rects` — the
+    /// spans a node box stamps — plus the routed connector cells, so a
+    /// renderer can tell wire cells from node cells without re-running
+    /// the layout.
+    pub kinds: Vec<String>,
+    /// The diagram's edges, sorted (parent, child) — the index space
+    /// `cell_edges` refers into.
+    pub edges: Vec<LineageEdge>,
+    /// The edges routed through each connector cell, sorted by (y, x) —
+    /// every edge entering a child is listed on that child's corner and
+    /// arrow cells. Only connector-visible cells (kind `e`/`a`) appear:
+    /// a run passing behind a box is trimmed to the cells `rows` shows.
+    pub cell_edges: Vec<LineageCellEdges>,
     /// Node label rectangles, sorted by `unique_id`.
     pub rects: Vec<LineageRect>,
     /// The emphasized node's `unique_id`, or `null` when none.
@@ -493,7 +535,8 @@ impl Engine {
             }
             None => self.union_subgraph(&input.roots, upstream, downstream, input.depth),
         };
-        let mut lay = layout_density(&sg, input.glyphs.into(), input.density.into());
+        let density = input.density.into();
+        let mut lay = layout_density(&sg, input.glyphs.into(), density);
         // Stamp each node's materialization class onto its label cells —
         // the same classify() the TUI's style pass uses.
         let styles: BTreeMap<String, CellAttr> = sg
@@ -542,12 +585,16 @@ impl Engine {
             })
             .collect();
         rects.sort_by(|a, b| a.uid.cmp(&b.uid));
+        let (kinds, edges, cell_edges) = lineage_cells(&lay, &sg, density);
         Ok(LineageOutput {
             width,
             height,
             rows,
             classes,
             emphasis,
+            kinds,
+            edges,
+            cell_edges,
             rects,
             selected: (!sg.selected.is_empty()).then(|| sg.selected.clone()),
         })
@@ -877,6 +924,167 @@ fn class_code(class: MaterializationClass) -> char {
     }
 }
 
+/// The cell-kind and edge-ownership derivation behind
+/// [`LineageOutput::kinds`], `edges`, and `cell_edges` — a pure re-read
+/// of the `Layout` + `Subgraph`, never a re-draw.
+///
+/// Kinds come first from the routed connector cells (every recorded run
+/// cell is `e`, each child-side arrowhead cell is `a`), then the node
+/// boxes stamp over them: a rect's connector-attach row is side borders
+/// plus label and padding, its remaining rows are border, and the
+/// `tests:N` run on the bottom border is its own kind. Those are exactly
+/// the spans `draw_box`/`draw_compact_box` write, so the kinds agree
+/// with `rows` wherever they overlap.
+///
+/// `cell_edges` inverts `Layout::edge_cells` into per-cell lists. That
+/// map is edge → cells, and the cells a shared corner or the arrowhead
+/// visually serves are already claimed by every edge that needs them —
+/// inverting therefore yields the multi-edge ownership a highlighter
+/// wants. One correction remains: the arrow cell `(child.x - 1,
+/// child.y + box_mid)` can also sit inside a crossing edge's run (the
+/// degenerate channel that falls back onto the arrow column), so it is
+/// re-owned by exactly the child's in-edge set — matching how the arrow
+/// glyph wins the cell in the painter's second pass. Only cells whose
+/// kind ended up `e` or `a` are listed, so a run that passes behind a
+/// box reports only its visible cells.
+///
+/// The kind stamping below mirrors the classic box shapes
+/// (`draw_box`/`draw_compact_box`); `lineage()` only ever lays out
+/// through `layout_density`, so those are the only rect shapes to read.
+fn lineage_cells(
+    lay: &dbtl_core::Layout,
+    sg: &Subgraph,
+    density: dbtl_core::Density,
+) -> (Vec<String>, Vec<LineageEdge>, Vec<LineageCellEdges>) {
+    let box_mid = match density {
+        dbtl_core::Density::Comfortable => 1,
+        dbtl_core::Density::Compact => 0,
+    };
+    let (width, height) = (lay.grid.width(), lay.grid.height());
+    let mut kinds = vec![vec![b' '; width]; height];
+
+    // Per-cell edge claimants: indices into `edges` (the sorted Subgraph
+    // edge list), collected in that same ascending order.
+    let mut claimed: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (i, e) in sg.edges.iter().enumerate() {
+        if let Some(run) = lay.edge_cells.get(&(e.parent.clone(), e.child.clone())) {
+            for &(x, y) in run {
+                claimed.entry((x, y)).or_default().push(i);
+            }
+        }
+    }
+    // Arrowhead cells belong to every edge entering the child (see the
+    // doc above); insert() overwrites any run claimant of the cell.
+    let mut arrows: Vec<(usize, usize)> = Vec::new();
+    for node in &sg.nodes {
+        let Some(r) = lay.rects.get(&node.unique_id) else {
+            continue;
+        };
+        if r.x == 0 {
+            continue;
+        }
+        let ins: Vec<usize> = sg
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.child == node.unique_id)
+            .map(|(i, _)| i)
+            .collect();
+        if !ins.is_empty() {
+            let cell = (r.x - 1, r.y + box_mid);
+            claimed.insert(cell, ins);
+            arrows.push(cell);
+        }
+    }
+    for &(x, y) in claimed.keys() {
+        kinds[y][x] = b'e';
+    }
+    for &(x, y) in &arrows {
+        kinds[y][x] = b'a';
+    }
+
+    // Node boxes stamp over connectors — the same cells `draw_box` /
+    // `draw_compact_box` paint, classified by what was written there.
+    let info: HashMap<&str, &NodeInfo> =
+        sg.nodes.iter().map(|n| (n.unique_id.as_str(), n)).collect();
+    for (uid, r) in &lay.rects {
+        let Some(n) = info.get(uid.as_str()) else {
+            continue;
+        };
+        let (bx, by, w, h) = (r.x, r.y, r.width, r.height);
+        for (yy, row) in kinds
+            .iter_mut()
+            .enumerate()
+            .take((by + h).min(height))
+            .skip(by)
+        {
+            for (xx, cell) in row
+                .iter_mut()
+                .enumerate()
+                .take((bx + w).min(width))
+                .skip(bx)
+            {
+                *cell = if yy == by + box_mid {
+                    if xx == bx || xx == bx + w - 1 {
+                        b'b'
+                    } else {
+                        b'p'
+                    }
+                } else {
+                    b'b'
+                };
+            }
+        }
+        // The label span on the attach row: `bx + 1 + box_mid + i` while
+        // it still fits before the right border — the span both box
+        // painters write (and the cells `emphasis` marks).
+        let label_len = dbtl_core::list_name(uid, &n.name).chars().count();
+        let lx = bx + 1 + box_mid;
+        for i in 0..label_len {
+            if lx + i < bx + w - 1 && lx + i < width && by + box_mid < height {
+                kinds[by + box_mid][lx + i] = b'n';
+            }
+        }
+        // `tests:N` right-aligned on the bottom border — the bordered
+        // density only.
+        if box_mid == 1 && n.test_count > 0 && by + h <= height {
+            let tlen = format!("tests:{}", n.test_count).chars().count();
+            let start = (bx + w - 1).saturating_sub(1 + tlen);
+            for i in 0..tlen {
+                if start + i > bx && start + i < width {
+                    kinds[by + h - 1][start + i] = b'x';
+                }
+            }
+        }
+    }
+
+    let mut cell_edges: Vec<LineageCellEdges> = claimed
+        .into_iter()
+        .filter(|&((x, y), _)| matches!(kinds[y][x], b'e' | b'a'))
+        .map(|((x, y), mut idxs)| {
+            idxs.dedup();
+            LineageCellEdges { x, y, edges: idxs }
+        })
+        .collect();
+    cell_edges.sort_by_key(|c| (c.y, c.x));
+    let edges = sg
+        .edges
+        .iter()
+        .map(|e| LineageEdge {
+            parent: e.parent.clone(),
+            child: e.child.clone(),
+        })
+        .collect();
+    (
+        kinds
+            .into_iter()
+            .map(|row| String::from_utf8(row).expect("kind codes are ASCII"))
+            .collect(),
+        edges,
+        cell_edges,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -978,6 +1186,137 @@ mod tests {
         assert_eq!(
             out.selected.as_deref(),
             Some("model.jaffle_finance.fct_subscription_process")
+        );
+    }
+
+    #[test]
+    fn lineage_cells_describe_the_diagram_per_cell() {
+        let (engine, _) = load_fixture();
+        let root = "model.jaffle_finance.fct_subscription_process";
+        let out = engine
+            .lineage(&LineageInput {
+                root: Some(root.to_string()),
+                ..LineageInput::default()
+            })
+            .unwrap();
+        let sg = engine.dag().subgraph(root);
+        let lay = dbtl_core::layout_mode(&sg, dbtl_core::GlyphMode::Unicode);
+
+        // kinds is parallel to rows, and a cell is blank-kind only when the
+        // glyph there is blank.
+        assert_eq!(out.kinds.len(), out.height);
+        for y in 0..out.height {
+            assert_eq!(out.kinds[y].chars().count(), out.width);
+            for (x, ch) in out.rows[y].chars().enumerate() {
+                let k = out.kinds[y].as_bytes()[x];
+                assert!(
+                    k != b' ' || ch == ' ',
+                    "({x},{y}) has glyph {ch:?} but kind ' '"
+                );
+            }
+        }
+
+        // A box-kind cell sits inside exactly one rect; a connector cell
+        // sits inside none.
+        let inside = |x: usize, y: usize| {
+            out.rects
+                .iter()
+                .filter(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+                .count()
+        };
+        for (y, row) in out.kinds.iter().enumerate() {
+            for (x, k) in row.bytes().enumerate() {
+                match k {
+                    b'b' | b'p' | b'n' | b'x' => assert_eq!(inside(x, y), 1, "({x},{y}) kind {k}"),
+                    b'e' | b'a' => assert_eq!(inside(x, y), 0, "({x},{y}) kind {k}"),
+                    b' ' => {}
+                    _ => panic!("({x},{y}) unknown kind {k}"),
+                }
+            }
+        }
+
+        // cell_edges is (y, x)-sorted, names only connector-visible cells,
+        // and lists ascending in-range edge indices. The edges list itself
+        // keeps the sorted (parent, child) order the index math assumes.
+        let keys: Vec<(&str, &str)> = out
+            .edges
+            .iter()
+            .map(|e| (e.parent.as_str(), e.child.as_str()))
+            .collect();
+        assert!(keys.windows(2).all(|w| w[0] <= w[1]));
+        let mut prev = (0, 0);
+        for (i, ce) in out.cell_edges.iter().enumerate() {
+            if i > 0 {
+                assert!((ce.y, ce.x) > prev, "cell_edges sorted by (y, x)");
+            }
+            prev = (ce.y, ce.x);
+            assert!(matches!(out.kinds[ce.y].as_bytes()[ce.x], b'e' | b'a'));
+            assert!(!ce.edges.is_empty());
+            assert!(ce.edges.windows(2).all(|w| w[0] < w[1]));
+            assert!(ce.edges.iter().all(|&e| e < out.edges.len()));
+        }
+
+        // The arrowhead cell of each child with in-edges lists exactly those
+        // edges — every entering edge, not just the one whose run drew it.
+        for node in &sg.nodes {
+            let ins: Vec<usize> = sg
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.child == node.unique_id)
+                .map(|(i, _)| i)
+                .collect();
+            if ins.is_empty() {
+                continue;
+            }
+            let r = &lay.rects[&node.unique_id];
+            let cell = (r.x - 1, r.y + 1);
+            if out.kinds[cell.1].as_bytes()[cell.0] != b'a' {
+                continue; // the cell sits under a box — nothing visible to claim
+            }
+            let ce = out
+                .cell_edges
+                .iter()
+                .find(|ce| (ce.x, ce.y) == cell)
+                .expect("arrow cell is listed");
+            assert_eq!(ce.edges, ins, "arrow cell of {}", node.unique_id);
+        }
+
+        // Every cell core recorded for an edge either still lists it (kind
+        // 'e') or was won by something later — a box stamping over the run,
+        // or an arrowhead whose in-edges replaced the run's earlier claim.
+        for (i, e) in sg.edges.iter().enumerate() {
+            let Some(run) = lay.edge_cells.get(&(e.parent.clone(), e.child.clone())) else {
+                continue;
+            };
+            for &(x, y) in run {
+                if out.kinds[y].as_bytes()[x] == b'e' {
+                    let ce = out
+                        .cell_edges
+                        .iter()
+                        .find(|ce| ce.x == x && ce.y == y)
+                        .unwrap();
+                    assert!(
+                        ce.edges.contains(&i),
+                        "({x},{y}) is a visible cell of edge {i} {:?} but does not list it",
+                        (e.parent.as_str(), e.child.as_str())
+                    );
+                }
+            }
+        }
+
+        // The output serializes deterministically — same input, same bytes.
+        assert_eq!(
+            serde_json::to_string(&out).unwrap(),
+            serde_json::to_string(
+                &engine
+                    .lineage(&LineageInput {
+                        root: Some(root.to_string()),
+                        ..LineageInput::default()
+                    })
+                    .unwrap()
+            )
+            .unwrap()
         );
     }
 
