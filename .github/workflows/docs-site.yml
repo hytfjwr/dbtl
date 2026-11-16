@@ -130,6 +130,15 @@ jobs:
         working-directory: site
         run: pnpm install --frozen-lockfile
 
+      # Background so the browser download (network) overlaps the format,
+      # lint, and build steps (CPU); `wait-all` joins it before the tests.
+      - name: Install the test browser
+        id: browser
+        if: github.event_name == 'pull_request'
+        background: true
+        working-directory: site
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Format check
         working-directory: site
         run: pnpm run format:check
@@ -146,10 +155,8 @@ jobs:
         working-directory: site
         run: pnpm run check
 
-      - name: Install the test browser
-        if: github.event_name == 'pull_request'
-        working-directory: site
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Wait for the test browser
+        wait-all:
 
       - name: Browser tests
         if: github.event_name == 'pull_request'
