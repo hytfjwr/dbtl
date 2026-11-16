@@ -42,7 +42,10 @@ pub use dispatch::{
 use keymap::compact_keys;
 pub use keymap::{status_hints, Hint, HintCtx, KeyBinding, StatusHint, Trigger, BINDINGS};
 pub(crate) use menu::{menu_slot_label, menu_slot_mark};
-pub use menu::{MenuAnchor, MenuEntry, MenuMark, MenuSlot, MenuState, NODE_MENU_LAYOUT};
+pub use menu::{
+    MenuAnchor, MenuEntry, MenuMark, MenuSlot, MenuState, MenuTarget, NODE_MENU_LAYOUT,
+    TAB_MENU_LAYOUT,
+};
 pub use mode::{Mode, ModeKind};
 pub use types::{Action, Direction, SearchState, SearchTarget};
 pub use views::{

@@ -57,9 +57,11 @@ Each tab has its own root model, lineage view, cursor, and re-root history. The 
 | `{` `}` | Previous or next tab |
 | `1` to `9` | Jump to that tab |
 | `X` or `Ctrl-w` | Close the active tab |
+| `W` | Close the other tabs |
+| `R` | Close the tabs to the right |
 | `~` | Jump to the home tab |
 
-In the strip, the `×` on a tab closes it and `+` opens a model picker for a new tab. The wheel over the strip scrolls it.
+In the strip, the `×` on a tab closes it and `+` opens a model picker for a new tab. Right-click a tab for its menu (close this / other / right-hand tabs) — the click activates the tab first. Drag a tab with the left button to reorder it; the fixed `⌂` home tab never moves. The wheel over the strip scrolls it.
 
 ## Home tab
 
@@ -175,11 +177,13 @@ A click confirms on release, so a slip never navigates. A second click on the sa
 | Double-click | List row | Open the structure view |
 | Double-click | Pane border | Reset its width |
 | Right-click | List row or lineage node | Open the actions menu |
+| Right-click | Tab | Activate it, then open the tab menu |
 | Middle-click | List row or lineage node | Open it in a new tab |
 | Middle-click | Tab | Close it |
 | Drag | Lineage | Pan it |
 | Drag | Shared pane border | Resize it |
 | Drag | Minimap | Scrub the viewport |
+| Drag | Tab | Reorder it (the `⌂` home tab stays first) |
 
 The wheel over the list moves the selection. Over the lineage it pans vertically, and `Shift` with the wheel or a horizontal notch pans sideways. Over the inspector it scrolls the inspector, and over the tab strip it scrolls the tabs.
 

@@ -349,7 +349,11 @@ fn click_target_right_click_opens_the_node_menu_at_the_pointer() {
     a.click_target(&HitTarget::ListRow(1), MouseButton::Right, (11, 7));
     match &a.mode {
         Mode::Menu(ms) => {
-            assert_eq!(ms.target, uid, "the menu acts on the clicked row's node");
+            assert_eq!(
+                ms.target,
+                MenuTarget::Node(uid),
+                "the menu acts on the clicked row's node"
+            );
             assert_eq!(
                 ms.anchor,
                 crate::action::MenuAnchor::Cell { col: 11, row: 7 },
@@ -378,7 +382,10 @@ fn click_target_right_click_opens_the_node_menu_at_the_pointer() {
         (40, 9),
     );
     match &a.mode {
-        Mode::Menu(ms) => assert_eq!(ms.target, "model.sample.stg_orders"),
+        Mode::Menu(ms) => assert_eq!(
+            ms.target,
+            MenuTarget::Node("model.sample.stg_orders".to_string())
+        ),
         m => panic!("expected Mode::Menu, got {m:?}"),
     }
     assert_eq!(a.ui_state.focus(), Focus::RightPane);
@@ -444,4 +451,135 @@ fn click_target_middle_click_opens_a_tab() {
         4,
         "an already-open model dedupes, not appends"
     );
+}
+
+#[test]
+fn click_target_right_click_on_a_tab_activates_then_opens_its_menu() {
+    let mut a = app();
+    let (_root0, m1, m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    a.open_node_as_tab(&m2);
+    // [home, root0, m1, m2] — activate the seeded tab, then right-click m1.
+    a.activate_tab(1);
+    a.click_target(&HitTarget::Tab(2), MouseButton::Right, (30, 0));
+
+    // The clicked tab activated FIRST (its menu's items are active-tab
+    // actions), then the box opened anchored at the pointer cell.
+    assert_eq!(a.active_tab(), 2);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
+    match &a.mode {
+        Mode::Menu(ms) => {
+            assert_eq!(ms.target, MenuTarget::Tab(2));
+            assert_eq!(
+                ms.anchor,
+                crate::action::MenuAnchor::Cell { col: 30, row: 0 }
+            );
+            let labels = menu_labels(&ms.items);
+            assert_eq!(
+                labels,
+                vec!["Close tab", "Close other tabs", "Close tabs to the right"],
+                "a mid-strip tab offers all three closes"
+            );
+        }
+        m => panic!("expected Mode::Menu, got {m:?}"),
+    }
+    // Esc returns to the now-active tab's idle mode.
+    apply_action(&mut a, Action::DetailClose);
+    assert_eq!(a.mode, Mode::Selection);
+}
+
+#[test]
+fn click_target_right_click_filters_the_tab_menu_by_target() {
+    let mut a = app();
+    let (_root0, m1, _m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    a.activate_tab(1);
+    // [home, root0(active), m1]
+
+    // The home tab's menu drops "Close tab" — it can't be closed.
+    a.click_target(&HitTarget::Tab(0), MouseButton::Right, (0, 0));
+    assert!(a.home_active());
+    let labels = menu_labels(&menu_state(&a).items);
+    assert_eq!(
+        labels,
+        vec!["Close other tabs", "Close tabs to the right"],
+        "the unclosable tab keeps only the sibling closes"
+    );
+    apply_action(&mut a, Action::DetailClose);
+
+    // The LAST tab's menu drops "Close tabs to the right" — nothing there.
+    a.click_target(&HitTarget::Tab(2), MouseButton::Right, (20, 0));
+    let labels = menu_labels(&menu_state(&a).items);
+    assert_eq!(labels, vec!["Close tab", "Close other tabs"]);
+    apply_action(&mut a, Action::DetailClose);
+}
+
+#[test]
+fn tab_menu_invoke_runs_the_item_on_the_clicked_tab() {
+    let mut a = app();
+    let (_root0, m1, m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    a.open_node_as_tab(&m2);
+    // [home, root0, m1, m2] — right-click m1, run "Close other tabs":
+    // the strip narrows to home + m1, and the menu is gone.
+    a.activate_tab(1);
+    a.click_target(&HitTarget::Tab(2), MouseButton::Right, (30, 0));
+    let idx = menu_state(&a)
+        .items
+        .iter()
+        .position(
+            |e| matches!(e, crate::action::MenuEntry::Item { label, .. } if label == "Close other tabs"),
+        )
+        .expect("the item exists for a mid-strip tab");
+    apply_action(&mut a, Action::MenuInvoke(idx));
+    assert_eq!(
+        tab_roots(&a),
+        vec!["", m1.as_str()],
+        "the item closed every tab but the menu's target"
+    );
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
+    assert_eq!(a.mode, Mode::Selection, "the one-shot menu closed");
+
+    // Same path for "Close tab" — the clicked tab dies, the right
+    // neighbour (home-side rule) takes over.
+    a.open_node_as_tab(&m2);
+    a.click_target(&HitTarget::Tab(1), MouseButton::Right, (10, 0));
+    let idx = menu_state(&a)
+        .items
+        .iter()
+        .position(
+            |e| matches!(e, crate::action::MenuEntry::Item { label, .. } if label == "Close tab"),
+        )
+        .expect("a model tab can close");
+    apply_action(&mut a, Action::MenuInvoke(idx));
+    assert_eq!(tab_roots(&a), vec!["", m2.as_str()]);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m2.as_str()));
+}
+
+#[test]
+fn tab_menu_items_fire_on_their_own_keys() {
+    use crate::dispatch;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+
+    let mut a = app();
+    let (_root0, m1, m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    a.open_node_as_tab(&m2);
+    a.activate_tab(1);
+    a.click_target(&HitTarget::Tab(2), MouseButton::Right, (30, 0));
+    // `W` presses the "Close other tabs" row's own key — dispatch resolves
+    // the item index from its BINDINGS row, like `s` in the node menu.
+    let (idx, _) = menu_state(&a)
+        .items
+        .iter()
+        .enumerate()
+        .find(|(_, e)| matches!(e, crate::action::MenuEntry::Item { label, .. } if label == "Close other tabs"))
+        .expect("the row exists");
+    assert_eq!(
+        dispatch(&a.mode, press(KeyCode::Char('W'))),
+        Some(Action::MenuInvoke(idx))
+    );
+    apply_action(&mut a, Action::MenuInvoke(idx));
+    assert_eq!(tab_roots(&a), vec!["", m1.as_str()]);
 }

@@ -84,7 +84,8 @@ impl App {
     ///   history model — the same replay `b` gives); on the title's `[{v}]`
     ///   / `[lens:…]` tags, `ResetView` / `CycleLens`.
     /// - **Right** on a list row or lineage node opens its context menu at
-    ///   `at`.
+    ///   `at`; on a tab it activates the tab and opens the tab menu (close /
+    ///   close others / close to the right).
     /// - **Middle** on a list row or a lineage node opens that model in a
     ///   NEW tab; on a tab it closes it.
     /// - The minimap, pane borders, the inert status cells, and the reserved
@@ -111,6 +112,12 @@ impl App {
                 HitTarget::LineageNode(uid) => {
                     self.ui_state.set_focus(Focus::RightPane);
                     self.open_menu_for(uid, at.0, at.1);
+                }
+                // A right-clicked tab ACTIVATES first (its menu items are
+                // the `X`/`W`/`R` closes — all active-tab actions), then
+                // opens the strip's context menu at the pointer cell.
+                HitTarget::Tab(i) | HitTarget::TabClose(i) => {
+                    self.open_tab_menu(*i, at.0, at.1);
                 }
                 _ => {} // elsewhere a right-click carries no meaning yet
             }

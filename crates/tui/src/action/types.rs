@@ -266,6 +266,11 @@ pub enum Action {
     /// `X` / `Ctrl-w`: close the ACTIVE tab — the right neighbour (else the
     /// left) takes over; the last tab refuses with a toast.
     TabClose,
+    /// `W`: close every model tab but the active one (the home tab always
+    /// survives). The same "which tab takes over" rules as `X`.
+    TabCloseOthers,
+    /// `R`: close every tab to the right of the active one.
+    TabCloseRight,
     /// `{` / `}`: previous / next tab, wrapping at both ends.
     TabPrev,
     TabNext,

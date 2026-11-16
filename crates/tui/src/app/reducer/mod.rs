@@ -29,8 +29,8 @@
 //! byte-for-byte the same as when this was one giant match.
 
 use crate::action::{
-    Action, DetailView, Direction, HelpView, MenuAnchor, MenuEntry, Mode, PaletteRow, PaletteState,
-    SearchState, SearchTarget, SqlView, BINDINGS,
+    Action, DetailView, Direction, HelpView, MenuAnchor, MenuEntry, MenuTarget, Mode, PaletteRow,
+    PaletteState, SearchState, SearchTarget, SqlView, BINDINGS,
 };
 use crate::effect::Effect;
 use crate::{build_model_list_grouped, reduce_selection, Focus, LineageLens};
@@ -229,6 +229,8 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         | Action::SortCycle => arm!(app, action, list::apply),
         Action::TabOpen
         | Action::TabClose
+        | Action::TabCloseOthers
+        | Action::TabCloseRight
         | Action::TabPrev
         | Action::TabNext
         | Action::TabActivate(_) => arm!(app, action, tabs::apply),

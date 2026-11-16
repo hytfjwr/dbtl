@@ -75,6 +75,8 @@ The main three-pane screen.
 | `Ctrl-n` | notification center |
 | `O` | open node in new tab |
 | `X/Ctrl-w` | close tab |
+| `W` | close other tabs |
+| `R` | close tabs to the right |
 | `{` | previous tab |
 | `}` | next tab |
 | `1` | go to tab 1 |
@@ -90,9 +92,9 @@ The main three-pane screen.
 | `~` | go to home tab |
 | `click` | list row selects · node moves cursor · tab / chip / hint / title / minimap act |
 | `double-click` | node commits (re-root / structure / expand) · list row: structure · border: reset |
-| `right click` | node actions menu (list row / lineage node) |
+| `right click` | node actions menu (list row / lineage node) · tab menu (tab strip) |
 | `middle click` | list row / node opens in a new tab · tab closes |
-| `drag` | pan lineage · resize a pane border · scrub the minimap |
+| `drag` | pan lineage · resize a pane border · scrub the minimap · reorder tabs |
 | `hover` | accent node + direct edges · rest 0.5s for a tooltip |
 | `wheel` | list selects · lineage pans (Shift: sideways) · inspector scrolls · strip scrolls |
 
@@ -305,6 +307,8 @@ The home tab.
 | `}` | next tab |
 | `~` | go to home tab |
 | `X/Ctrl-w` | close tab |
+| `W` | close other tabs |
+| `R` | close tabs to the right |
 | `w` | toggle whole-graph overview |
 | `S` | stats dashboard |
 | `D` | diff vs baseline (--diff) |
