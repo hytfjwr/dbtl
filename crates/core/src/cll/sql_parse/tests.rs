@@ -4339,7 +4339,7 @@ fn an_expanded_body_name_reports_at_the_call_tag() {
 }
 
 #[test]
-fn an_unparseable_expansion_falls_back_to_the_placeholder_render() {
+fn an_unparsable_expansion_falls_back_to_the_placeholder_render() {
     // `{{ bad() }}` proves a body (`select from`) the parser still
     // rejects — the expanded render fails and the placeholder render's
     // facts stand: the tag elides, and the withhold reads `bad()` by
