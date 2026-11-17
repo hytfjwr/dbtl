@@ -539,7 +539,7 @@ type ExcludedSet = (BTreeSet<String>, Option<String>);
 /// Every rule's `exclude:` spec evaluated once into its matched uid set —
 /// the strings are a union (`exclude: [a, b]` drops nodes matching a OR
 /// b), kept in declared order so the first matching spec's `reason` wins.
-/// The spec's evaluation notes (the `path:` legacy form) join `notes`
+/// Each spec's evaluation notes (the `path:` legacy form) join `notes`
 /// for the outcome's warning channel. Returns the per-rule sets plus the
 /// count of entries declaring no reason — the tally
 /// `suppressions_without_reason` reports in the summary since a config
