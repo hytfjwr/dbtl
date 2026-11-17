@@ -4313,6 +4313,55 @@ fn unexpandable_calls_keep_the_placeholder_marks() {
 }
 
 #[test]
+fn call_spellings_the_template_or_python_rejects_stay_placeholders() {
+    // Only Jinja's real `{{ }}` sigils reach the call — `{{-`/`{{+`
+    // left, `-}}` right. A SPACED `-`/`+` is a unary operator, `~` and
+    // a right `+` are template syntax errors, and a positional after a
+    // keyword is Python's own SyntaxError: every one keeps the call on
+    // the placeholder path.
+    for (name, tag, expands) in [
+        ("left", "{{- m(1, 2) }}", true),
+        ("right", "{{ m(1, 2) -}}", true),
+        ("plus_left", "{{+ m(1, 2) }}", true),
+        ("kw_after_pos", "{{ m(1, b='x') }}", true),
+        ("spaced_minus", "{{ -m(1, 2) }}", false),
+        ("spaced_plus", "{{ +m(1, 2) }}", false),
+        ("plus_right", "{{ m(1, 2) +}}", false),
+        ("tilde", "{{~ m(1, 2) ~}}", false),
+        ("pos_after_kw", "{{ m(b='x', 1) }}", false),
+    ] {
+        let mut m = manifest(
+            vec![
+                model("model.t.base", "select 1", &["id"]),
+                raw_model(
+                    "model.t.m",
+                    &format!("select * from {{{{ ref('base') }}}} where 1 = {tag}"),
+                    &[],
+                ),
+            ],
+            &[("model.t.base", "model.t.m")],
+        );
+        m.macros.extend([mac(
+            "m",
+            &["a", "b"],
+            "{% macro m(a, b) %} 1 {% endmacro %}",
+        )]);
+        let dag = Dag::build(&m);
+        let raw = dag.raw_code("model.t.m").unwrap();
+        let rendered = render_arms(
+            raw,
+            JinjaMark::Plain,
+            SqlDialect::Generic,
+            RenderArms::Union,
+            true,
+            false,
+            expand::ExpandScope::for_node(&dag, "model.t.m"),
+        );
+        assert_eq!(rendered.expanded_any, expands, "{name}");
+    }
+}
+
+#[test]
 fn a_set_binding_shadows_the_bare_call() {
     // `{% set m = 'x' %}` binds `m` for the rest of the file — `{{ m() }}`
     // is a call on the bound value (a dbt error), never the root def, so

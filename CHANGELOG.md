@@ -18,7 +18,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model whose whole statement is such a call parses instead of reporting
   `Jinja generates the query`. Anything the arguments cannot decide — a `ref()`
   relation used as a value, a `var()`, an unsupported tag, a recursive call,
-  a package macro — keeps the existing placeholder render and withholding.
+  a package macro, or a call spelling the template or Python parser rejects
+  (a spaced `-`/`+`, a positional after a keyword) — keeps the existing
+  placeholder render and withholding.
 
 ## [0.7.4] - 2026-11-17
 

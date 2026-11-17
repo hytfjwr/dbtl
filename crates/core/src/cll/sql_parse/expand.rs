@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use super::jinja::{quoted_ident, JinjaMark, JINJA_MARK_PREFIX};
+use super::jinja::{jinja_inner, quoted_ident, JinjaMark, JINJA_MARK_PREFIX};
 use super::withhold::{find_block_word, leading_block, leading_call};
 use crate::dag::Dag;
 use crate::source::{
@@ -329,7 +329,8 @@ struct Arm {
 struct Builder {
     root: Vec<Node>,
     stack: Vec<Frame>,
-    /// The last tag's right-side `-` — the next text node left-trims.
+    /// The last tag's right-side `-` — only the text run directly
+    /// after it left-trims; a tag in between voids the strip.
     strip: bool,
 }
 
@@ -344,16 +345,19 @@ impl Builder {
     }
 
     /// Template text between tags — the pending right-side strip
-    /// applies to its head; dashes on the NEXT tag trim its tail.
+    /// applies to its head; dashes on the NEXT tag trim its tail. The
+    /// strip reaches only the text directly after the tag — an empty
+    /// run still consumes it, so a `-` can't reach across another tag
+    /// (`{{ x -}}{{- y }} z` renders `xy z`, not `xyz`).
     fn text(&mut self, s: &str) {
-        if s.is_empty() {
-            return;
-        }
         let s = if std::mem::take(&mut self.strip) {
             s.trim_start()
         } else {
             s
         };
+        if s.is_empty() {
+            return;
+        }
         self.cur().push(Node::Text(s.to_string()));
     }
 
@@ -538,7 +542,7 @@ fn build_body(body: &str) -> Option<Vec<Node>> {
             // `{# … #}` emits nothing — its dashes still trim.
             b'#' => {}
             b'{' => {
-                let expr = expr_inner(&body[i + 2..close]);
+                let expr = jinja_inner(&body[i + 2..close]);
                 if expr.is_empty() {
                     return None;
                 }
@@ -557,15 +561,6 @@ fn build_body(body: &str) -> Option<Vec<Node>> {
         return None;
     }
     Some(bld.root)
-}
-
-/// A `{{ … }}` tag's expression text — the tag-adjacent `-`/`+`
-/// markers peeled off the ends (`{{- x -}}`/`{{+ x +}}` are whitespace
-/// controls, not unary operators; a SPACED `{{ -x }}` keeps its `-`).
-fn expr_inner(inner: &str) -> &str {
-    let inner = inner.strip_prefix(['-', '+']).unwrap_or(inner);
-    let inner = inner.strip_suffix(['-', '+']).unwrap_or(inner);
-    inner.trim()
 }
 
 /// A `{% set %}`/`{% for %}` target list — `x`, `x, y`, `(x, y)` — as
@@ -661,7 +656,15 @@ fn eval_args(args: &str, frame: &[HashMap<String, Val>], literals_only: bool) ->
                 }
                 kw.push((name.to_string(), eval_render(expr, frame, literals_only)?));
             }
-            None => pos.push(eval_render(seg, frame, literals_only)?),
+            None => {
+                // `m(x=1, y)` — a positional after a keyword — is
+                // Python's "positional argument follows keyword
+                // argument" SyntaxError, the same refusal.
+                if !kw.is_empty() {
+                    return None;
+                }
+                pos.push(eval_render(seg, frame, literals_only)?);
+            }
         }
     }
     Some((pos, kw))
@@ -1198,6 +1201,50 @@ mod tests {
     }
 
     #[test]
+    fn a_right_strip_reaches_only_the_text_after_the_tag() {
+        // A `-%}`/`-}}` strip dies when another tag lands first — the
+        // marker trims the run DIRECTLY after it, never across a tag
+        // boundary (each `want` is real Jinja output).
+        for (name, def, want) in [
+            (
+                "expr_between",
+                "{% macro m() %}{{ 'a' -}}{{- 'b' }} c{% endmacro %}",
+                "ab c",
+            ),
+            (
+                "set_between",
+                "{% macro m() %}{% set x = '1' -%}{{ x }} end{% endmacro %}",
+                "1 end",
+            ),
+            (
+                "block_between",
+                "{% macro m() %}{{ 'a' -}}{% if true %} b{% endif %}{% endmacro %}",
+                "a b",
+            ),
+            (
+                "comment_between",
+                "{% macro m() %}{{ 'a' -}}{# c #} b{% endmacro %}",
+                "a b",
+            ),
+            // The strip still applies where text really follows —
+            // including a run it empties completely.
+            (
+                "strips_when_text_follows",
+                "{% macro m() %}{{ 'a' -}}  b{% endmacro %}",
+                "ab",
+            ),
+            (
+                "empty_run_eats_strip",
+                "{% macro m() %}{{ 'a' -}}  {# c #} b{% endmacro %}",
+                "a b",
+            ),
+        ] {
+            let t = table(&[("m", def)]);
+            assert_eq!(render(&t, "m", "").as_deref(), Some(want), "{name}");
+        }
+    }
+
+    #[test]
     fn nested_calls_bind_their_own_frame() {
         // `show(t)` evaluates its arg in the caller's frame (the loop's
         // `t`), then runs with only `t` bound — the emitted `ref`s land
@@ -1265,6 +1312,15 @@ mod tests {
             ("unknown_kw", "{% macro m(a) %}1{% endmacro %}", "x='a'"),
             ("dup", "{% macro m(a) %}1{% endmacro %}", "'a',a='b'"),
             ("dup_kw", "{% macro m(a) %}1{% endmacro %}", "a='x',a='y'"),
+            // `m(x=1, y)` — Python's "positional argument follows
+            // keyword argument" SyntaxError. `b=` names the slot the
+            // binding alone would let stand, so only the ordering
+            // check refuses the call.
+            (
+                "pos_after_kw",
+                "{% macro m(a, b) %}1{% endmacro %}",
+                "b='x', 'y'",
+            ),
             ("missing", "{% macro m(a) %}1{% endmacro %}", ""),
             ("name_arg", "{% macro m(a) %}{{ a }}{% endmacro %}", "foo"),
             (
@@ -1277,6 +1333,16 @@ mod tests {
             let t = table(&[("m", def)]);
             assert_eq!(render(&t, "m", args), None, "{name}");
         }
+        // The same ordering refusal inside a body — a nested call with
+        // a positional after a keyword fails the whole expansion, and
+        // so does a `ref` spelled `ref(v=…, 'x')`.
+        let t = table(&[
+            ("n", "{% macro n(a, b) %}{{ b }}{% endmacro %}"),
+            ("m", "{% macro m() %}{{ n(b='x', 'y') }}{% endmacro %}"),
+        ]);
+        assert_eq!(render(&t, "m", ""), None);
+        let t = table(&[("m", "{% macro m() %}{{ ref(v=2, 'x') }}{% endmacro %}")]);
+        assert_eq!(render(&t, "m", ""), None);
         // A qualified call resolves only the project namespace.
         let t = table(&[("m", "{% macro m() %}ok{% endmacro %}")]);
         assert_eq!(render(&t, "t.m", ""), Some("ok".to_string()));

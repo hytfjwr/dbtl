@@ -1394,7 +1394,14 @@ impl<'a> EnabledExpr<'a, '_> {
                     name.to_string(),
                     self.eval_in(expr, self.scope.locals, self.scope.depth)?,
                 )),
-                None => pos.push(self.eval_in(seg, self.scope.locals, self.scope.depth)?),
+                None => {
+                    // A positional after a keyword — Python's own
+                    // parser rejects the call before it binds.
+                    if !kw.is_empty() {
+                        return None;
+                    }
+                    pos.push(self.eval_in(seg, self.scope.locals, self.scope.depth)?);
+                }
             }
         }
         // A call shape dbt itself rejects — a positional past the
@@ -1531,7 +1538,14 @@ impl<'a> EnabledExpr<'a, '_> {
                     }
                     kw.push((n, v));
                 }
-                None => pos.push(v),
+                None => {
+                    // A positional after a keyword — Python's own
+                    // parser rejects the call before it binds.
+                    if !kw.is_empty() {
+                        return None;
+                    }
+                    pos.push(v);
+                }
             }
             self.p.ws();
             match self.p.bump()? {
