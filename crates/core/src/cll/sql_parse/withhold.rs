@@ -95,7 +95,11 @@ impl<'a> Withhold<'a> {
     /// package — a namespace `dag` can't model — so they stay
     /// unresolvable.
     pub(super) fn new(dag: &'a Dag, node: &str, rendered: &'a RenderedSql) -> Withhold<'a> {
-        let proj = dag.project_name().map(str::to_string);
+        // `macro.<pkg>.<name>` uids key on the package segment — the
+        // same axis `is_root_project`/`is_root_macro_def_in` use —
+        // which `project_name`'s lexicographic-min fallback can diverge
+        // from on a metadata-less manifest.
+        let proj = dag.primary_package();
         let node_root = dag.get(node).is_some_and(|n| dag.is_root_project(n));
         let mut memo = BTreeMap::new();
         let tags = rendered

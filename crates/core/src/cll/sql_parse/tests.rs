@@ -4340,15 +4340,23 @@ fn expansion_uses_the_primary_package_axis_without_metadata() {
     // `u` reads, `v` reports. (The same manifest's `aaa` node isn't
     // root-scoped and keeps the placeholder.)
     let body = "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ m() }}";
+    // `model.bbb.y` calls `m` past its arity — expansion refuses the
+    // invalid shape, so the WITHHOLD judges the tag; it must resolve
+    // `m` through the same `bbb` axis for its body scan to see `u`
+    // (withholding only `u`, not blanketing both).
+    let opaque_body = "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ m(1) }}";
     let mut m = manifest(
         vec![
             model("model.aaa.a", "select 1", &["id"]),
             model("model.bbb.base", "select 1", &["id"]),
             raw_model("model.bbb.x", body, &[]),
+            raw_model("model.bbb.y", opaque_body, &[]),
         ],
         &[
             ("model.aaa.a", "model.bbb.x"),
+            ("model.aaa.a", "model.bbb.y"),
             ("model.bbb.base", "model.bbb.x"),
+            ("model.bbb.base", "model.bbb.y"),
         ],
     );
     m.macros.extend([(
@@ -4365,6 +4373,12 @@ fn expansion_uses_the_primary_package_axis_without_metadata() {
     let facts = resolver().sql_facts(&dag, "model.bbb.x").unwrap();
     assert_eq!(facts.unused_ctes, vec!["v".to_string()]);
     assert!(facts.withheld.is_empty(), "{:?}", facts.withheld);
+    let opaque = resolver().sql_facts(&dag, "model.bbb.y").unwrap();
+    assert_eq!(opaque.unused_ctes, vec!["v".to_string()]);
+    assert_eq!(
+        withheld_kinds(&opaque),
+        vec![("unused_cte", "u".to_string())]
+    );
 }
 
 #[test]
