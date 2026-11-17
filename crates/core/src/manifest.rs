@@ -715,9 +715,11 @@ pub struct RawManifest {
     /// manifests) omit the key entirely.
     #[serde(default)]
     pub exposures: HashMap<String, RawExposure>,
-    /// `#[serde(default)]`: manifests before the macros key existed (and every
-    /// synthesized source-mode manifest, which never parses macros) omit it —
-    /// an absent map disables macro-diff detection rather than inventing one.
+    /// `#[serde(default)]`: manifests before the macros key existed (and
+    /// minimal hand-built manifests) omit it — an absent map disables
+    /// macro-diff detection rather than inventing one. A synthesized
+    /// source-mode manifest DOES fill it, with the root project's
+    /// `{% macro %}` definitions — the one record shape source can parse.
     #[serde(default)]
     pub macros: HashMap<String, RawMacro>,
     /// The `disabled` map dbt writes — nodes an `enabled: false` parked

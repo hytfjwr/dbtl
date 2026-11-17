@@ -22,10 +22,21 @@ impl Dag {
     /// [`PackageScope`]-unresolvable projects treat every record as root —
     /// the same not-dropping bias [`is_root_project`](Dag::is_root_project)
     /// takes.
+    ///
+    /// Per-call cost is O(1) when `metadata.project_name` is recorded — but
+    /// like [`is_root_project`](Dag::is_root_project) this is the ONE-OFF
+    /// test: sweeps resolve the package ONCE via
+    /// [`primary_package`](Dag::primary_package) and call the crate-internal
+    /// `is_root_macro_def_in` per record.
     pub fn is_root_macro_def(&self, unique_id: &str) -> bool {
-        let in_root = self
-            .primary_package()
-            .is_none_or(|p| uid_package(unique_id).is_some_and(|seg| seg == p));
+        self.is_root_macro_def_in(self.primary_package().as_deref(), unique_id)
+    }
+
+    /// [`is_root_macro_def`](Dag::is_root_macro_def) with the owning package
+    /// already resolved — the sweep form (the diff's macro walk). `None`
+    /// keeps the unresolvable-project all-root bias.
+    pub(crate) fn is_root_macro_def_in(&self, primary: Option<&str>, unique_id: &str) -> bool {
+        let in_root = primary.is_none_or(|p| uid_package(unique_id).is_some_and(|seg| seg == p));
         in_root
             && self
                 .macros
@@ -460,7 +471,8 @@ impl Dag {
 /// Whether a stored `macro_sql` opens a `{% macro %}` tag — the recorded
 /// text starts at the block's own tag (whitespace control aside), so the
 /// first tag's word IS the block type: `{% test %}` blocks and
-/// materializations sort themselves out.
+/// materializations sort themselves out. `{%+` stays unclassified on
+/// purpose — dbt's block regex doesn't register it either.
 fn opens_macro_block(sql: &str) -> bool {
     let Some(rest) = sql.trim_start().strip_prefix("{%") else {
         return false;

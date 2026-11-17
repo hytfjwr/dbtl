@@ -679,12 +679,22 @@ pub(super) fn macro_change_reasons(
         return out;
     }
     // A manifest↔source pair compares only the macro records source mode
-    // can see; manifest↔manifest keeps the whole `macros` map.
+    // can see; manifest↔manifest keeps the whole `macros` map. Each side's
+    // root package resolves ONCE — the per-uid `is_root_macro_def` is the
+    // one-off form and would re-derive it for every record.
     let source_in_pair = base.is_source_mode() || current.is_source_mode();
+    let (b_root, c_root) = if source_in_pair {
+        (base.primary_package(), current.primary_package())
+    } else {
+        (None, None)
+    };
 
     let mut changed: BTreeSet<String> = BTreeSet::new();
     for uid in base.macros().keys().chain(current.macros().keys()) {
-        if source_in_pair && !(base.is_root_macro_def(uid) || current.is_root_macro_def(uid)) {
+        if source_in_pair
+            && !(base.is_root_macro_def_in(b_root.as_deref(), uid)
+                || current.is_root_macro_def_in(c_root.as_deref(), uid))
+        {
             continue;
         }
         let changed_here = match (base.macros().get(uid), current.macros().get(uid)) {
