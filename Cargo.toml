@@ -41,7 +41,7 @@ strip = "none"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.7.4"
+version = "0.7.5"
 rust-version = "1.88"
 edition = "2021"
 license = "MIT"
