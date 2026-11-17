@@ -708,9 +708,15 @@ pub(crate) fn unread_cte_deletes(
 
 /// The post-edit guard `unused_cte`'s fix requires: the new raw text
 /// must still render under Jinja and parse — the same `Plain` render
-/// the positions pass judges.
-pub(crate) fn sql_still_parses(sql: &str, dialect: SqlDialect) -> bool {
-    jinja_parse(sql, JinjaMark::Plain, dialect).is_ok()
+/// the positions pass judges, with the same macro expansion (`node`
+/// = `dag` + node uid when the edit belongs to a model).
+pub(crate) fn sql_still_parses(
+    sql: &str,
+    dialect: SqlDialect,
+    node: Option<(&crate::dag::Dag, &str)>,
+) -> bool {
+    let expand = node.and_then(|(dag, uid)| super::expand::ExpandScope::for_node(dag, uid));
+    jinja_parse(sql, JinjaMark::Plain, dialect, expand).is_ok()
 }
 
 #[cfg(test)]
@@ -904,11 +910,12 @@ mod tests {
 
     #[test]
     fn sql_still_parses_smoke() {
-        assert!(sql_still_parses("select 1", SqlDialect::Generic));
+        assert!(sql_still_parses("select 1", SqlDialect::Generic, None));
         assert!(sql_still_parses(
             "with a as (select 1) select * from a",
-            SqlDialect::Generic
+            SqlDialect::Generic,
+            None
         ));
-        assert!(!sql_still_parses("with a as (", SqlDialect::Generic));
+        assert!(!sql_still_parses("with a as (", SqlDialect::Generic, None));
     }
 }

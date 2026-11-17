@@ -84,6 +84,7 @@ mod ast;
 mod bind;
 mod depth;
 mod dialect;
+mod expand;
 mod expr;
 mod facts;
 pub(crate) mod fixes;
@@ -99,6 +100,7 @@ mod withhold;
 use ast::*;
 pub use dialect::SqlDialect;
 use dialect::{date_part_arg_position, is_date_part_word};
+use expand::{ExpandScope, MacroTable};
 use facts::{outer_order_by_span, star_over_single_explicit_cte};
 pub(crate) use fixes::{semicolon_delete, sql_still_parses, unread_cte_deletes};
 pub(crate) use jinja::trailing_semicolon;
@@ -380,6 +382,10 @@ pub struct SqlParseResolver {
     /// First reason wins: the `Plain`/`resolution_sql` analysis is the
     /// primary parse, so a later re-parse never overwrites it.
     unparsed_reasons: RefCell<BTreeMap<String, UnparsedReason>>,
+    /// The dag's expandable `{% macro %}` table — built once per dag
+    /// (keyed on the dag's pointer identity, so a rebuilt Dag never
+    /// serves a stale table) and shared (`Rc`) by every node's render.
+    macros_memo: RefCell<Option<(usize, Option<Rc<MacroTable>>)>>,
 }
 
 impl SqlParseResolver {
@@ -400,7 +406,32 @@ impl SqlParseResolver {
             fallbacks: RefCell::new(BTreeSet::new()),
             analyzing: RefCell::new(BTreeSet::new()),
             unparsed_reasons: RefCell::new(BTreeMap::new()),
+            macros_memo: RefCell::new(None),
         }
+    }
+
+    /// `dag`'s expandable root `{% macro %}` table — built once and
+    /// memoized on the dag's pointer (`None` when the dag carries no
+    /// expandable root macros — the common case, decided once).
+    fn macro_table(&self, dag: &Dag) -> Option<Rc<MacroTable>> {
+        let key = dag as *const Dag as usize;
+        if let Some((k, t)) = self.macros_memo.borrow().as_ref() {
+            if *k == key {
+                return t.clone();
+            }
+        }
+        let table = MacroTable::for_dag(dag);
+        let t = (!table.is_empty()).then(|| Rc::new(table));
+        *self.macros_memo.borrow_mut() = Some((key, t.clone()));
+        t
+    }
+
+    /// `uid`'s expansion context for a render — `None` on an empty table
+    /// or a non-root node (a package node's bare calls resolve against
+    /// its own package, never this table).
+    fn expansion(&self, dag: &Dag, uid: &str) -> Option<ExpandScope> {
+        self.macro_table(dag)
+            .and_then(|t| ExpandScope::with_table(t, dag, uid))
     }
 
     /// A resolver whose dialect comes from `dag`'s adapter metadata — the
@@ -493,7 +524,7 @@ impl SqlParseResolver {
             if raw.trim().is_empty() {
                 return None;
             }
-            match marked_relations(raw, self.dialect) {
+            match marked_relations(raw, self.dialect, self.expansion(dag, uid)) {
                 Ok(m) => Some(Rc::new(m)),
                 Err(e) => {
                     self.fail_unparsed(uid, e.into_reason());
@@ -523,7 +554,7 @@ impl SqlParseResolver {
             if raw.trim().is_empty() {
                 return None;
             }
-            plain_positions(raw, self.dialect, Some((dag, uid)))
+            plain_positions(raw, self.dialect, Some((dag, uid)), self.macro_table(dag))
                 .ok()
                 .map(Rc::new)
         })();
@@ -674,7 +705,13 @@ impl SqlParseResolver {
     /// reason still catches the edit).
     fn compute_expr_map(&self, dag: &Dag, uid: &str) -> Option<BTreeMap<String, String>> {
         let (text, _) = resolution_sql(dag, uid)?;
-        let (_, stmts) = jinja_parse(text, JinjaMark::Plain, self.dialect).ok()?;
+        let (_, stmts) = jinja_parse(
+            text,
+            JinjaMark::Plain,
+            self.dialect,
+            self.expansion(dag, uid),
+        )
+        .ok()?;
         let query = stmts.iter().find_map(|s| match s {
             Statement::Query(q) => Some(&**q),
             _ => None,
@@ -729,7 +766,12 @@ impl SqlParseResolver {
             return None; // uid cycle — degrade the re-entered node
         }
         let out = (|| {
-            let (rendered, stmts) = match jinja_parse(text, JinjaMark::Plain, self.dialect) {
+            let (rendered, stmts) = match jinja_parse(
+                text,
+                JinjaMark::Plain,
+                self.dialect,
+                self.expansion(dag, node),
+            ) {
                 Ok(v) => v,
                 Err(e) => {
                     self.fail_unparsed(node, e.into_reason());

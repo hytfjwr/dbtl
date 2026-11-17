@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- SQL analysis now expands a root-project `{{ macro(…) }}` call whose body is provable — literal text, bound parameters, `ref()`/`source()` calls, and nested project macros — before parsing, so a `{{ join_on('c', 'a.id') }}` reads its CTE and a model whose whole statement is such a call parses instead of skipping the SQL rules. Calls the body can't prove (control flow, package or builtin callees, an argument dbt's call rules reject) keep the positional placeholder render.
+
 ### Fixed
 
 - Unchanged project macros no longer appear as `macro:<name>` changes in a manifest↔source `--diff` — source mode stores the same complete `{% macro %}…{% endmacro %}` definition dbt records, and a cross-mode diff compares only those root-project definitions rather than every `macro.*` record a manifest registers.

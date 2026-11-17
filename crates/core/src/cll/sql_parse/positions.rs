@@ -12,12 +12,14 @@
 // can't be pinned reports file-only rather than a guessed line/column.
 
 use std::ops::Range;
+use std::rc::Rc;
 
 use sqlparser::ast::{Spanned, Statement};
 
 use super::ast::query_wildcard_items;
 use super::depth::ParseFailure;
 use super::dialect::SqlDialect;
+use super::expand::{ExpandScope, MacroTable};
 use super::facts::{outer_order_by_span, output_name_occurrences};
 use super::jinja::{jinja_parse, JinjaMark};
 use super::scan::{scan_statements, scan_statements_positions};
@@ -75,13 +77,18 @@ pub struct MarkedRelations {
 /// `scope` (`dag` + node uid) re-runs the facts' per-tag withholding on
 /// THIS render so `cartesian` stays index-aligned with the kept
 /// candidates — a withheld arm's position never shifts the i↔i pairing
-/// the rule trusts.
+/// the rule trusts. `table` — the resolver's shared macro table —
+/// expands the same `{{ m(…) }}`s the facts saw, so a position can
+/// never land on text a different render produced.
 pub(super) fn plain_positions(
     raw: &str,
     dialect: SqlDialect,
     scope: Option<(&Dag, &str)>,
+    table: Option<Rc<MacroTable>>,
 ) -> Result<SqlPositions, ParseFailure> {
-    let (rendered, stmts) = jinja_parse(raw, JinjaMark::Plain, dialect)?;
+    let expand =
+        scope.and_then(|(dag, uid)| table.and_then(|t| ExpandScope::with_table(t, dag, uid)));
+    let (rendered, stmts) = jinja_parse(raw, JinjaMark::Plain, dialect, expand)?;
     let withhold = scope.map(|(dag, node)| Withhold::new(dag, node, &rendered));
     let mut out = SqlPositions::default();
     for s in &stmts {
@@ -161,12 +168,17 @@ pub(super) fn plain_positions(
 }
 
 /// Render `raw` (`Marked`) and return the hand-coded relation scan —
-/// `Err` like [`plain_positions`].
+/// `Err` like [`plain_positions`]. `expand` is the same context the
+/// `Plain` renders took — a `{{ m(…) }}` that proved its `{% macro %}`
+/// emits the marked relation shapes inside, so names written in the
+/// macro BODY count like names written in the model while `ref`/
+/// `source` renders stay `__dbtl_`-marked.
 pub(super) fn marked_relations(
     raw: &str,
     dialect: SqlDialect,
+    expand: Option<ExpandScope>,
 ) -> Result<MarkedRelations, ParseFailure> {
-    let (rendered, stmts) = jinja_parse(raw, JinjaMark::Marked, dialect)?;
+    let (rendered, stmts) = jinja_parse(raw, JinjaMark::Marked, dialect, expand)?;
     let scan = scan_statements(&stmts, Some(&rendered));
     let spans = scan
         .hard_coded_spans

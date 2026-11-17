@@ -312,7 +312,7 @@ fn project_macro(dag: &Dag, pkg: &str, name: &str) -> Option<String> {
 /// `e`'s leading `name(…)` call — the callee, the argument text, and
 /// the remainder after `)`. `None` when `e` doesn't open with a call or
 /// the parens don't balance.
-fn leading_call(e: &str) -> Option<(&str, &str, &str)> {
+pub(super) fn leading_call(e: &str) -> Option<(&str, &str, &str)> {
     let m = call_head_re().find(e)?;
     if m.start() != 0 {
         return None;
@@ -333,7 +333,7 @@ fn is_macro_def(m: &MacroInfo) -> bool {
 
 /// `sql`'s leading `{% … %}` tag — `(word, tag span)` — `None` when the
 /// trimmed text doesn't open with a block tag.
-fn leading_block(sql: &str) -> Option<(&str, Range<usize>)> {
+pub(super) fn leading_block(sql: &str) -> Option<(&str, Range<usize>)> {
     let lead = sql.len() - sql.trim_start().len();
     if !sql[lead..].starts_with("{%") {
         return None;
@@ -346,7 +346,7 @@ fn leading_block(sql: &str) -> Option<(&str, Range<usize>)> {
 /// The offset of the first `{% … %}` tag whose word is `want` — the
 /// `{% endmacro %}` close that ends a def (macros don't nest, so the
 /// first match closes).
-fn find_block_word(text: &str, want: &str) -> Option<usize> {
+pub(super) fn find_block_word(text: &str, want: &str) -> Option<usize> {
     let b = text.as_bytes();
     let mut i = 0usize;
     while i + 1 < b.len() {

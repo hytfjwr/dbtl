@@ -1061,9 +1061,12 @@ pub static REGISTRY: &[RuleInfo] = &[
                     reports green. The reason on the finding says which \
                     remedy applies: `parse error` is the model's own Jinja \
                     to repair, while `Jinja generates the query` means a \
-                    macro writes the statement — only `dbt compile`'s \
-                    `compiled_code` (or the `target/compiled/` file source \
-                    mode reads) can show the parser that body. The \
+                    macro writes the statement — a root-project macro whose \
+                    body proves (literal text, bound arguments, `ref`/`source` \
+                    calls, nested project macros) expands before the parse, \
+                    so the reason is for what still can't be seen: only `dbt \
+                    compile`'s `compiled_code` (or the `target/compiled/` file \
+                    source mode reads) can show the parser that body. The \
                     summary's `unparsed_models` tally counts the same \
                     skips — a model whose `enabled` state couldn't be \
                     verified stays out of both, since nothing about it is \

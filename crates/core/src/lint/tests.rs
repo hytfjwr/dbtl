@@ -11539,6 +11539,87 @@ fn fix_planning_refuses_an_in_rhs_models_cte_delete() {
     assert_eq!(plan.refused[0].0, LintRule::UnusedCte);
 }
 
+#[test]
+fn fix_planning_never_deletes_what_an_expansion_emitted() {
+    // `{{ gen() }}` is the whole statement — its expansion emits
+    // `with c as (…), d as (…) select * from d`, so `c` flags unread.
+    // The decl's raw position is the call tag itself: no written `WITH`
+    // item to cut, so the delete refuses instead of slicing the tag.
+    let mut m = manifest(vec![model_sql("gen", "{{ gen() }}")], vec![], &[]);
+    m.macros.insert(
+        "macro.p.gen".to_string(),
+        RawMacro {
+            name: "gen".into(),
+            macro_sql: Some(
+                "{% macro gen() %} with c as (select 1), d as (select 2) select * from d {% endmacro %}"
+                    .into(),
+            ),
+            ..Default::default()
+        },
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    assert_eq!(
+        res.sql_facts(&dag, "model.p.gen").unwrap().unused_ctes,
+        vec!["c".to_string()],
+        "the emitted `with` clause counts like written CTEs"
+    );
+    let plan = plan_node_edits(
+        &dag,
+        &res,
+        "model.p.gen",
+        &BTreeSet::from([LintRule::UnusedCte]),
+    );
+    assert!(plan.edits.is_empty(), "{plan:?}");
+    assert_eq!(plan.refused.len(), 1);
+    assert!(
+        plan.refused[0].1.contains("WITH item"),
+        "{:?}",
+        plan.refused
+    );
+}
+
+#[test]
+fn fix_reparse_uses_the_same_expanded_render() {
+    // `dead`'s delete leaves `{{ gen() }}` alone in the file — a render
+    // only the expansion can parse (the placeholder shape fails on a
+    // statement-opening tag). The post-edit guard must expand the same
+    // calls the judged render did; without the node context it refuses.
+    let raw = "with dead as (select 1) {{ gen() }}";
+    let mut m = manifest(vec![model_sql("m", raw)], vec![], &[]);
+    m.macros.insert(
+        "macro.p.gen".to_string(),
+        RawMacro {
+            name: "gen".into(),
+            macro_sql: Some("{% macro gen() %} select * from x {% endmacro %}".into()),
+            ..Default::default()
+        },
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let plan = plan_node_edits(
+        &dag,
+        &res,
+        "model.p.m",
+        &BTreeSet::from([LintRule::UnusedCte]),
+    );
+    assert_eq!(plan.edits.len(), 1, "{plan:?}");
+    assert_eq!(
+        apply_fixes(
+            raw,
+            &plan.edits,
+            SqlDialect::Generic,
+            Some((&dag, "model.p.m"))
+        ),
+        Ok(" {{ gen() }}".to_string())
+    );
+    assert_eq!(
+        apply_fixes(raw, &plan.edits, SqlDialect::Generic, None),
+        Err(ApplyRefusal::Reparse),
+        "a lone `{{ }}` never parses unexpanded"
+    );
+}
+
 // ---- possible_edges ----------------------------------------------------------
 // In manifest mode a literal `ref()`/`source()` inside a Jinja arm real
 // dbt never rendered leaves no `depends_on` edge — the possible-edge index
