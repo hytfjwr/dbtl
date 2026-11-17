@@ -96,6 +96,12 @@ pub struct LintGateOutcome {
     /// though they can never be findings; the summary reports them when
     /// `suppressions_without_reason` ran.
     pub reasonless_excludes: usize,
+    /// The (model uid → rules) pairs a replaced `{{ }}` withheld —
+    /// `run_rules` already filtered for suppression and
+    /// `enabled_unverifiable`; `evaluate_lint` narrows them by
+    /// `--select` like `unparsed`. Informational only — never a
+    /// finding.
+    pub withheld: BTreeMap<String, BTreeSet<LintRule>>,
     /// Evaluation-time warnings from `run_rules` (the `path:` legacy-form
     /// deprecation notes `exclude:`/selector params surface), merged
     /// across the current and baseline-side evaluations — sorted, deduped.
@@ -140,12 +146,14 @@ pub fn evaluate_lint(
     let mut suppressed = outcome.suppressed;
     let skipped = outcome.skipped;
     let mut unparsed = outcome.unparsed;
+    let mut withheld = outcome.withheld;
     let mut warnings: BTreeSet<String> = outcome.warnings.into_iter().collect();
     if let Some(sel) = selection {
         findings.retain(|f| sel.contains(&f.node_uid));
         suppressed.retain(|f| sel.contains(&f.node_uid));
         // The tally counts models the report's selection could have shown.
         unparsed.retain(|u, _| sel.contains(u));
+        withheld.retain(|u, _| sel.contains(u));
     }
     if let Some(b) = baseline {
         b.apply(&mut findings);
@@ -223,6 +231,7 @@ pub fn evaluate_lint(
         suppressed,
         skipped,
         unparsed,
+        withheld,
         reasonless_excludes: outcome.reasonless_excludes,
         warnings: warnings.into_iter().collect(),
         rules,
@@ -428,12 +437,25 @@ pub fn lint_assembly(inputs: &LintRunInputs<'_>) -> LintAssembly {
         .iter()
         .map(|(u, r)| (dbtl_core::display_name(inputs.dag, u), r.to_string()))
         .collect();
+    // The withheld pairs resolve to display names like `unparsed_models`
+    // — uid order, rule sets in `LintRule::ALL` order.
+    let withheld: Vec<(String, Vec<LintRule>)> = outcome
+        .withheld
+        .iter()
+        .map(|(u, rules)| {
+            (
+                dbtl_core::display_name(inputs.dag, u),
+                rules.iter().copied().collect(),
+            )
+        })
+        .collect();
     let tally = LintTally {
         pre_existing: outcome.rules.iter().map(|r| r.pre_existing).sum(),
         has_diff: outcome.has_diff,
         skipped: outcome.skipped,
         unparsed_models,
         unparsed_reasons,
+        withheld,
         // The exclude-entry count only reports when the audit rule ran —
         // the entries themselves can never be its findings.
         reasonless_excludes: inputs
@@ -951,6 +973,116 @@ mod tests {
         assert_eq!(
             gate.message,
             "lint unused_sources: 2 violation(s): raw_a.orders, raw_b.orders"
+        );
+    }
+
+    /// A model carrying `raw_code` — the SQL rules' input.
+    fn model_sql(name: &str, path: &str, raw: &str) -> (String, dbtl_core::RawNode) {
+        let mut m = model(name, path);
+        m.1.raw_code = Some(raw.into());
+        m
+    }
+
+    /// `joined`'s comma-join candidate and `ctes`'s unread CTE each sit
+    /// next to a replaced `{{ }}` that could supply what they lack —
+    /// both withhold — while `clean` carries no tag at all.
+    fn withheld_project() -> Dag {
+        Dag::build(&manifest(
+            vec![
+                model_sql("a", "staging/a.sql", "select 1 as id"),
+                model_sql("b", "staging/b.sql", "select 1 as id"),
+                model_sql(
+                    "joined",
+                    "marts/joined.sql",
+                    "select a.id from \"a\" a, \"b\" b {{ m() }}",
+                ),
+                model_sql(
+                    "ctes",
+                    "marts/ctes.sql",
+                    "with u as (select * from a),\n     v as (select * from a)\nselect * from u {{ mystery() }}",
+                ),
+                model_sql("clean", "marts/clean.sql", "select a.id from \"a\" a"),
+            ],
+            &[
+                ("model.p.a", "model.p.joined"),
+                ("model.p.b", "model.p.joined"),
+                ("model.p.a", "model.p.ctes"),
+                ("model.p.a", "model.p.clean"),
+            ],
+        ))
+    }
+
+    /// `{{ }}`-withheld candidates reach `LintGateOutcome::withheld` as
+    /// (uid, rules) pairs — `--select` narrows them like `unparsed`, and
+    /// a run where nothing withheld keeps the tally empty.
+    #[test]
+    fn withheld_pairs_evaluate_and_narrow_with_selection() {
+        let dag = withheld_project();
+        let cfg = cfg_only(&[LintRule::CartesianJoin, LintRule::UnusedCte]);
+        let resolver = SqlParseResolver::for_dag(None, &dag);
+        let aux = LintAux {
+            sql: Some(&resolver),
+            ..no_aux()
+        };
+        let out = evaluate_lint(&dag, &cfg, None, None, FailOn::Error, aux, None);
+        assert_eq!(
+            out.withheld.keys().collect::<Vec<_>>(),
+            vec!["model.p.ctes", "model.p.joined"],
+            "{:?}",
+            out.withheld
+        );
+        assert_eq!(
+            out.withheld["model.p.joined"],
+            BTreeSet::from([LintRule::CartesianJoin])
+        );
+        assert_eq!(
+            out.withheld["model.p.ctes"],
+            BTreeSet::from([LintRule::UnusedCte])
+        );
+        // `--select` narrows like `unparsed` — only selected uids keep pairs.
+        let sel = BTreeSet::from(["model.p.joined".to_string()]);
+        let out = evaluate_lint(&dag, &cfg, None, None, FailOn::Error, aux, Some(&sel));
+        assert_eq!(
+            out.withheld.keys().collect::<Vec<_>>(),
+            vec!["model.p.joined"]
+        );
+        let sel = BTreeSet::from(["model.p.clean".to_string()]);
+        let out = evaluate_lint(&dag, &cfg, None, None, FailOn::Error, aux, Some(&sel));
+        assert!(out.withheld.is_empty());
+    }
+
+    /// The withheld pairs lift into `summary.withheld` — the count, the
+    /// display names in `unique_id` order, and each name's rule ids —
+    /// and the key stays absent when nothing withheld.
+    #[test]
+    fn withheld_pairs_lift_into_the_json_summary() {
+        let dag = withheld_project();
+        let cfg = cfg_only(&[LintRule::CartesianJoin, LintRule::UnusedCte]);
+        let resolver = SqlParseResolver::for_dag(None, &dag);
+        let aux = LintAux {
+            sql: Some(&resolver),
+            ..no_aux()
+        };
+        let run = lint_report("p", "s", &inputs(&dag, &cfg, aux, false));
+        let v = serde_json::to_value(&run.report).unwrap();
+        assert_eq!(v["summary"]["withheld"]["count"], 2);
+        assert_eq!(
+            v["summary"]["withheld"]["names"],
+            serde_json::json!(["ctes", "joined"])
+        );
+        assert_eq!(
+            v["summary"]["withheld"]["rules"],
+            serde_json::json!({"ctes": ["unused_cte"], "joined": ["cartesian_join"]})
+        );
+        // Withheld pairs are informational — nothing counted, nothing gated.
+        assert!(!run.failed && run.gating == 0);
+        // Nothing withheld — the key never serializes.
+        let cfg = cfg_only(&[LintRule::SelectStar]);
+        let run = lint_report("p", "s", &inputs(&dag, &cfg, aux, false));
+        let v = serde_json::to_value(&run.report).unwrap();
+        assert!(
+            v["summary"].get("withheld").is_none(),
+            "an empty withheld set never serializes"
         );
     }
 }

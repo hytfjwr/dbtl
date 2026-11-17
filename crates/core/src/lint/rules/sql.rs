@@ -15,16 +15,29 @@
 //! it. Python models (`language == "python"`) are excluded entirely —
 //! their `raw_code` is Python, not SQL.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use super::*;
-use crate::{SqlDialect, SqlParseResolver, UnparsedReason};
+use crate::{SqlDialect, SqlParseResolver, UnparsedReason, WithheldCandidate};
 
 /// One raw-SQL occurrence a finding can point at: the byte range inside
 /// the model's `raw_code` and the note the position carries (the primary
 /// position's `label`, a secondary `labels` entry).
 type SpanNote = (Range<usize>, String);
+
+/// The (model uid → rules) pairs whose candidates a replaced `{{ }}`
+/// withheld — the outcome's informational tally: not findings, never
+/// gated, so the summary can name what muted the judgment.
+pub(super) type WithheldPairs = BTreeMap<String, BTreeSet<LintRule>>;
+
+/// `uid` had at least one `rule` candidate a replaced `{{ }}` withheld —
+/// record the pair. The rules call this only with candidates that would
+/// have become a finding (post-filtering): an entry is proof the rule
+/// saw something to say, not a guess.
+fn record_withheld(withheld: &mut WithheldPairs, uid: &str, rule: LintRule) {
+    withheld.entry(uid.to_string()).or_default().insert(rule);
+}
 
 /// The [`UnparsedReason`] a failed analysis recorded for `uid` — a
 /// failure that somehow recorded none still reads as a parse failure
@@ -264,6 +277,7 @@ pub(super) fn cartesian_join(
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
     unparsed: &mut BTreeMap<String, UnparsedReason>,
+    withheld: &mut WithheldPairs,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -275,6 +289,15 @@ pub(super) fn cartesian_join(
             record_unparsed(dag, uid, sql, unparsed);
             continue;
         };
+        // A withheld arm counted like a kept one would have — the pair
+        // reports even when every candidate muted.
+        if facts
+            .withheld
+            .iter()
+            .any(|w| matches!(w.candidate, WithheldCandidate::CartesianJoin(_)))
+        {
+            record_withheld(withheld, uid, LintRule::CartesianJoin);
+        }
         if facts.cartesian.is_empty() {
             continue;
         }
@@ -339,6 +362,7 @@ pub(super) fn unknown_column_reference(
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
     unparsed: &mut BTreeMap<String, UnparsedReason>,
+    withheld: &mut WithheldPairs,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -350,6 +374,14 @@ pub(super) fn unknown_column_reference(
             record_unparsed(dag, uid, sql, unparsed);
             continue;
         };
+        // Withheld candidates keep the same trusted-parent gate the kept
+        // ones take below — an untrusted parent is no candidate either way.
+        if facts.withheld.iter().any(|w| match &w.candidate {
+            WithheldCandidate::UnknownColumn(parent, _) => sql.trusted_parent_columns(dag, parent),
+            _ => false,
+        }) {
+            record_withheld(withheld, uid, LintRule::UnknownColumnReference);
+        }
         let mut missed: Vec<&(String, String)> = facts
             .unresolved
             .iter()
@@ -665,6 +697,7 @@ pub(super) fn unused_cte(
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
     unparsed: &mut BTreeMap<String, UnparsedReason>,
+    withheld: &mut WithheldPairs,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -676,6 +709,13 @@ pub(super) fn unused_cte(
             record_unparsed(dag, uid, sql, unparsed);
             continue;
         };
+        if facts
+            .withheld
+            .iter()
+            .any(|w| matches!(w.candidate, WithheldCandidate::UnusedCte(_)))
+        {
+            record_withheld(withheld, uid, LintRule::UnusedCte);
+        }
         if facts.unused_ctes.is_empty() {
             continue;
         }
@@ -748,6 +788,7 @@ pub(super) fn order_by_without_limit(
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
     unparsed: &mut BTreeMap<String, UnparsedReason>,
+    withheld: &mut WithheldPairs,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -759,6 +800,13 @@ pub(super) fn order_by_without_limit(
             record_unparsed(dag, uid, sql, unparsed);
             continue;
         };
+        if facts
+            .withheld
+            .iter()
+            .any(|w| matches!(w.candidate, WithheldCandidate::OrderByWithoutLimit))
+        {
+            record_withheld(withheld, uid, LintRule::OrderByWithoutLimit);
+        }
         if !facts.unlimited_order_by {
             continue;
         }

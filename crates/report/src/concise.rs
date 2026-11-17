@@ -77,6 +77,7 @@ mod tests {
             unparsed_models: Vec::new(),
             unparsed_reasons: BTreeMap::new(),
             reasonless_excludes: None,
+            withheld: Vec::new(),
             suppressed: SuppressedSummary::default(),
             fixed: None,
             fix_refused: Vec::new(),

@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `dbtl lint` and `dbtl check --lint` now name the (model, rule) pairs a
+  replaced `{{ }}` tag withheld — the `N models had SQL findings withheld
+  next to {{…}} tags: name (rule, …)` line in the text and concise
+  summaries, and `summary.withheld` (`{count, names, rules}`) in JSON.
+  The pairs are informational only — never findings, so they never gate,
+  never count toward `--fail-on`, and never enter a baseline — and they
+  follow `--rules`, `--select`, `meta.dbtl.ignore`, and `exclude:` the
+  same way the findings they stood in for do. A help line points at
+  `dbt compile` + `target/manifest.json` for the definitive call.
+
 ### Fixed
 
 - Unchanged project macros no longer appear as `macro:<name>` changes in a manifest↔source `--diff` — source mode stores the same complete `{% macro %}…{% endmacro %}` definition dbt records, and a cross-mode diff compares only those root-project definitions rather than every `macro.*` record a manifest registers.

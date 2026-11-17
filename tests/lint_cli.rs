@@ -3094,3 +3094,222 @@ fn lint_fix_flag_conflicts_are_usage_errors() {
         );
     }
 }
+
+// ---- withheld findings summary ----------------------------------------------
+//
+// A replaced `{{ }}` that could add the condition an absence-finding
+// candidate lacks withholds the candidate — the model parses, no
+// finding reports, and the summary names the (model, rule) pair. The
+// pairs are informational: they never gate and they follow `--rules`,
+// `--select`, and suppression exactly like the findings they stood in
+// for.
+
+/// A scratch project whose `{{ }}` tags withhold: `joined`'s comma-join
+/// candidate sits next to an unresolvable clause tag and `ctes`'s
+/// unread CTE next to an opaque call — `tagged_clean`'s tag withholds
+/// nothing (no candidates) and `clean` carries no tag at all.
+fn withheld_project(dir: &Path) -> PathBuf {
+    common::write_project(
+        dir,
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/a.sql", "select 1 as id\n"),
+            ("models/b.sql", "select 1 as id\n"),
+            (
+                "models/joined.sql",
+                "select a.id from \"a\" a, \"b\" b {{ m() }}\n",
+            ),
+            (
+                "models/ctes.sql",
+                "with u as (select * from a),\n     v as (select * from a)\nselect * from u {{ mystery() }}\n",
+            ),
+            (
+                "models/tagged_clean.sql",
+                "select a.id from \"a\" a {{ m() }}\n",
+            ),
+        ],
+    )
+}
+
+#[test]
+fn withheld_pairs_report_in_lint_text_and_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = withheld_project(tmp.path());
+    let rules = ["--rules", "cartesian_join,unused_cte"];
+    let out = lint_src(
+        &root,
+        &[&rules[..], &["--format", "text", "--color", "never"][..]].concat(),
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains(
+            "2 models had SQL findings withheld next to {{…}} tags: \
+             ctes (unused_cte), joined (cartesian_join)"
+        ),
+        "the withheld line names each model's muted rules: {text}"
+    );
+    assert!(
+        text.contains("lint target/manifest.json (it carries compiled_code)"),
+        "the help line follows: {text}"
+    );
+    assert!(
+        !text.contains("tagged_clean"),
+        "a tag without candidates is never named: {text}"
+    );
+    assert_eq!(out.status.code(), Some(0), "nothing gated: {text}");
+    let out = lint_src(&root, &[&rules[..], &["--format", "json"][..]].concat());
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("stdout is pure JSON");
+    assert_eq!(json["summary"]["withheld"]["count"], 2);
+    assert_eq!(
+        json["summary"]["withheld"]["names"],
+        serde_json::json!(["ctes", "joined"])
+    );
+    assert_eq!(
+        json["summary"]["withheld"]["rules"],
+        serde_json::json!({"ctes": ["unused_cte"], "joined": ["cartesian_join"]})
+    );
+    let out = lint_src(
+        &root,
+        &[&rules[..], &["--format", "concise", "--color", "never"][..]].concat(),
+    );
+    assert!(
+        stdout(&out).contains(
+            "2 models had SQL findings withheld next to {{…}} tags: \
+             ctes (unused_cte), joined (cartesian_join)"
+        ),
+        "the concise summary carries the same line: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn check_lint_reports_the_same_withheld_pairs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = withheld_project(tmp.path());
+    let r = root.to_str().unwrap();
+    let out = run(&[
+        "check",
+        "--source",
+        r,
+        "--lint",
+        "--rules",
+        "cartesian_join,unused_cte",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("stdout is pure JSON");
+    assert_eq!(
+        json["summary"]["withheld"],
+        serde_json::json!({
+            "count": 2,
+            "names": ["ctes", "joined"],
+            "rules": {"ctes": ["unused_cte"], "joined": ["cartesian_join"]},
+        }),
+        "check --lint lifts the same summary the lint report does: {json}"
+    );
+    let out = run(&[
+        "check",
+        "--source",
+        r,
+        "--lint",
+        "--rules",
+        "cartesian_join,unused_cte",
+        "--format",
+        "text",
+        "--color",
+        "never",
+    ]);
+    assert!(
+        stdout(&out).contains(
+            "2 models had SQL findings withheld next to {{…}} tags: \
+             ctes (unused_cte), joined (cartesian_join)"
+        ),
+        "the text render carries the same line: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn withheld_pairs_follow_rules_select_and_suppression() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = withheld_project(tmp.path());
+    // `--rules` narrows the tally to the rules that ran — `unused_cte`
+    // alone leaves only `ctes`'s pair.
+    let out = lint_src(&root, &["--rules", "unused_cte", "--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("stdout is pure JSON");
+    assert_eq!(
+        json["summary"]["withheld"]["names"],
+        serde_json::json!(["ctes"]),
+        "the cartesian pair reports nothing when its rule never ran: {json}"
+    );
+    // `--select` narrows like `unparsed` — `joined` alone keeps its pair.
+    let out = lint_src(
+        &root,
+        &[
+            "--rules",
+            "cartesian_join,unused_cte",
+            "--select",
+            "joined",
+            "--format",
+            "json",
+        ],
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("stdout is pure JSON");
+    assert_eq!(
+        json["summary"]["withheld"]["names"],
+        serde_json::json!(["joined"]),
+        "the selection drops the unselected pairs: {json}"
+    );
+    // `meta.dbtl.ignore` on the node drops its pair like the finding it
+    // stood in for.
+    common::write_project(
+        &root,
+        &[(
+            "models/schema.yml",
+            "version: 2\n\nmodels:\n  - name: joined\n    meta:\n      dbtl:\n        ignore: [cartesian_join]\n",
+        )],
+    );
+    let out = lint_src(
+        &root,
+        &["--rules", "cartesian_join,unused_cte", "--format", "json"],
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("stdout is pure JSON");
+    assert_eq!(
+        json["summary"]["withheld"]["names"],
+        serde_json::json!(["ctes"]),
+        "the suppressed model's pair reports nothing: {json}"
+    );
+}
+
+#[test]
+fn no_withheld_pairs_means_no_line_and_no_key() {
+    // A tag-free project — no withheld line in text, no `withheld` key
+    // in JSON, so the run reads exactly as it did before.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/a.sql", "select 1 as id\n"),
+        ],
+    );
+    let out = lint_src(&root, &["--rules", "cartesian_join,unused_cte"]);
+    assert!(
+        !stdout(&out).contains("withheld"),
+        "nothing withheld — no summary line: {}",
+        stdout(&out)
+    );
+    let out = lint_src(&root, &["--rules", "cartesian_join", "--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("stdout is pure JSON");
+    assert!(
+        json["summary"].get("withheld").is_none(),
+        "an empty withheld set never serializes: {json}"
+    );
+}

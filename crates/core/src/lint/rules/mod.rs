@@ -154,6 +154,16 @@ pub struct LintOutcome {
     /// declaration, not a node, so `suppressions_without_reason` can
     /// never make one a finding; the summary counts them instead).
     pub reasonless_excludes: usize,
+    /// The (model uid → rules) pairs whose absence-finding candidates a
+    /// replaced `{{ }}` withheld — recorded by the rule that ran, only
+    /// when a candidate that would have become a finding existed (the
+    /// same post-filtering kept candidates pass). Suppression
+    /// (`meta.dbtl.ignore`/`exclude:`) and `enabled_unverifiable` drop
+    /// them the same way findings drop; `--select` narrows them at the
+    /// report layer like `unparsed`. Informational only — never a
+    /// finding, so they never gate and never touch `--fail-on`,
+    /// baselines, or the exit status.
+    pub withheld: BTreeMap<String, BTreeSet<LintRule>>,
     /// Evaluation-time warnings — selector-deprecation notes (the `path:`
     /// legacy resource-relative form through a rule's `exclude:` or a
     /// selector parameter) and `unresolved_references`' unverifiable-call
@@ -193,6 +203,10 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     // rule — one uid per model regardless of how many SQL rules asked,
     // each carrying the reason the analysis recorded.
     let mut unparsed = BTreeMap::new();
+    // The (model, rule) pairs a replaced `{{ }}` withheld — the SQL rules
+    // record as they run; the suppression and enabled-unverifiable drops
+    // below apply the same policy findings get.
+    let mut withheld = BTreeMap::new();
     // Selector deprecation notes — a `BTreeSet` dedupes the same
     // `path:`-form warning across rules/excludes and sorts the result.
     let mut notes = BTreeSet::new();
@@ -322,6 +336,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 &in_scope,
                 sql.expect("gated"),
                 &mut unparsed,
+                &mut withheld,
                 &mut out,
             ),
             LintRule::UnknownColumnReference => sql::unknown_column_reference(
@@ -330,6 +345,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 &in_scope,
                 sql.expect("gated"),
                 &mut unparsed,
+                &mut withheld,
                 &mut out,
             ),
             LintRule::ForbiddenPatterns => {
@@ -380,6 +396,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 &in_scope,
                 sql.expect("gated"),
                 &mut unparsed,
+                &mut withheld,
                 &mut out,
             ),
             LintRule::OrderByWithoutLimit => sql::order_by_without_limit(
@@ -388,6 +405,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 &in_scope,
                 sql.expect("gated"),
                 &mut unparsed,
+                &mut withheld,
                 &mut out,
             ),
             LintRule::UndocumentedExposures => {
@@ -424,7 +442,8 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     for f in &mut out {
         envelope(dag, config, f);
     }
-    let (mut suppressed, reasonless_excludes) = suppress(dag, config, &mut out, &mut notes);
+    let (excluded, reasonless_excludes) = exclude_sets(dag, config, &mut notes);
+    let mut suppressed = suppress(dag, &excluded, &mut out);
     // A finding reported ON a node whose `enabled` state could not be
     // verified — or one naming such a node in `related` — asserts the
     // node's existence or adjacency, the one thing source mode couldn't
@@ -441,12 +460,23 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     // node was skipped would be dropped too, so counting it in the
     // summary could only ever mislead.
     unparsed.retain(|uid, _| !dag.enabled_unverifiable(uid));
+    // The withheld pairs drop the same way — plus the pairs a finding's
+    // suppression would have silenced: a withheld candidate on a node
+    // the run can't act on, or whose finding never prints, can't mislead.
+    withheld.retain(|uid, rules| {
+        if dag.enabled_unverifiable(uid) {
+            return false;
+        }
+        rules.retain(|rule| suppression_of(dag, &excluded, uid, *rule).is_none());
+        !rules.is_empty()
+    });
     LintOutcome {
         findings: out,
         suppressed,
         skipped,
         unparsed,
         reasonless_excludes,
+        withheld,
         warnings: notes.into_iter().collect(),
     }
 }
@@ -506,29 +536,19 @@ pub(super) fn envelope(dag: &Dag, config: &LintConfig, f: &mut Finding) {
 /// reason it records, kept in declared order so the first match wins.
 type ExcludedSet = (BTreeSet<String>, Option<String>);
 
-/// Split findings suppressed by `lint.rules.<id>.exclude` selectors or by
-/// node `meta: {dbtl: {ignore: ...}}` out of `out` — findings are removed
-/// whole, never reordered, and each lands in the returned vector carrying
-/// its [`Suppression`] record. Both mechanisms match on the finding's
-/// `node_uid` — the CHILD side for edge rules — and a node-local `meta`
-/// suppression wins the `by`/`reason` attribution over a config `exclude`
-/// spec (the more specific scope records); inside `exclude` the first
-/// matching spec in declared order records. Each `exclude:` spec's
-/// evaluation notes (the `path:` legacy form) join `notes` for the
-/// outcome's warning channel.
-///
-/// Returns the suppressed findings plus the count of `exclude:` entries
-/// declaring no reason — the tally `suppressions_without_reason` reports
-/// in the summary since a config declaration can never be its finding.
-fn suppress(
+/// Every rule's `exclude:` spec evaluated once into its matched uid set —
+/// the strings are a union (`exclude: [a, b]` drops nodes matching a OR
+/// b), kept in declared order so the first matching spec's `reason` wins.
+/// The spec's evaluation notes (the `path:` legacy form) join `notes`
+/// for the outcome's warning channel. Returns the per-rule sets plus the
+/// count of entries declaring no reason — the tally
+/// `suppressions_without_reason` reports in the summary since a config
+/// declaration can never be its finding.
+fn exclude_sets(
     dag: &Dag,
     config: &LintConfig,
-    out: &mut Vec<Finding>,
     notes: &mut BTreeSet<String>,
-) -> (Vec<Finding>, usize) {
-    // Each rule's exclude spec evaluates ONCE into a uid set (the strings
-    // are a union — `exclude: [a, b]` drops nodes matching a OR b) — kept
-    // in declared order so the first matching spec's `reason` wins.
+) -> (BTreeMap<LintRule, Vec<ExcludedSet>>, usize) {
     let mut reasonless_excludes = 0usize;
     let excluded: BTreeMap<LintRule, Vec<ExcludedSet>> = LintRule::ALL
         .iter()
@@ -550,6 +570,49 @@ fn suppress(
             }
         })
         .collect();
+    (excluded, reasonless_excludes)
+}
+
+/// The suppression a `rule` finding on `node_uid` would take — a
+/// node-local `meta.dbtl.ignore` wins the `by`/`reason` attribution over
+/// a config `exclude:` spec (the more specific scope records), and
+/// inside `exclude:` the first matching spec in declared order records.
+/// `None` means nothing silences it. Findings and the withheld pairs
+/// read this same predicate so a suppressed candidate never surfaces.
+fn suppression_of(
+    dag: &Dag,
+    excluded: &BTreeMap<LintRule, Vec<ExcludedSet>>,
+    node_uid: &str,
+    rule: LintRule,
+) -> Option<Suppression> {
+    meta_suppression(dag, node_uid, rule)
+        .map(|reason| Suppression {
+            by: SuppressionSource::Meta,
+            reason,
+        })
+        .or_else(|| {
+            excluded.get(&rule).and_then(|sets| {
+                sets.iter()
+                    .find(|(set, _)| set.contains(node_uid))
+                    .map(|(_, reason)| Suppression {
+                        by: SuppressionSource::Exclude,
+                        reason: reason.clone(),
+                    })
+            })
+        })
+}
+
+/// Split findings suppressed by `lint.rules.<id>.exclude` selectors or by
+/// node `meta: {dbtl: {ignore: ...}}` out of `out` — findings are removed
+/// whole, never reordered, and each lands in the returned vector carrying
+/// its [`Suppression`] record. Both mechanisms match on the finding's
+/// `node_uid` — the CHILD side for edge rules — through
+/// [`suppression_of`]'s attribution.
+fn suppress(
+    dag: &Dag,
+    excluded: &BTreeMap<LintRule, Vec<ExcludedSet>>,
+    out: &mut Vec<Finding>,
+) -> Vec<Finding> {
     let mut suppressed = Vec::new();
     let mut kept = Vec::with_capacity(out.len());
     for mut f in std::mem::take(out) {
@@ -557,23 +620,7 @@ fn suppress(
         // itself: neither `meta.dbtl.ignore` (including `all`) nor an
         // `exclude:` spec may erase its own audit.
         let suppression = (f.rule != LintRule::SuppressionsWithoutReason)
-            .then(|| {
-                meta_suppression(dag, &f.node_uid, f.rule)
-                    .map(|reason| Suppression {
-                        by: SuppressionSource::Meta,
-                        reason,
-                    })
-                    .or_else(|| {
-                        excluded.get(&f.rule).and_then(|sets| {
-                            sets.iter().find(|(set, _)| set.contains(&f.node_uid)).map(
-                                |(_, reason)| Suppression {
-                                    by: SuppressionSource::Exclude,
-                                    reason: reason.clone(),
-                                },
-                            )
-                        })
-                    })
-            })
+            .then(|| suppression_of(dag, excluded, &f.node_uid, f.rule))
             .flatten();
         match suppression {
             Some(s) => {
@@ -584,7 +631,7 @@ fn suppress(
         }
     }
     *out = kept;
-    (suppressed, reasonless_excludes)
+    suppressed
 }
 
 /// The `meta.dbtl` object's `ignore` member — `Absent` (no `ignore` key;
