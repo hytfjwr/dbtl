@@ -34,12 +34,18 @@ use crate::source::{
 };
 
 /// The dag's expandable root `{% macro %}` defs — keyed by uid — plus
-/// the project name that qualifies a `proj.name(…)` call. Built once
-/// per dag and shared (`Rc`) across every node render.
+/// the package namespace a `proj.name(…)` call resolves through. Built
+/// once per dag and shared (`Rc`) across every node render.
 pub(crate) struct MacroTable {
-    /// Root project name — the namespace a `proj.name(…)` call
-    /// resolves through.
-    proj: Option<String>,
+    /// The root project's package segment — the namespace a
+    /// `proj.name(…)` call and every `macro.<ns>.<name>` uid share.
+    /// [`Dag::primary_package`] is the axis [`Dag::is_root_macro_def_in`]
+    /// and the node's own `is_root_project` gate already use, so the
+    /// def filter, the qualified-call match, and the uid lookup can
+    /// never disagree (the `project_name`/`primary_package` fallbacks
+    /// split on a metadata-less manifest — the uid segment is the one
+    /// defs are keyed under).
+    ns: Option<String>,
     defs: HashMap<String, Expandable>,
 }
 
@@ -49,21 +55,20 @@ impl MacroTable {
     /// unprovable args) aren't in the table, so every lookup leaves
     /// the call unexpanded.
     pub(crate) fn for_dag(dag: &Dag) -> MacroTable {
-        let proj = dag.project_name().map(str::to_string);
-        let primary = dag.primary_package();
+        let ns = dag.primary_package();
         let mut defs = HashMap::new();
         for (uid, m) in dag.macros() {
             let Some(sql) = m.sql.as_deref() else {
                 continue;
             };
-            if !dag.is_root_macro_def_in(primary.as_deref(), uid) {
+            if !dag.is_root_macro_def_in(ns.as_deref(), uid) {
                 continue;
             }
-            if let Some(ex) = Expandable::parse(sql, proj.as_deref()) {
+            if let Some(ex) = Expandable::parse(sql, ns.as_deref()) {
                 defs.insert(uid.clone(), ex);
             }
         }
-        MacroTable { proj, defs }
+        MacroTable { ns, defs }
     }
 
     /// No expandable defs — the render takes its placeholder path.
@@ -72,16 +77,16 @@ impl MacroTable {
     }
 
     /// The `Expandable` `name` resolves to — bare names and
-    /// `proj.name(…)` both bind `macro.<proj>.<name>`; any other
+    /// `<ns>.name(…)` both bind `macro.<ns>.<name>`; any other
     /// namespace is a package/builtin call the table never holds.
     fn lookup(&self, name: &str) -> Option<&Expandable> {
-        let proj = self.proj.as_deref()?;
+        let ns = self.ns.as_deref()?;
         let bare = match name.split_once('.') {
             None => name,
-            Some((ns, bare)) if ns == proj => bare,
+            Some((qual, bare)) if qual == ns => bare,
             Some(_) => return None,
         };
-        self.defs.get(&format!("macro.{proj}.{bare}"))
+        self.defs.get(&format!("macro.{ns}.{bare}"))
     }
 
     /// The text `{{ name(args) }}` emits when `name` binds an
@@ -151,6 +156,14 @@ impl MacroTable {
                     refs.push(from..out.len());
                 }
                 Part::Call { name, pos, kw, .. } => {
+                    // A nested call's name resolves in the DEF's
+                    // context, never the caller's — dbt compiles
+                    // `{% set m = 'x' %}` + `{{ join_on() }}` (whose
+                    // body calls `{{ m() }}`) to the macro's `m`, not
+                    // the bound 'x'. `bound_names().shadows` therefore
+                    // gates only the model-level tag in
+                    // `Scan::expand_call`; a body's own names keep the
+                    // project-table resolution Jinja gives them.
                     let callee = self.lookup(name)?;
                     let nb = bind_call(&callee.params, pos, kw, bound)?;
                     self.expand_parts(callee, &nb, mark, depth + 1, out, refs)?;
@@ -181,7 +194,10 @@ pub(crate) struct ExpandScope {
 impl ExpandScope {
     /// The context for `uid` under `dag` — builds the table itself;
     /// `None` when the dag carries no expandable root macros (the
-    /// common fast path decides every render at once).
+    /// common fast path decides every render at once). Every
+    /// production caller shares a resolver's memoized table instead —
+    /// this form is the tests' one-off.
+    #[cfg(test)]
     pub(crate) fn for_node(dag: &Dag, uid: &str) -> Option<ExpandScope> {
         Self::with_table(Rc::new(MacroTable::for_dag(dag)), dag, uid)
     }
@@ -530,14 +546,22 @@ type CallArgs = (Vec<Arg>, Vec<(String, Arg)>);
 /// params; empty at model level so a bare name never proves).
 fn parse_args(args: &str, params: &[Param]) -> Option<CallArgs> {
     let mut pos = Vec::new();
-    let mut kw = Vec::new();
+    let mut kw: Vec<(String, Arg)> = Vec::new();
     for seg in top_level_segments(args) {
         let seg = seg.trim();
         if seg.is_empty() {
             continue;
         }
         match split_kwarg(seg) {
-            Some((name, expr)) => kw.push((name.to_string(), parse_arg(expr, params)?)),
+            Some((name, expr)) => {
+                // `m(x=1, x=2)` is a template-parse error in Jinja
+                // (Python's "keyword argument repeated") — refuse
+                // rather than last-wins a call the compile rejects.
+                if kw.iter().any(|(n, _)| n == name) {
+                    return None;
+                }
+                kw.push((name.to_string(), parse_arg(expr, params)?));
+            }
             None => pos.push(parse_arg(seg, params)?),
         }
     }

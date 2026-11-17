@@ -11875,7 +11875,7 @@ fn fix_reparse_uses_the_same_expanded_render() {
             raw,
             &plan.edits,
             SqlDialect::Generic,
-            Some((&dag, "model.p.m"))
+            Some((&dag, "model.p.m", &res))
         ),
         Ok(" {{ gen() }}".to_string())
     );

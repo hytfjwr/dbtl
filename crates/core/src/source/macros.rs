@@ -398,12 +398,20 @@ pub(crate) fn bind_slots<'a, A>(
 }
 
 /// Would dbt reject this call's shape — a positional past the arity, a
-/// keyword naming no parameter, or one re-naming a slot a positional
-/// already filled (Python's "multiple values" TypeError)? The provable
+/// keyword naming no parameter, one re-naming a slot a positional
+/// already filled (Python's "multiple values" TypeError), or the same
+/// keyword spelled twice ("keyword argument repeated")? The provable
 /// passes refuse rather than approximate a call the compile itself
 /// rejects.
 pub(crate) fn call_shape_valid<A>(params: &[Param], pos: &[A], kw: &[(String, A)]) -> bool {
     if pos.len() > params.len() {
+        return false;
+    }
+    if kw
+        .iter()
+        .enumerate()
+        .any(|(i, (name, _))| kw[..i].iter().any(|(n, _)| n == name))
+    {
         return false;
     }
     kw.iter().all(|(name, _)| {

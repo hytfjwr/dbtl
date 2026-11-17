@@ -187,13 +187,15 @@ impl ApplyRefusal {
 /// `Ok(new)` is the file's post-fix content; `new == text` never
 /// happens on a non-empty edit list (the ranges are non-empty by
 /// construction) but costs the caller nothing to compare anyway.
-/// `node` (`dag` + node uid) lets the post-edit re-parse expand the
-/// same `{{ m(…) }}`s the judged render did.
+/// `node` (`dag` + uid + the batch's resolver) lets the post-edit
+/// re-parse expand the same `{{ m(…) }}`s the judged render did,
+/// reusing the resolver's memoized macro table rather than building
+/// one per call.
 pub fn apply_fixes(
     text: &str,
     edits: &[FixEdit],
     dialect: SqlDialect,
-    node: Option<(&Dag, &str)>,
+    node: Option<(&Dag, &str, &SqlParseResolver)>,
 ) -> Result<String, ApplyRefusal> {
     let mut ranges: Vec<Range<usize>> = Vec::with_capacity(edits.len());
     let mut reparses = false;

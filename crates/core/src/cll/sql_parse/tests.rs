@@ -4159,6 +4159,35 @@ fn unexpandable_calls_keep_the_placeholder_marks() {
             vec![],
         ),
         (
+            "dup_keyword",
+            // `m(a=…, a=…)` is a template-parse error in dbt ("keyword
+            // argument repeated") — the call keeps its placeholder.
+            "{{ m(a='x', a='y') }}",
+            vec![("m", vec!["a"], "{% macro m(a) %} {{ a }} {% endmacro %}")],
+            vec!["u", "v"],
+            vec![],
+        ),
+        (
+            "self_recursive",
+            // `a`'s body calls `a` — the depth cap cuts the chain, the
+            // call keeps its placeholder, and the withhold's own body
+            // walk judges the cycle opaque (withholds every candidate).
+            "{{ a() }}",
+            vec![("a", vec![], "{% macro a() %}{{ a() }}{% endmacro %}")],
+            vec![],
+            vec!["u", "v"],
+        ),
+        (
+            "mutual_recursive",
+            "{{ a() }}",
+            vec![
+                ("a", vec![], "{% macro a() %}{{ b() }}{% endmacro %}"),
+                ("b", vec![], "{% macro b() %}{{ a() }}{% endmacro %}"),
+            ],
+            vec![],
+            vec!["u", "v"],
+        ),
+        (
             "comment_tail",
             "{{ m() }}",
             vec![(
@@ -4299,6 +4328,43 @@ fn a_package_node_never_expands_root_macros() {
             ("unused_cte", "v".to_string()),
         ]
     );
+}
+
+#[test]
+fn expansion_uses_the_primary_package_axis_without_metadata() {
+    // No `metadata.project_name` — `project_name` falls back to the
+    // smallest uid segment (`aaa`) while `primary_package` takes the
+    // most frequent (`bbb`); def uids live under `macro.bbb.*`. The
+    // def filter, the `<ns>.call` match, and the lookup all ride the
+    // primary axis, so `{{ m() }}` on a `bbb` node still expands —
+    // `u` reads, `v` reports. (The same manifest's `aaa` node isn't
+    // root-scoped and keeps the placeholder.)
+    let body = "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ m() }}";
+    let mut m = manifest(
+        vec![
+            model("model.aaa.a", "select 1", &["id"]),
+            model("model.bbb.base", "select 1", &["id"]),
+            raw_model("model.bbb.x", body, &[]),
+        ],
+        &[
+            ("model.aaa.a", "model.bbb.x"),
+            ("model.bbb.base", "model.bbb.x"),
+        ],
+    );
+    m.macros.extend([(
+        "macro.bbb.m".to_string(),
+        RawMacro {
+            name: "m".into(),
+            macro_sql: Some("{% macro m() %} left join u on true {% endmacro %}".into()),
+            ..Default::default()
+        },
+    )]);
+    let dag = Dag::build(&m);
+    assert_eq!(dag.primary_package().as_deref(), Some("bbb"));
+    assert_eq!(dag.project_name(), Some("aaa"));
+    let facts = resolver().sql_facts(&dag, "model.bbb.x").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["v".to_string()]);
+    assert!(facts.withheld.is_empty(), "{:?}", facts.withheld);
 }
 
 #[test]

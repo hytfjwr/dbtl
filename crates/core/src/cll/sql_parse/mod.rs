@@ -383,8 +383,12 @@ pub struct SqlParseResolver {
     /// primary parse, so a later re-parse never overwrites it.
     unparsed_reasons: RefCell<BTreeMap<String, UnparsedReason>>,
     /// The dag's expandable `{% macro %}` table — built once per dag
-    /// (keyed on the dag's pointer identity, so a rebuilt Dag never
-    /// serves a stale table) and shared (`Rc`) by every node's render.
+    /// and shared (`Rc`) by every node's render. The slot keys on the
+    /// `&Dag`'s address — sound only while ONE `Dag` is live per
+    /// resolver (a freed `Dag`'s address could collide with a later
+    /// `Dag`'s): every caller borrows the dag for the duration of its
+    /// use, so the keyed `Dag` outlives the memo. A resolver handed
+    /// alternating `Dag`s rebuilds per call — correct, just uncached.
     macros_memo: RefCell<Option<(usize, Option<Rc<MacroTable>>)>>,
 }
 

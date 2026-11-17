@@ -400,7 +400,12 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
                 ));
                 continue;
             }
-            let text = match dbtl::apply_fixes(raw, &plan.edits, req.dialect, Some((&dag, uid))) {
+            let text = match dbtl::apply_fixes(
+                raw,
+                &plan.edits,
+                req.dialect,
+                Some((&dag, uid, &resolver)),
+            ) {
                 Ok(text) => text,
                 Err(kind) => {
                     warnings.insert(format!(
@@ -542,9 +547,12 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
                     if let Some(raw) = dag.raw_code(&c.uid) {
                         let edits = dbtl::plan_node_edits(&dag, &resolver, &c.uid, &reduced).edits;
                         if !edits.is_empty() {
-                            if let Ok(text) =
-                                dbtl::apply_fixes(raw, &edits, req.dialect, Some((&dag, &c.uid)))
-                            {
+                            if let Ok(text) = dbtl::apply_fixes(
+                                raw,
+                                &edits,
+                                req.dialect,
+                                Some((&dag, &c.uid, &resolver)),
+                            ) {
                                 if text != raw {
                                     kept_other = true;
                                     overlay.insert(c.uid.clone(), text);
