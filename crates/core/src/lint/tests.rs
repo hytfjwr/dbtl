@@ -11475,6 +11475,269 @@ fn a_clause_elided_model_flags_no_absence_dependent_findings() {
     );
 }
 
+// -- withheld candidates reach the summary -----------------------------------
+//
+// A replaced `{{ }}` that could invalidate an absence-finding candidate
+// withholds it — the model parses, no finding reports, and the pair
+// (model, rule) lands on `LintOutcome::withheld` so the summary can say
+// so. The pairs take the same drops findings take — suppression and an
+// unverifiable `enabled` remove them — and a pair only exists when its
+// rule ran and saw a real (post-filter) candidate.
+
+/// The rule set a model's withheld pairs carry — `[]` for no entry.
+fn withheld_rules(out: &LintOutcome, uid: &str) -> Vec<LintRule> {
+    out.withheld
+        .get(uid)
+        .map(|rs| rs.iter().copied().collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn withheld_pairs_report_the_rules_each_tag_muted() {
+    // `FROM a, b {{ m() }}` withholds the comma-join's missing ON; an
+    // unread CTE next to an opaque call withholds `unused_cte`; a tag
+    // after the ORDER BY withholds `order_by_without_limit`. A tag
+    // carrying no candidates counts nothing.
+    let m = manifest(
+        vec![
+            model_sql("a", "select 1 as id"),
+            model_sql("b", "select 1 as id"),
+            model_sql("joined", "select a.id from \"a\" a, \"b\" b {{ m() }}"),
+            model_sql(
+                "ctes",
+                "with u as (select * from {{ ref('a') }}),\n     v as (select * from {{ ref('a') }})\nselect * from u {{ mystery() }}",
+            ),
+            model_sql("sorted", "select a.id from \"a\" a order by id {{ m() }}"),
+            model_sql("tagged_clean", "select a.id from \"a\" a {{ m() }}"),
+        ],
+        vec![],
+        &[
+            ("model.p.a", "model.p.joined"),
+            ("model.p.b", "model.p.joined"),
+            ("model.p.a", "model.p.ctes"),
+            ("model.p.a", "model.p.sorted"),
+            ("model.p.a", "model.p.tagged_clean"),
+        ],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[
+        LintRule::CartesianJoin,
+        LintRule::UnusedCte,
+        LintRule::OrderByWithoutLimit,
+    ]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        withheld_rules(&out, "model.p.joined"),
+        vec![LintRule::CartesianJoin],
+        "{:?}",
+        out.withheld
+    );
+    assert_eq!(
+        withheld_rules(&out, "model.p.ctes"),
+        vec![LintRule::UnusedCte],
+        "{:?}",
+        out.withheld
+    );
+    assert_eq!(
+        withheld_rules(&out, "model.p.sorted"),
+        vec![LintRule::OrderByWithoutLimit],
+        "{:?}",
+        out.withheld
+    );
+    assert!(
+        !out.withheld.contains_key("model.p.tagged_clean"),
+        "a tag without candidates counts nothing: {:?}",
+        out.withheld
+    );
+    // Withheld pairs are never findings.
+    assert!(out.findings.is_empty(), "{:?}", out.findings);
+}
+
+#[test]
+fn a_partly_withheld_pair_still_counts() {
+    // `u` reads through a macro body the parse can see — the tag could
+    // reach it, so its candidacy withholds — while `v` stays plainly
+    // unread and still flags. The pair counts because at least one
+    // candidate muted.
+    let mut m = manifest(
+        vec![
+            model_sql("base", "select 1"),
+            model_sql(
+                "mixed",
+                "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ touch() }}",
+            ),
+        ],
+        vec![],
+        &[("model.p.base", "model.p.mixed")],
+    );
+    m.macros.insert(
+        "macro.p.touch".to_string(),
+        RawMacro {
+            name: "touch".into(),
+            macro_sql: Some("{% macro touch() %} left join u on true {% endmacro %}".into()),
+            ..Default::default()
+        },
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnusedCte]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedCte),
+        vec!["model.p.mixed"],
+        "`v` still reports — the tag can only reach `u`"
+    );
+    assert_eq!(
+        withheld_rules(&out, "model.p.mixed"),
+        vec![LintRule::UnusedCte],
+        "the withheld `u` still counts the pair: {:?}",
+        out.withheld
+    );
+}
+
+#[test]
+fn withheld_unknown_columns_keep_the_trusted_parent_gate() {
+    // `t.missing` names a column the parent's known list doesn't emit —
+    // withheld when the clause tag could supply it, but only counted
+    // when the parent's columns are a trusted authority (enforced
+    // contract here). A declared-but-unenforced list stays advisory, so
+    // `on_loose`'s same miss is no candidate either way.
+    let m = manifest(
+        vec![
+            model_sql_cols("trusted", "select 1 as id", &[("id", None)], true),
+            model_sql_cols("loose", "select 1 as id", &[("id", None)], false),
+            model_sql(
+                "on_trusted",
+                "select t.id, t.missing from \"trusted\" t {{ m() }}",
+            ),
+            model_sql(
+                "on_loose",
+                "select t.id, t.missing from \"loose\" t {{ m() }}",
+            ),
+        ],
+        vec![],
+        &[
+            ("model.p.trusted", "model.p.on_trusted"),
+            ("model.p.loose", "model.p.on_loose"),
+        ],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnknownColumnReference]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        withheld_rules(&out, "model.p.on_trusted"),
+        vec![LintRule::UnknownColumnReference],
+        "the trusted parent's withheld miss counts: {:?}",
+        out.withheld
+    );
+    assert!(
+        !out.withheld.contains_key("model.p.on_loose"),
+        "an untrusted parent's miss is no candidate: {:?}",
+        out.withheld
+    );
+    assert!(out.findings.is_empty(), "{:?}", out.findings);
+}
+
+#[test]
+fn withheld_pairs_drop_with_the_finding_they_stood_in_for() {
+    // `meta.dbtl.ignore` and `exclude:` silence the pair the same way
+    // they'd silence the finding — a muted candidate on a suppressed
+    // scope reports nothing.
+    let mut ignored = model_sql("ignored", "select a.id from \"a\" a, \"b\" b {{ m() }}");
+    ignored.1.meta = serde_json::json!({"dbtl": {"ignore": ["cartesian_join"]}})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let m = manifest(
+        vec![
+            model_sql("a", "select 1 as id"),
+            model_sql("b", "select 1 as id"),
+            model_sql("excluded", "select a.id from \"a\" a, \"b\" b {{ m() }}"),
+            ignored,
+            model_sql("kept", "select a.id from \"a\" a, \"b\" b {{ m() }}"),
+        ],
+        vec![],
+        &[
+            ("model.p.a", "model.p.excluded"),
+            ("model.p.b", "model.p.excluded"),
+            ("model.p.a", "model.p.ignored"),
+            ("model.p.b", "model.p.ignored"),
+            ("model.p.a", "model.p.kept"),
+            ("model.p.b", "model.p.kept"),
+        ],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = config_from("lint:\n  rules:\n    cartesian_join:\n      exclude: [excluded]\n");
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        out.withheld.keys().collect::<Vec<_>>(),
+        vec!["model.p.kept"],
+        "only the unsuppressed pair stays: {:?}",
+        out.withheld
+    );
+    assert_eq!(
+        withheld_rules(&out, "model.p.kept"),
+        vec![LintRule::CartesianJoin]
+    );
+}
+
+#[test]
+fn withheld_pairs_leave_models_whose_enabled_state_is_unverifiable() {
+    // Same drop `unparsed` takes: the pair asserts the muted candidate
+    // existed — unprovable on a node whose `enabled` couldn't verify.
+    let mut m = manifest(
+        vec![
+            model_sql("a", "select 1 as id"),
+            model_sql("b", "select 1 as id"),
+            model_sql("marked", "select a.id from \"a\" a, \"b\" b {{ m() }}"),
+        ],
+        vec![],
+        &[
+            ("model.p.a", "model.p.marked"),
+            ("model.p.b", "model.p.marked"),
+        ],
+    );
+    m.enabled_unverifiable.insert("model.p.marked".to_string());
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        out.withheld.is_empty(),
+        "an unverifiable model reports no pairs: {:?}",
+        out.withheld
+    );
+}
+
+#[test]
+fn withheld_pairs_need_their_rule_to_run() {
+    // `unused_cte` alone ran — the comma-join's muted candidate reports
+    // nothing because `cartesian_join` never saw it.
+    let m = manifest(
+        vec![
+            model_sql("a", "select 1 as id"),
+            model_sql("b", "select 1 as id"),
+            model_sql("joined", "select a.id from \"a\" a, \"b\" b {{ m() }}"),
+        ],
+        vec![],
+        &[
+            ("model.p.a", "model.p.joined"),
+            ("model.p.b", "model.p.joined"),
+        ],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let out = lint_outcome(&dag, &cfg_only(&[LintRule::UnusedCte]), Some(&res), None);
+    assert!(
+        out.withheld.is_empty(),
+        "a rule that never ran records no pairs: {:?}",
+        out.withheld
+    );
+}
+
 #[test]
 fn fix_planning_refuses_models_whose_render_elided_a_clause() {
     // Every fixable finding on a clause-elided model refuses — the parse

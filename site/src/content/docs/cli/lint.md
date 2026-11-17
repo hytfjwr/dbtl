@@ -250,6 +250,7 @@ The `json` report's `summary` always carries `errors`, `warnings`, `baselined`, 
 | --- | ------------ |
 | `suppressed` | A finding was suppressed. It holds the total, the `exclude`/`meta` split, and how many recorded no reason. |
 | `unparsed_models` | Models carried SQL the parser could not read. It is `{count, names, reasons}` — `reasons` maps each name to why its parse failed. A model whose `enabled` value can't be evaluated stays out of all three, like its findings. |
+| `withheld` | A replaced `{{ }}` tag could have added the condition an absence-finding candidate lacked, so the candidate was withheld rather than reported. It is `{count, names, rules}` — `rules` maps each name to the rule ids that withheld. Informational only: withheld pairs are never findings, so they never gate, never count toward `--fail-on`, and never enter a baseline. The text and concise summaries print the same set on one line plus a help line; the definitive call is `dbt compile` followed by linting `target/manifest.json` (it carries `compiled_code`). |
 | `exclude_entries_without_reason` | `suppressions_without_reason` ran — the count of `.dbtl.yml` `exclude:` entries carrying no reason. |
 | `fixed` | The run used `--fix` or `--fix-dry-run` and at least one file changed (or would have). |
 | `fix_refused` | A fix pass refused at least one edit — `[{file, rule, reason}]` per refusal, in file order. |
