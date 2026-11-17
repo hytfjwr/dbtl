@@ -5,7 +5,7 @@
 mod common;
 use common::{
     copy_tree, manifest_path as fixture_manifest, run, run_env,
-    sample_manifest_path as sample_manifest, SAMPLE_PROJECT,
+    sample_manifest_path as sample_manifest, LOGISTICS_MANIFEST, LOGISTICS_PROJECT, SAMPLE_PROJECT,
 };
 use std::path::PathBuf;
 
@@ -1074,4 +1074,174 @@ fn check_select_empty_match_warns_and_gates_pass() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("PASS coverage: 0/0"));
+}
+
+// ---- `impact` macro reasons across load modes ---------------------------
+
+/// `impact --format json` stdout's `modified` list parsed to its
+/// `(name, "reason; reason")` rows.
+fn modified_rows(out: &std::process::Output) -> Vec<(String, String)> {
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    v["modified"]
+        .as_array()
+        .expect("modified is a list")
+        .iter()
+        .map(|r| {
+            (
+                r[0].as_str().unwrap_or_default().to_string(),
+                r[1].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn impact_source_vs_manifest_reports_no_phantom_macro_change() {
+    // Source current vs manifest baseline: an unchanged project macro is
+    // no change — source mode stores the same `{% macro %}…{% endmacro %}`
+    // block the manifest records, so the pair compares clean.
+    let out = run(&[
+        "impact",
+        "--source",
+        sample_project().to_str().unwrap(),
+        "--diff",
+        sample_manifest().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let reasons: Vec<String> = modified_rows(&out).into_iter().map(|(_, r)| r).collect();
+    assert!(
+        !reasons.iter().any(|r| r.contains("macro:")),
+        "an unchanged macro must not produce a macro: reason: {reasons:?}"
+    );
+}
+
+#[test]
+fn impact_manifest_vs_source_reports_no_phantom_macro_change() {
+    // Manifest current vs source baseline: the manifest's `macros` map
+    // reaches far beyond the project's own table — dbt-internal defs,
+    // `{% test %}` blocks, materializations, installed-package defs — and
+    // a source load can hold none of them. Presence alone is a blind
+    // spot, not a change.
+    let out = run(&[
+        "impact",
+        "--manifest",
+        LOGISTICS_MANIFEST,
+        "--diff",
+        LOGISTICS_PROJECT,
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows = modified_rows(&out);
+    assert!(
+        !rows.is_empty(),
+        "the fixture's known cross-mode diffs must still land — \
+         otherwise the macro exclusion proves nothing"
+    );
+    assert!(
+        !rows.iter().any(|(_, r)| r.contains("macro:")),
+        "blind-spot macro records must not read as changes: {rows:?}"
+    );
+}
+
+/// `bool_var`'s raise call — the string the changed-macro tests rewrite.
+/// Editing the message moves `macro_sql` while leaving the macro's
+/// evaluated shape (and so every `enabled` verdict) untouched.
+const BOOL_VAR_RAISE: &str = "{{ exceptions.raise_compiler_error(\"missing flag: \" ~ name) }}";
+
+#[test]
+fn impact_source_vs_manifest_reports_a_changed_project_macro() {
+    // An edit inside a root `{% macro %}` is the change raw SQL can never
+    // show — it must still land as `macro:<name>` on the callers.
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("proj");
+    copy_tree(&sample_project(), &proj);
+    let mac = proj.join("macros/bool_var.sql");
+    let text = std::fs::read_to_string(&mac).unwrap();
+    assert!(
+        text.contains(BOOL_VAR_RAISE),
+        "the fixture's raise call is intact"
+    );
+    std::fs::write(
+        &mac,
+        text.replace(
+            BOOL_VAR_RAISE,
+            "{{ exceptions.raise_compiler_error(\"gone: \" ~ name) }}",
+        ),
+    )
+    .unwrap();
+    let out = run(&[
+        "impact",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        sample_manifest().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows = modified_rows(&out);
+    let (_, reasons) = rows
+        .iter()
+        .find(|(n, _)| n == "stg_macro_enabled")
+        .unwrap_or_else(|| panic!("stg_macro_enabled must be modified: {rows:?}"));
+    assert!(
+        reasons.contains("macro:bool_var"),
+        "a moved project macro must report macro:bool_var: {rows:?}"
+    );
+}
+
+#[test]
+fn impact_manifest_vs_source_reports_a_changed_project_macro() {
+    // The reverse direction: a manifest current carrying a moved
+    // `macro_sql` vs a source baseline — the delta lands on the macro's
+    // callers through the same comparable set.
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = tmp.path().join("manifest.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(LOGISTICS_MANIFEST).unwrap()).unwrap();
+    let sql = &mut v["macros"]["macro.logistics.utilization_pct"]["macro_sql"];
+    let moved = sql
+        .as_str()
+        .expect("utilization_pct carries macro_sql")
+        .replace("100.0", "101.0");
+    *sql = serde_json::Value::String(moved);
+    std::fs::write(&manifest, serde_json::to_vec(&v).unwrap()).unwrap();
+    let out = run(&[
+        "impact",
+        "--manifest",
+        manifest.to_str().unwrap(),
+        "--diff",
+        LOGISTICS_PROJECT,
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows = modified_rows(&out);
+    let (_, reasons) = rows
+        .iter()
+        .find(|(n, _)| n == "fct_carrier_performance")
+        .unwrap_or_else(|| panic!("fct_carrier_performance must be modified: {rows:?}"));
+    assert!(
+        reasons.contains("macro:utilization_pct"),
+        "a moved project macro must report macro:utilization_pct: {rows:?}"
+    );
 }

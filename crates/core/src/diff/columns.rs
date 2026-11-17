@@ -661,9 +661,15 @@ pub(super) fn modified_reasons(base: &Dag, current: &Dag, uid: &str) -> Vec<Stri
 /// two calls deep still lands on the model. The walk is `seen`-guarded, so a
 /// macro cycle terminates instead of looping.
 ///
-/// Empty when either Dag lacks macro data — synthesized source-mode manifests
-/// carry no macros, so a manifest↔source diff reports no phantom `macro:`
-/// reasons (the same cross-mode exclusion the other surfaces get).
+/// When either side is source mode the comparable set narrows to the
+/// root project's `{% macro %}` definitions — the one record shape source
+/// mode produces (see [`Dag::is_root_macro_def`]). A real manifest also
+/// registers `{% test %}`/`{% data_test %}` blocks, materializations, and
+/// every installed-package def under `macro.*`, none of which a source
+/// load can ever contain — presence alone can't mark them changed, so a
+/// uid counts only when a side that carries it classifies it as a root
+/// def. One-sided presence INSIDE that set still reads as added/removed,
+/// the way a deleted project macro stays a change.
 pub(super) fn macro_change_reasons(
     base: &Dag,
     current: &Dag,
@@ -672,9 +678,15 @@ pub(super) fn macro_change_reasons(
     if base.macros().is_empty() && current.macros().is_empty() {
         return out;
     }
+    // A manifest↔source pair compares only the macro records source mode
+    // can see; manifest↔manifest keeps the whole `macros` map.
+    let source_in_pair = base.is_source_mode() || current.is_source_mode();
 
     let mut changed: BTreeSet<String> = BTreeSet::new();
     for uid in base.macros().keys().chain(current.macros().keys()) {
+        if source_in_pair && !(base.is_root_macro_def(uid) || current.is_root_macro_def(uid)) {
+            continue;
+        }
         let changed_here = match (base.macros().get(uid), current.macros().get(uid)) {
             (Some(b), Some(c)) => b.sql != c.sql,
             // Present on one side only: added or removed — either way the

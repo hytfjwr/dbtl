@@ -3862,6 +3862,97 @@ fn comment_and_raw_calls_produce_no_edges() {
 }
 
 #[test]
+fn macro_sql_stores_the_full_definition_block() {
+    // `RawMacro.macro_sql` must byte-match what a real manifest records:
+    // from the `{%` of `{% macro %}` through the `%}` of `{% endmacro %}`
+    // — a `{# #}` comment BEFORE the def stays out, one INSIDE stays in,
+    // whitespace control pulls the whitespace it eats into the slice, and
+    // the file's stripped bounds fence it (dbt strips before scanning).
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[],
+        &[(
+            "macros",
+            concat!(
+                "{# a comment BEFORE the def stays out #}\n",
+                "{% macro plain() %}\n",
+                "{# inside the body, it stays #}\n",
+                "{{ 1 }}\n",
+                "{% endmacro %}\n",
+                "   {%- macro padded() -%}\n",
+                "{{ 2 }}\n",
+                "{%- endmacro -%}   \n",
+                "trailing text keeps {%- macro after() %}x{% endmacro %}",
+            ),
+        )],
+        None,
+    );
+    let m = manifest_from_source(dir.path()).unwrap();
+    let sql = |name: &str| {
+        m.macros[&format!("macro.p.{name}")]
+            .macro_sql
+            .clone()
+            .unwrap()
+    };
+    assert_eq!(
+        sql("plain"),
+        "{% macro plain() %}\n{# inside the body, it stays #}\n{{ 1 }}\n{% endmacro %}"
+    );
+    // `{%-` absorbs every whitespace byte before the tag (`\n   `); `-%}`
+    // absorbs the run after it (`   \n`) — both stops inside the text.
+    assert_eq!(
+        sql("padded"),
+        "\n   {%- macro padded() -%}\n{{ 2 }}\n{%- endmacro -%}   \n"
+    );
+    assert_eq!(sql("after"), " {%- macro after() %}x{% endmacro %}");
+}
+
+#[test]
+fn macro_sql_spans_multiple_defs_in_one_file() {
+    // Each definition keeps only its own block — shared-file siblings
+    // never bleed in, and a def unterminated at EOF (dbt errors; the
+    // load stays lenient) runs to the stripped end. `{% test %}` /
+    // `{% materialization %}` blocks never register at all: only the
+    // literal `macro` keyword collects, the way dbt's own registrations
+    // under `macro.*` stay out of the comparable set.
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[],
+        &[(
+            "macros",
+            concat!(
+                "{% macro a() %}first{% endmacro %}",
+                "{% test pos() %}t{% endtest %}",
+                "{% materialization view %}m{% endmaterialization %}",
+                "{% macro b() %}second{% endmacro %}  \n",
+                "{% macro tail() %}unclosed body",
+            ),
+        )],
+        None,
+    );
+    let m = manifest_from_source(dir.path()).unwrap();
+    let sql = |name: &str| {
+        m.macros[&format!("macro.p.{name}")]
+            .macro_sql
+            .clone()
+            .unwrap()
+    };
+    assert_eq!(sql("a"), "{% macro a() %}first{% endmacro %}");
+    assert_eq!(sql("b"), "{% macro b() %}second{% endmacro %}");
+    assert_eq!(sql("tail"), "{% macro tail() %}unclosed body");
+    assert!(
+        !m.macros.contains_key("macro.p.test_pos")
+            && !m
+                .macros
+                .contains_key("macro.p.materialization_view_default"),
+        "non-macro blocks never collect: {:?}",
+        m.macros.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn model_local_definitions_do_not_edge_or_configure() {
     let dir = tempfile::tempdir().unwrap();
     macro_project(

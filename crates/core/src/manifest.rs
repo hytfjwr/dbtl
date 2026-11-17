@@ -649,7 +649,9 @@ pub struct RawUnitTestIo {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawMacro {
     pub name: String,
-    /// The macro's Jinja body — the real dbt manifest field name (v12).
+    /// The complete `{% … %}…{% end… %}` block (dbt's `full_block`) —
+    /// the real dbt manifest field name (v12); source mode stores the
+    /// same slice so the diff compares one surface.
     #[serde(default)]
     pub macro_sql: Option<String>,
     #[serde(default)]
