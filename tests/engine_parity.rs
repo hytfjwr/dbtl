@@ -331,6 +331,46 @@ fn lint_preset_and_categories_config_matches_the_cli() {
     }
 }
 
+/// `summary.withheld` travels the same lint path on both sides: a
+/// manifest whose `raw_code` carries `{{ }}` but no `compiled_code`
+/// resolves to the tagged source, withholds the comma-join candidate
+/// the tag could have saved, and lifts the (model, rule) pair into the
+/// text/json bodies the CLI prints.
+#[test]
+fn lint_withheld_summary_matches_the_cli() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = r#"{"metadata": {"project_name": "v"},
+ "nodes": {
+  "model.v.joined": {
+   "name": "joined", "resource_type": "model", "package_name": "v",
+   "path": "joined.sql",
+   "raw_code": "select a.id from \"a\" a, \"b\" b {{ m() }}\n"
+  }
+ },
+ "sources": {}, "parent_map": {}, "child_map": {}}"#;
+    let m = tmp.path().join("manifest.json");
+    std::fs::write(&m, manifest).unwrap();
+    let (engine, _) = Engine::load(&LoadInput {
+        manifest: manifest.to_string(),
+        ..LoadInput::default()
+    })
+    .expect("the withheld manifest loads");
+    let opts = LintOptions::default();
+    // The parity asserts below are only meaningful if the withheld
+    // path really ran — check the pair reached both bodies.
+    let out = engine.lint(&opts).expect("engine lint runs");
+    assert!(
+        out.text.contains("joined (cartesian_join)"),
+        "the withheld pair reaches the text body: {}",
+        out.text
+    );
+    assert!(
+        out.json.contains("\"withheld\""),
+        "summary.withheld reaches the json body"
+    );
+    assert_lint_parity(&m, &engine, &opts, &[]);
+}
+
 // ---- column-lineage parity: `dbtl columns` ----------------------------
 
 /// `dbtl columns <m> <target> [--upstream] [--format json]` against the

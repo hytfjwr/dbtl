@@ -3171,6 +3171,18 @@ fn withheld_pairs_report_in_lint_text_and_json() {
         json["summary"]["withheld"]["rules"],
         serde_json::json!({"ctes": ["unused_cte"], "joined": ["cartesian_join"]})
     );
+    let out = lint_src(
+        &root,
+        &[&rules[..], &["--format", "concise", "--color", "never"][..]].concat(),
+    );
+    assert!(
+        stdout(&out).contains(
+            "2 models had SQL findings withheld next to {{…}} tags: \
+             ctes (unused_cte), joined (cartesian_join)"
+        ),
+        "the concise summary carries the same line: {}",
+        stdout(&out)
+    );
 }
 
 #[test]
