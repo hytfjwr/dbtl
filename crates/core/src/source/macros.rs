@@ -228,7 +228,10 @@ pub(super) struct MacroDef {
     /// The body's every other call (`config` excluded — a context call,
     /// never a dep carrier).
     calls: Vec<BodyCall>,
-    /// The macro's body text — `RawMacro.macro_sql`'s source-mode value.
+    /// The complete `{% macro %}…{% endmacro %}` block — the same text a
+    /// real manifest stores in `macro_sql` (dbt's `full_block`), NOT the
+    /// body the deps/calls/`shape` fields reduce. Exists only so the
+    /// diff compares the same surface a real manifest records.
     sql: String,
     /// The body reduced to the shape the `enabled` evaluator can run —
     /// [`value_shape`]'s `Some`, or `None` when the body does anything
@@ -495,16 +498,18 @@ pub(super) struct Macros {
 
 impl Macros {
     /// Read every `.sql` under `macro_paths` once and reduce each
-    /// `{% macro name(sig) %}…{% endmacro %}` to its parameters and the
-    /// dependency-relevant calls in its body. A name defined twice keeps
+    /// `{% macro name(sig) %}…{% endmacro %}` to its parameters, the
+    /// dependency-relevant calls in its body, and the whole definition
+    /// block for `RawMacro.macro_sql`. A name defined twice keeps
     /// the LAST definition (dbt's namespacing overwrites on re-parse too)
     /// with a warning; `{% test %}`/`{% materialization %}` blocks aren't
     /// macro calls — only the literal `macro` keyword counts.
     pub(super) fn load(dir: &Path, macro_paths: &[String], warnings: &mut Vec<String>) -> Self {
         let mut defs: BTreeMap<String, MacroDef> = BTreeMap::new();
         for (file, _) in collect_with_root(dir, macro_paths, "sql") {
-            let masked = mask_jinja_comments(&read(&file)).into_owned();
-            for (name, def) in macro_defs(&masked) {
+            let text = read(&file);
+            let masked = mask_jinja_comments(&text);
+            for (name, def) in macro_defs(masked.as_ref(), &text) {
                 if defs.insert(name.clone(), def).is_some() {
                     warnings.push(format!(
                         "duplicate macro '{name}' — keeping the last definition: {}",
@@ -558,6 +563,8 @@ impl Macros {
 
     /// The project's own macro table entry — `RawManifest.macros`'s
     /// source-mode content: one `RawMacro` per collected definition, its
+    /// `macro_sql` the complete `{% macro %}…{% endmacro %}` block a real
+    /// manifest stores (the surface `macro_change_reasons` compares), its
     /// `depends_on.macros` the project callees its body names (the
     /// macro→macro call graph `Dag::macros` walks for shared-macro
     /// impact).
@@ -772,8 +779,20 @@ impl Macros {
 /// `{% endmacro %}` — Jinja forbids nesting, so no depth tracking. The
 /// `depends_on`-relevant calls are collected from the body's tags exactly
 /// like a model's would be.
-fn macro_defs(text: &str) -> Vec<(String, MacroDef)> {
-    let bytes = text.as_bytes();
+///
+/// `masked` drives every offset (`{# #}`/`{% comment %}`/`{% raw %}`
+/// bodies hide their tags from the scan) while `original` — the same
+/// file unmasked, equal byte length — supplies the stored `sql` text: a
+/// real manifest's `macro_sql` is the file's own bytes, comments inside
+/// the body included. The slice reproduces dbt's `full_block`: from the
+/// opening `{%` through the closing `%}` of `{% endmacro %}`, extended
+/// when a tag carries whitespace control — `{%-` absorbs the whitespace
+/// before it, `-%}` the whitespace after it — and bounded by the
+/// file's stripped bounds, which dbt applies before scanning.
+fn macro_defs(masked: &str, original: &str) -> Vec<(String, MacroDef)> {
+    let bytes = masked.as_bytes();
+    let strip_start = original.len() - original.trim_start().len();
+    let strip_end = original.trim_end().len();
     let mut out = Vec::new();
     let mut i = 0usize;
     while i + 1 < bytes.len() {
@@ -784,7 +803,7 @@ fn macro_defs(text: &str) -> Vec<(String, MacroDef)> {
         let Some(close) = jinja_tag_close(bytes, open) else {
             break;
         };
-        let body = &text[open + 2..close];
+        let body = &masked[open + 2..close];
         let (word, rest) = tag_word(body);
         if word != "macro" {
             i = close + 2;
@@ -813,24 +832,48 @@ fn macro_defs(text: &str) -> Vec<(String, MacroDef)> {
         // The body runs to the matching `{% endmacro %}`; the next macro
         // scan resumes after that tag (a body can never contain a macro
         // declaration — Jinja forbids nesting).
-        let mut body_end = text.len();
-        let mut next_i = text.len();
+        let mut body_end = masked.len();
+        let mut end_close = masked.len();
+        let mut end_dash = false;
+        let mut next_i = masked.len();
         let mut j = close + 2;
         while let Some(rel) = find_subslice(bytes, j, b"{%") {
             let Some(eclose) = jinja_tag_close(bytes, rel) else {
                 break;
             };
-            let (eword, _) = tag_word(&text[rel + 2..eclose]);
+            let (eword, _) = tag_word(&masked[rel + 2..eclose]);
             if eword == "endmacro" {
                 body_end = rel;
+                end_close = eclose + 2;
+                end_dash = bytes[eclose - 1] == b'-';
                 next_i = eclose + 2;
                 break;
             }
             j = eclose + 2;
         }
+        // `{%-` reaches back over the preceding whitespace, `-%}` forward
+        // over the following — the same reach dbt's block regex gives
+        // those arms, floored/capped at the stripped file bounds. An
+        // unterminated definition (dbt errors; the load stays lenient)
+        // simply runs to the stripped end.
+        let def_start = if bytes[open + 2] == b'-' {
+            original[..open].trim_end().len().max(strip_start)
+        } else {
+            open
+        };
+        let def_end = if end_dash {
+            let rest = &original[end_close..];
+            (end_close + rest.len() - rest.trim_start().len()).min(strip_end)
+        } else {
+            end_close.min(strip_end)
+        };
         out.push((
             name.to_string(),
-            macro_def(&text[close + 2..body_end], params),
+            macro_def(
+                &masked[close + 2..body_end],
+                params,
+                &original[def_start..def_end],
+            ),
         ));
         i = next_i;
     }
@@ -839,8 +882,10 @@ fn macro_defs(text: &str) -> Vec<(String, MacroDef)> {
 
 /// Reduce a macro body to its dep calls and its other calls — the body's
 /// `jinja_calls` split on `ref`/`source`/`config`, each call's args
-/// classified against the macro's parameters.
-fn macro_def(body: &str, params: Vec<Param>) -> MacroDef {
+/// classified against the macro's parameters. `sql` is the whole
+/// definition block ([`macro_defs`] sliced it from the unmasked file),
+/// kept verbatim for [`MacroDef::sql`].
+fn macro_def(body: &str, params: Vec<Param>, sql: &str) -> MacroDef {
     let scope: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
     let mut deps = Vec::new();
     let mut calls = Vec::new();
@@ -863,7 +908,7 @@ fn macro_def(body: &str, params: Vec<Param>) -> MacroDef {
         params,
         deps,
         calls,
-        sql: body.to_string(),
+        sql: sql.to_string(),
         shape: value_shape(body),
     }
 }

@@ -1,5 +1,7 @@
 use super::*;
-use crate::manifest::{RawConfig, RawDependsOn, RawMacro, RawManifest, RawNode, RawTestMetadata};
+use crate::manifest::{
+    RawConfig, RawDependsOn, RawMacro, RawManifest, RawNode, RawTestMetadata, RefScope,
+};
 use std::collections::HashMap;
 
 fn model(name: &str, materialized: Option<&str>, sql: &str) -> RawNode {
@@ -404,24 +406,122 @@ fn macro_reason_appends_after_the_sql_reason_in_fixed_order() {
     );
 }
 
+/// Build `m` under the source-mode marker — a `ref_scope` payload's
+/// presence is the load's provenance flag [`Dag::is_source_mode`] reads.
+fn source_mode(m: RawManifest) -> Dag {
+    let mut m = m;
+    m.ref_scope = Some(RefScope::default());
+    Dag::build(&m)
+}
+
+/// A recorded `macro_sql` block — the complete `{% … %}…{% end… %}`
+/// text both modes store.
+fn block(head: &str, end: &str, body: &str) -> String {
+    format!("{{% {head} %}}{body}{{% {end} %}}")
+}
+
 #[test]
-fn source_mode_side_disables_macro_detection() {
-    // A synthesized source-mode manifest carries no macros: the SAME node
-    // set minus macro data must not report phantom macro: reasons (the
-    // cross-mode exclusion, like seed columns).
-    let base = Dag::build(&manifest_with_macros(
-        vec![("macro.p.cents", mac("cents", "v1", &[]))],
+fn cross_mode_macro_detection_compares_only_root_defs() {
+    // A manifest registers far more under `macro.*` than a source load
+    // can carry: dbt-internal and installed-package defs, `{% test %}`
+    // blocks, materializations. Those records are blind spots, never
+    // changes — only the matching root `{% macro %}` def compares, and
+    // identical blocks must not read as edits in EITHER direction. The
+    // model's call list names every blind spot on purpose: the reason
+    // walk surfaces only uids reachable through `depends_on.macros`, so
+    // without the comparable-set gate each one would land a `macro:`
+    // reason here.
+    let manifest_side = Dag::build(&manifest_with_macros(
+        vec![
+            (
+                "macro.p.cents",
+                mac("cents", &block("macro cents", "endmacro", "v1"), &[]),
+            ),
+            (
+                "macro.dbt.clone",
+                mac("clone", &block("macro x", "endmacro", "x"), &[]),
+            ),
+            (
+                "macro.pkg.wrap",
+                mac("wrap", &block("macro x", "endmacro", "x"), &[]),
+            ),
+            (
+                "macro.p.test_pos",
+                mac("test_pos", &block("test pos", "endtest", "x"), &[]),
+            ),
+            (
+                "macro.p.materialization_view_default",
+                mac(
+                    "materialization_view_default",
+                    &block("materialization view", "endmaterialization", "x"),
+                    &[],
+                ),
+            ),
+        ],
+        &[
+            "macro.p.cents",
+            "macro.dbt.clone",
+            "macro.pkg.wrap",
+            "macro.p.test_pos",
+            "macro.p.materialization_view_default",
+        ],
+    ));
+    let source_side = source_mode(manifest_with_macros(
+        vec![(
+            "macro.p.cents",
+            mac("cents", &block("macro cents", "endmacro", "v1"), &[]),
+        )],
+        &[
+            "macro.p.cents",
+            "macro.dbt.clone",
+            "macro.pkg.wrap",
+            "macro.p.test_pos",
+            "macro.p.materialization_view_default",
+        ],
+    ));
+    for (base, current) in [
+        (&manifest_side, &source_side),
+        (&source_side, &manifest_side),
+    ] {
+        let diff = compute_diff(base, current);
+        assert!(
+            diff.is_empty(),
+            "blind-spot macro records read as changes: {diff:?}"
+        );
+    }
+}
+
+#[test]
+fn cross_mode_root_macro_change_and_one_sided_presence_report() {
+    // Inside the comparable set the usual rules still apply: a root
+    // `{% macro %}` whose block moved is `macro:<name>` on its callers,
+    // and a root def present on only ONE side reads as added/removed —
+    // a deleted project macro stays a change.
+    let manifest_side = Dag::build(&manifest_with_macros(
+        vec![(
+            "macro.p.cents",
+            mac("cents", &block("macro cents", "endmacro", "v1"), &[]),
+        )],
         &["macro.p.cents"],
     ));
-    let source_like = base_dag(); // no macros map at all
-    let diff = compute_diff(&base, &source_like);
-    assert!(
-        !diff
-            .modified
-            .values()
-            .flatten()
-            .any(|r| r.starts_with("macro:")),
-        "no macro reasons when one side has no macro data: {diff:?}"
+    let source_side = source_mode(manifest_with_macros(
+        vec![(
+            "macro.p.cents",
+            mac("cents", &block("macro cents", "endmacro", "v2"), &[]),
+        )],
+        &["macro.p.cents"],
+    ));
+    let diff = compute_diff(&manifest_side, &source_side);
+    assert_eq!(diff.modified["model.p.b"], vec!["macro:cents".to_string()]);
+
+    // Manifest-side-only root def: the source load never produced it —
+    // inside the set, so it counts as removed.
+    let empty_source = source_mode(manifest_with_macros(vec![], &["macro.p.cents"]));
+    let diff = compute_diff(&manifest_side, &empty_source);
+    assert_eq!(
+        diff.modified["model.p.b"],
+        vec!["macro:cents".to_string()],
+        "a root def the current side lacks is a removal, not a blind spot"
     );
 }
 
