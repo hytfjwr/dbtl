@@ -94,6 +94,7 @@ mod scan;
 mod scope;
 #[cfg(test)]
 mod tests;
+mod withhold;
 
 use ast::*;
 pub use dialect::SqlDialect;
@@ -106,6 +107,7 @@ use positions::{marked_relations, plain_positions};
 pub use positions::{MarkedRelations, SqlPositions};
 use scan::scan_statements;
 use scope::*;
+use withhold::Withhold;
 // ---------------------------------------------------------------------------
 // The resolver
 // ---------------------------------------------------------------------------
@@ -170,18 +172,57 @@ pub struct SqlFacts {
     /// shape; every other wildcard still flags.
     pub star_over_single_explicit_cte: bool,
     /// The winning render dropped a `{{ }}` at a clause boundary — the
-    /// parse can't see the clause the tag emits, so every fact proving
-    /// an ABSENCE (`cartesian`/`unresolved`/`unused_ctes`/
-    /// `unlimited_order_by`) is already empty. `--fix` planning refuses
-    /// the node outright; CLL resolves it by name-match like an
-    /// unparsable model. The model still counts as analyzed — it's not
-    /// on `unparsed`.
+    /// parse can't see the clause the tag emits, so `unresolved` is
+    /// already empty and the absence-facts a tag could invalidate have
+    /// been moved to `withheld`. `--fix` planning refuses the node
+    /// outright; CLL resolves it by name-match like an unparsable
+    /// model. The model still counts as analyzed — it's not on
+    /// `unparsed`.
     pub elided_clauses: bool,
     /// The winning render stood `(NULL)` in for a `{{ }}` on an
     /// `IN`/`ANY`/`SOME`/`ALL` right-hand side — the tag may expand to
-    /// a subquery reading a CTE, so `unused_ctes` stays empty and
-    /// `--fix` plans no CTE delete. Other facts still judge.
+    /// a subquery reading a CTE, so the per-tag withholdings weigh the
+    /// `unused_ctes` candidates and `--fix` plans no CTE delete. Other
+    /// facts still judge.
     pub in_rhs: bool,
+    /// The absence-finding candidates a replaced `{{ }}` withheld —
+    /// each entry's variant names its rule and carries the candidate's
+    /// own payload (the CTE name, the join arm's text, the column
+    /// reference). The lint summary reports them instead of them
+    /// vanishing like the old whole-model emptying; every other field
+    /// lists kept candidates only.
+    pub withheld: Vec<Withheld>,
+}
+
+/// One lint finding a replaced `{{ }}` withheld — the pre-withholding
+/// candidate, its rule, and the raw-SQL range of the `{{ … }}` judged
+/// responsible (the tag a withheld report can point at — the first
+/// culprit when several tags could take the same candidate).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Withheld {
+    /// The withheld candidate — rule and payload.
+    pub candidate: WithheldCandidate,
+    /// The culprit tag's byte range in the model's `raw_code`.
+    pub tag: std::ops::Range<usize>,
+}
+
+/// The candidate half of a [`Withheld`] — the pre-withholding value
+/// plus the rule it belonged to. `unused_cte` names CTEs withheld only
+/// when SOME replaced tag could read them — the `{{ codes() }}` hiding
+/// a join no longer silences `u` — and `cartesian_join` arms withhold
+/// only when a clause-boundary tag in their own SELECT could carry the
+/// missing condition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WithheldCandidate {
+    /// A `cartesian_join` candidate — the conditionless arm's display
+    /// text (one entry per occurrence).
+    CartesianJoin(String),
+    /// An `unknown_column_reference` candidate — `(parent uid, column)`.
+    UnknownColumn(String, String),
+    /// An `unused_cte` candidate — the CTE's normalized name.
+    UnusedCte(String),
+    /// The `order_by_without_limit` finding (a unitary flag).
+    OrderByWithoutLimit,
 }
 
 /// Why a model's SQL exists but the analyzer gave up on it — the reason
@@ -421,6 +462,7 @@ impl SqlParseResolver {
                 star_over_single_explicit_cte: an.star_over_single_explicit_cte,
                 elided_clauses: an.elided_clauses,
                 in_rhs: an.in_rhs,
+                withheld: an.withheld.clone(),
             })
         });
         self.facts_memo
@@ -481,7 +523,9 @@ impl SqlParseResolver {
             if raw.trim().is_empty() {
                 return None;
             }
-            plain_positions(raw, self.dialect).ok().map(Rc::new)
+            plain_positions(raw, self.dialect, Some((dag, uid)))
+                .ok()
+                .map(Rc::new)
         })();
         self.positions_memo
             .borrow_mut()
@@ -795,47 +839,91 @@ impl SqlParseResolver {
             // emits) or stood `(NULL)` in for on an `IN`/`ANY`/`SOME`/
             // `ALL` right-hand side (the tag may expand to a
             // CTE-reading subquery). Facts proving an ABSENCE stay
-            // unproven on the marked model — the join condition that
-            // never appears, the CTE nobody reads, the LIMIT missing
-            // under ORDER BY, the column no parent emits — so the
-            // fields come out empty before any rule reads them.
+            // unproven where a replaced tag could invalidate them — the
+            // join condition that never appears, the CTE nobody reads,
+            // the LIMIT missing under ORDER BY, the column no parent
+            // emits — so the per-tag judgments withhold candidate by
+            // candidate (and record what they took) instead of
+            // emptying the whole model.
             let elided = rendered.elided_clauses;
             let in_rhs = rendered.in_rhs;
+            let withhold = Withhold::new(dag, node, &rendered);
+            let mut withheld = Vec::new();
+            // `cartesian_join`: only a clause-boundary tag in the arm's
+            // own SELECT — positioned after the joined relation — can
+            // carry the missing ON/WHERE.
+            let mut cartesian = BTreeSet::new();
+            let mut cartesian_count = 0usize;
+            for (text, span) in &scan.cartesian_items {
+                match withhold.elides_cartesian(*span) {
+                    Some(tag) => withheld.push(Withheld {
+                        candidate: WithheldCandidate::CartesianJoin(text.clone()),
+                        tag,
+                    }),
+                    None => {
+                        cartesian.insert(text.clone());
+                        cartesian_count += 1;
+                    }
+                }
+            }
+            // `unused_cte`: a tag can read a CTE through the hidden
+            // clause or `(NULL)` subquery — per name, only when the
+            // tag's callee/args could carry the name.
+            let mut unused_ctes = Vec::new();
+            for (name, _) in scan.unread_ctes() {
+                match withhold.may_emit_cte(name) {
+                    Some(tag) => withheld.push(Withheld {
+                        candidate: WithheldCandidate::UnusedCte(name.clone()),
+                        tag,
+                    }),
+                    None => unused_ctes.push(name.clone()),
+                }
+            }
+            // `unresolved`: unchanged — one clause-boundary tag
+            // withholds the whole set, as before.
+            let unresolved = if elided {
+                if let Some(tag) = withhold.first_elider() {
+                    withheld.extend(ctx.unresolved.borrow().iter().map(|(p, c)| Withheld {
+                        candidate: WithheldCandidate::UnknownColumn(p.clone(), c.clone()),
+                        tag: tag.clone(),
+                    }));
+                }
+                ColSources::new()
+            } else {
+                ctx.unresolved.into_inner()
+            };
+            // `order_by_without_limit`: only a clause-boundary tag after
+            // the outer ORDER BY can emit the bound.
+            let mut unlimited_order_by = outer_order_by_span(query).is_some();
+            if let Some(ob) = outer_order_by_span(query) {
+                if let Some(tag) = withhold.elides_order_by(ob) {
+                    withheld.push(Withheld {
+                        candidate: WithheldCandidate::OrderByWithoutLimit,
+                        tag,
+                    });
+                    unlimited_order_by = false;
+                }
+            }
             Some(Rc::new(Analyzed {
                 scope,
                 out: res.out,
                 foj: res.foj,
                 unbounded_wildcard: !wildcards.is_empty(),
                 wildcard_count: wildcards.len(),
-                cartesian: if elided {
-                    Vec::new()
-                } else {
-                    scan.cartesian.iter().cloned().collect()
-                },
-                cartesian_count: if elided {
-                    0
-                } else {
-                    scan.cartesian_spans.len()
-                },
-                unresolved: if elided {
-                    ColSources::new()
-                } else {
-                    ctx.unresolved.into_inner()
-                },
+                cartesian: cartesian.into_iter().collect(),
+                cartesian_count,
+                unresolved,
                 duplicate_outputs: dup_order
                     .into_iter()
                     .zip(dup_counts)
                     .filter(|(_, c)| *c > 1)
                     .collect(),
-                unused_ctes: if elided || in_rhs {
-                    Vec::new()
-                } else {
-                    scan.unread_ctes().map(|(name, _)| name.clone()).collect()
-                },
-                unlimited_order_by: !elided && outer_order_by_span(query).is_some(),
+                unused_ctes,
+                unlimited_order_by,
                 star_over_single_explicit_cte: star_over_single_explicit_cte(query),
                 elided_clauses: elided,
                 in_rhs,
+                withheld,
             }))
         })();
         self.analyzing.borrow_mut().remove(node);

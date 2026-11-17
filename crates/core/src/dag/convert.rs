@@ -200,6 +200,7 @@ pub(super) fn macro_info(m: &RawMacro) -> MacroInfo {
     MacroInfo {
         name: m.name.clone(),
         sql: m.macro_sql.clone(),
+        params: m.arguments.iter().map(|a| a.name.clone()).collect(),
         depends_on: m.depends_on.macros.clone(),
     }
 }

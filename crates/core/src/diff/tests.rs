@@ -64,6 +64,7 @@ fn mac(name: &str, sql: &str, deps: &[&str]) -> RawMacro {
     RawMacro {
         name: name.into(),
         macro_sql: Some(sql.into()),
+        arguments: vec![],
         depends_on: RawDependsOn {
             nodes: vec![],
             macros: deps.iter().map(|d| d.to_string()).collect(),

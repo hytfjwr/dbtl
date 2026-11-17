@@ -1,5 +1,5 @@
 use super::*;
-use crate::manifest::{RawContract, RawManifest, RawNode, RawSource, RawTestMetadata};
+use crate::manifest::{RawContract, RawMacro, RawManifest, RawNode, RawSource, RawTestMetadata};
 use crate::project_config::{project_config_path, ProjectConfig, PROJECT_CONFIG_NAME};
 use crate::{Catalog, SqlDialect, SqlParseResolver, UnparsedReason};
 use std::collections::{BTreeSet, HashMap};
@@ -11397,6 +11397,45 @@ fn unresolved_references_source_scope_records_disabled_and_version_families() {
 // renders `(NULL)` and marks `in_rhs`. The marked model still parses —
 // it isn't `unparsed` — but facts that would prove an absence stay
 // unproven, and `--fix` plans no edit on them.
+
+#[test]
+fn an_unrelated_macro_no_longer_silences_the_model() {
+    // `a.id IN {{ codes() }}` — the `(NULL)` replacement can hide a
+    // subquery, but `codes()`'s body can't read `u`: the unused CTE
+    // reports instead of vanishing with the whole model's absence facts.
+    let mut m = manifest(
+        vec![
+            model_sql("base", "select 1 as id, 2 as v"),
+            model_sql(
+                "marked",
+                "with u as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }}),\n     b as (select * from {{ ref('base') }})\nselect * from a, b where a.id in {{ codes() }} and b.id in ('1')",
+            ),
+            model_sql(
+                "literal",
+                "with u as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }}),\n     b as (select * from {{ ref('base') }})\nselect * from a, b where a.id in ('1', '2') and b.id in ('1')",
+            ),
+        ],
+        vec![],
+        &[("model.p.base", "model.p.marked"), ("model.p.base", "model.p.literal")],
+    );
+    m.macros.insert(
+        "macro.p.codes".to_string(),
+        RawMacro {
+            name: "codes".into(),
+            macro_sql: Some("{% macro codes() %} ('1', '2') {% endmacro %}".into()),
+            ..Default::default()
+        },
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnusedCte]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedCte),
+        vec!["model.p.literal", "model.p.marked"],
+        "`u` is unread in both; an unrelated `{{ }}` no longer silences it"
+    );
+}
 
 #[test]
 fn a_clause_elided_model_flags_no_absence_dependent_findings() {

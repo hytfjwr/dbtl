@@ -936,7 +936,7 @@ fn verdict_value(v: Option<Enabled>) -> Enabled {
 /// Scan the call whose `(` ends at `start`: returns the text between the
 /// parens and the position just past the closing `)`. A bare `]`/`}` at
 /// depth 0 or an unclosed call is malformed → `None`.
-pub(super) fn scan_call_args(sql: &str, start: usize) -> Option<(&str, usize)> {
+pub(crate) fn scan_call_args(sql: &str, start: usize) -> Option<(&str, usize)> {
     // Byte-wise: every delimiter is ASCII and UTF-8 continuation bytes are
     // >= 0x80, so a multi-byte char can never fake a `(`, `)`, or quote.
     let bytes = sql.as_bytes();
@@ -1346,7 +1346,7 @@ pub(crate) fn lit_value(expr: &str) -> Option<serde_json::Value> {
 /// Split `s` at commas sitting at bracket-depth 0 and outside string quotes —
 /// the top-level kwargs of a `config(…)` call (a comma inside `{'a': 'b'}`,
 /// `[x, y]`, or a quoted string must not split the argument list).
-pub(super) fn top_level_segments(s: &str) -> Vec<&str> {
+pub(crate) fn top_level_segments(s: &str) -> Vec<&str> {
     top_level_segs(s).collect()
 }
 
@@ -2399,7 +2399,7 @@ const NO_CALL_TAGS: &[&str] = &[
 /// Unlike `site_head_re` there is no `\b` needed: the leading character
 /// class can only match at an identifier's start, so a longer identifier
 /// always wins the leftmost match (`xunion_raw(` captures `xunion_raw`).
-fn call_head_re() -> &'static Regex {
+pub(crate) fn call_head_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\(").unwrap()
@@ -2412,7 +2412,7 @@ fn call_head_re() -> &'static Regex {
 /// parens; `head` is the callee's byte offset in `text` — the position the
 /// deferred-body filter reads.
 #[derive(Debug, Clone)]
-pub(super) struct JinjaCall<'a> {
+pub(crate) struct JinjaCall<'a> {
     pub name: &'a str,
     pub args: &'a str,
     pub head: usize,
@@ -2433,7 +2433,7 @@ pub(super) struct JinjaCall<'a> {
 /// SQL text never produces a call; a head inside a Jinja string literal
 /// (`'{{ m() }}'`-shaped text) still matches, the same simplification
 /// [`call_sites_masked`] makes.
-pub(super) fn jinja_calls(text: &str) -> Vec<JinjaCall<'_>> {
+pub(crate) fn jinja_calls(text: &str) -> Vec<JinjaCall<'_>> {
     let bytes = text.as_bytes();
     let mut calls = Vec::new();
     let mut i = 0usize;
