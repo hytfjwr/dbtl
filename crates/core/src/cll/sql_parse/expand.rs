@@ -1147,8 +1147,8 @@ mod tests {
             // A dict iterates its keys in declaration order.
             (
                 "dict_iter",
-                "{% macro m() %}{% for k in {'b':1,'a':2} %}{{ k }}{% endfor %}{% endmacro %}",
-                "ba",
+                "{% macro m() %}{% for k in {'y2':1,'y1':2} %}{{ k }}{% endfor %}{% endmacro %}",
+                "y2y1",
             ),
             // A string iterates its characters.
             (
