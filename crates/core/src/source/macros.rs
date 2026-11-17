@@ -288,6 +288,13 @@ fn classify_expr(expr: &str, scope: &[String]) -> ArgExpr {
 /// bare identifier and the `=` a single assignment — `==`/`!=`/`<=`/`>=`
 /// are comparisons, a parenthesized/subscripted name is not a kwarg.
 pub(crate) fn split_kwarg(seg: &str) -> Option<(&str, &str)> {
+    let (name, expr) = split_assign(seg)?;
+    is_ident(name).then_some((name, expr))
+}
+
+/// `lhs = rhs` — the [`split_kwarg`] scan without the bare-identifier
+/// check on the left (a `{% set a, b = … %}` target list isn't one).
+pub(crate) fn split_assign(seg: &str) -> Option<(&str, &str)> {
     let b = seg.as_bytes();
     let (mut depth, mut quote) = (0usize, 0u8);
     let mut i = 0;
@@ -314,8 +321,7 @@ pub(crate) fn split_kwarg(seg: &str) -> Option<(&str, &str)> {
                 {
                     return None;
                 }
-                let name = seg[..i].trim();
-                return is_ident(name).then(|| (name, seg[i + 1..].trim()));
+                return Some((seg[..i].trim(), seg[i + 1..].trim()));
             }
             _ => {}
         }

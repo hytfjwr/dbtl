@@ -15,6 +15,11 @@ One line each — generated manifests are frozen output, never edit by hand:
   a JSON string on the wire) plus `ref()`/`v=` consumers and a
   `versions: include:`-scoped unit test. Manifest-only: source mode does
   not synthesize versions, so it stays out of `consistency.rs`.
+- `macroctl_manifest.json` — real-`dbt compile` output over
+  `macroctl_project/` — project macros whose output is decided by
+  arguments and literals alone (`{% set %}`/`{% if %}`/`{% for %}` with
+  `loop.*`, `range`, `| join`, `| length`, nested calls, and whitespace
+  control); the expansion-vs-`compiled_code` byte-match fixture.
 - `fusion_manifest.json` — hand-built `fusion_shop` manifest exercising dbt
   Fusion resource types (`check`, `operation`).
 - `packages_manifest.json` — hand-built `acme_analytics` manifest with
@@ -26,6 +31,10 @@ One line each — generated manifests are frozen output, never edit by hand:
   from; its `packages/shipkit/` subdir is a `local:` package dependency.
 - `versioned_project/` — the project `versioned_manifest.json` is built
   from (a `versions:` schema.yml and one `.sql` per version file).
+- `macroctl_project/` — the project `macroctl_manifest.json` is built
+  from: `status_codes` (the `IN`-list/`UNION ALL` pair), `union_tables`
+  (loop-var `ref`), `matrix` (nested `for`), `grade` (`elif`),
+  `numbered_cols` (`range`), `pad_cols` (whitespace control).
 - `packages_project/` — minimal source-mode project paired with
   `packages_manifest.json` for package-scope tests.
 - `collision_project/` — source-mode fixture where two files share one
@@ -37,9 +46,10 @@ One line each — generated manifests are frozen output, never edit by hand:
 
 ## Regeneration
 
-`sample_manifest.json`, `logistics_manifest.json`, and
-`versioned_manifest.json` are output of a real dbt run — regenerate them
-after changing anything in their project dirs:
+`sample_manifest.json`, `logistics_manifest.json`,
+`versioned_manifest.json`, and `macroctl_manifest.json` are output of a
+real dbt run — regenerate them after changing anything in their project
+dirs:
 
 ```sh
 cargo xtask regen-sample-manifest                      # sample (shortcut)
@@ -47,6 +57,8 @@ cargo xtask gen-fixture-manifest \
     --project tests/fixtures/logistics_project         # logistics
 cargo xtask gen-fixture-manifest \
     --project tests/fixtures/versioned_project         # versioned
+cargo xtask gen-fixture-manifest \
+    --project tests/fixtures/macroctl_project --dbt-version 1.12.7
 ```
 
 Both land at `tests/fixtures/<name>_manifest.json` by default; pass `--out`
@@ -69,7 +81,8 @@ other `*_project` dirs are hand-written and have no regen recipe.
 ## Licenses
 
 The generated manifests (`sample_manifest.json`,
-`logistics_manifest.json`, `versioned_manifest.json`) embed macro source text from
+`logistics_manifest.json`, `versioned_manifest.json`,
+`macroctl_manifest.json`) embed macro source text from
 [dbt-core](https://github.com/dbt-labs/dbt-core) and
 [dbt-duckdb](https://github.com/duckdb/dbt-duckdb), both distributed under
 the Apache License 2.0. The license text is stored in

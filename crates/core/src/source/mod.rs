@@ -272,8 +272,8 @@ use yaml::*;
 // machinery as the loaders' own pass, not a second implementation.
 pub use collect::mask_jinja_comments;
 pub(crate) use macros::{
-    bind_slots, call_shape_valid, parse_params, split_kwarg, Param, SlotSource, BUILTIN_BARE,
-    BUILTIN_NS, MAX_MACRO_DEPTH,
+    bind_slots, call_shape_valid, parse_params, split_assign, split_kwarg, Param, SlotSource,
+    BUILTIN_BARE, BUILTIN_NS, MAX_MACRO_DEPTH,
 };
 pub use paths::project_resource_dirs;
 pub use patterns::{
@@ -287,4 +287,5 @@ pub(crate) use patterns::{
 pub(crate) use patterns::{find_subslice, jinja_set_assigns, jinja_tag_close, tag_word};
 pub(crate) use python::{is_identifier, scan_python, PyCallKind};
 pub use vars::CliVars;
+pub(crate) use vars::{eval_render, py_float_repr, truthy, ArgVals, LoopInfo, Relation, Val};
 pub(crate) use yaml::scalar_to_string;

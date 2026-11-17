@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- SQL analysis now evaluates provable control flow inside a root-project
+  `{{ macro(…) }}` it expands: `{% set %}` bindings, `{% if %}`/`{% elif %}`/`{% else %}`
+  arms, `{% for %}` loops (including `for … if` filters and the `{% else %}` arm
+  an empty loop takes), `loop.*` metadata, `range()`, `| join`, `| length`,
+  membership and `is` tests, and nested expandable project macros. A macro like
+  `where s.code in {{ status_codes() }}` now parses as the tuple dbt writes, so
+  `unused_cte` and the other SQL rules judge it instead of withholding, and a
+  model whose whole statement is such a call parses instead of reporting
+  `Jinja generates the query`. Anything the arguments cannot decide — a `ref()`
+  relation used as a value, a `var()`, an unsupported tag, a recursive call,
+  a package macro, or a call spelling the template or Python parser rejects
+  (a spaced `-`/`+`, a positional after a keyword) — keeps the existing
+  placeholder render and withholding.
+
 ## [0.7.4] - 2026-11-17
 
 ### Added

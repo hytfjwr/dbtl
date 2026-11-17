@@ -2890,15 +2890,16 @@ enum JinjaExpr {
     Other(Vec<String>),
 }
 
-/// The `{{ … }}` body stripped of surrounding whitespace and Jinja's
-/// whitespace-control/sigil characters (`{{- … -}}`, `{{+ … +}}`,
-/// `{{~ … ~}}`) — the text `ref`/`source`/`this` matching reads.
+/// The `{{ … }}` body stripped of the tag-adjacent whitespace-control
+/// markers — `{{-`/`{{+` on the left, `-}}` on the right — which is the
+/// whole set Jinja accepts on an expression tag (`+}}`, `{{~`, `~}}`
+/// are template syntax errors there). Peel BEFORE trim: a marker reads
+/// only where it touches the delimiter, so a SPACED `{{ -x }}` keeps
+/// its unary `-` — an operator, not a control.
 pub(super) fn jinja_inner(inner: &str) -> &str {
-    inner
-        .trim()
-        .trim_start_matches(['-', '+', '~'])
-        .trim_end_matches(['-', '+', '~'])
-        .trim()
+    let inner = inner.strip_prefix(['-', '+']).unwrap_or(inner);
+    let inner = inner.strip_suffix('-').unwrap_or(inner);
+    inner.trim()
 }
 
 fn classify_jinja_expr(inner: &str) -> JinjaExpr {
