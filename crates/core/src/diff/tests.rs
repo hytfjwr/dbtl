@@ -426,7 +426,11 @@ fn cross_mode_macro_detection_compares_only_root_defs() {
     // can carry: dbt-internal and installed-package defs, `{% test %}`
     // blocks, materializations. Those records are blind spots, never
     // changes — only the matching root `{% macro %}` def compares, and
-    // identical blocks must not read as edits in EITHER direction.
+    // identical blocks must not read as edits in EITHER direction. The
+    // model's call list names every blind spot on purpose: the reason
+    // walk surfaces only uids reachable through `depends_on.macros`, so
+    // without the comparable-set gate each one would land a `macro:`
+    // reason here.
     let manifest_side = Dag::build(&manifest_with_macros(
         vec![
             (
@@ -454,14 +458,26 @@ fn cross_mode_macro_detection_compares_only_root_defs() {
                 ),
             ),
         ],
-        &["macro.p.cents"],
+        &[
+            "macro.p.cents",
+            "macro.dbt.clone",
+            "macro.pkg.wrap",
+            "macro.p.test_pos",
+            "macro.p.materialization_view_default",
+        ],
     ));
     let source_side = source_mode(manifest_with_macros(
         vec![(
             "macro.p.cents",
             mac("cents", &block("macro cents", "endmacro", "v1"), &[]),
         )],
-        &["macro.p.cents"],
+        &[
+            "macro.p.cents",
+            "macro.dbt.clone",
+            "macro.pkg.wrap",
+            "macro.p.test_pos",
+            "macro.p.materialization_view_default",
+        ],
     ));
     for (base, current) in [
         (&manifest_side, &source_side),
