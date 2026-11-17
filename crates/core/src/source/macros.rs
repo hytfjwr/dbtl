@@ -32,7 +32,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-use crate::manifest::{RawDependsOn, RawMacro};
+use crate::manifest::{RawDependsOn, RawMacro, RawMacroArgument};
 
 use super::collect::{collect_with_root, mask_jinja_comments, read, rel_path};
 use super::patterns::{
@@ -56,7 +56,7 @@ pub(super) const MAX_MACRO_DEPTH: usize = 8;
 /// macros. Names NOT listed (package macros like `dbt_utils.star`, or a
 /// misspelling) fall to the unresolvable bucket, which only under-reports
 /// lint findings — the safe direction.
-const BUILTIN_BARE: &[&str] = &[
+pub(crate) const BUILTIN_BARE: &[&str] = &[
     "as_bool",
     "as_native",
     "as_number",
@@ -119,7 +119,7 @@ const BUILTIN_BARE: &[&str] = &[
 /// its own branch — the string argument names a macro that may be one of
 /// the project's own). A `pkg.name()` call whose `pkg` isn't listed and
 /// isn't the project itself is a package macro — unresolvable by design.
-const BUILTIN_NS: &[&str] = &[
+pub(crate) const BUILTIN_NS: &[&str] = &[
     "adapter",
     "api",
     "builtins",
@@ -287,7 +287,7 @@ fn classify_expr(expr: &str, scope: &[String]) -> ArgExpr {
 /// `name = expr` at top level → `Some((name, expr))`. The name must be a
 /// bare identifier and the `=` a single assignment — `==`/`!=`/`<=`/`>=`
 /// are comparisons, a parenthesized/subscripted name is not a kwarg.
-pub(super) fn split_kwarg(seg: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_kwarg(seg: &str) -> Option<(&str, &str)> {
     let b = seg.as_bytes();
     let (mut depth, mut quote) = (0usize, 0u8);
     let mut i = 0;
@@ -597,6 +597,16 @@ impl Macros {
                     RawMacro {
                         name: name.clone(),
                         macro_sql: Some(def.sql.clone()),
+                        // Source mode collects the signature the manifest's
+                        // `arguments` list records — the withholding body
+                        // scan reads the param names either way.
+                        arguments: def
+                            .params
+                            .iter()
+                            .map(|p| RawMacroArgument {
+                                name: p.name.clone(),
+                            })
+                            .collect(),
                         depends_on: RawDependsOn {
                             nodes: Vec::new(),
                             macros: callees,

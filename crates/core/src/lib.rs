@@ -33,6 +33,7 @@ pub use cll::{
     closure_report, normalize_column, resolution_sql, ClosureDirection, ColumnEdge, ColumnEdgeKind,
     ColumnLineage, ColumnRef, ColumnReport, ColumnResolver, ColumnRow, Confidence, MarkedRelations,
     NameMatchResolver, SqlDialect, SqlFacts, SqlParseResolver, SqlPositions, UnparsedReason,
+    Withheld, WithheldCandidate,
 };
 pub use compiled::{default_compiled_dir, default_target_dir, CompiledOrigin, CompiledSql};
 pub use dag::{

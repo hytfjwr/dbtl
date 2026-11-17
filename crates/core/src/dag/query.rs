@@ -6,7 +6,14 @@ impl Dag {
     /// `{% materialization %}` block here — the root project's AND every
     /// installed package's; a synthesized source-mode manifest carries
     /// only the root project's `{% macro %}` definitions (its
-    /// `macro-paths` are the only macro sources it reads).
+    /// `macro-paths` are the only macro sources it reads) — full def
+    /// block, signature params, and the `depends_on.macros` call edges,
+    /// so the table is non-empty in source mode too. Cross-mode macro
+    /// comparison therefore covers only the root-project `{% macro %}`
+    /// defs both sides can carry — [`is_root_macro_def`](Dag::is_root_macro_def)/
+    /// `is_root_macro_def_in` is the shared predicate — while the
+    /// per-tag withholding's body scan reads the same table for the
+    /// callee bodies it can prove.
     pub fn macros(&self) -> &BTreeMap<String, MacroInfo> {
         &self.macros
     }
@@ -472,8 +479,10 @@ impl Dag {
 /// text starts at the block's own tag (whitespace control aside), so the
 /// first tag's word IS the block type: `{% test %}` blocks and
 /// materializations sort themselves out. `{%+` stays unclassified on
-/// purpose — dbt's block regex doesn't register it either.
-fn opens_macro_block(sql: &str) -> bool {
+/// purpose — dbt's block regex doesn't register it either. Shared with
+/// the per-tag withholding's callee check — one "is this record a
+/// `{% macro %}` def" test for every pass that reads [`Dag::macros`].
+pub(crate) fn opens_macro_block(sql: &str) -> bool {
     let Some(rest) = sql.trim_start().strip_prefix("{%") else {
         return false;
     };

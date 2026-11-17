@@ -9,6 +9,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Unchanged project macros no longer appear as `macro:<name>` changes in a manifest↔source `--diff` — source mode stores the same complete `{% macro %}…{% endmacro %}` definition dbt records, and a cross-mode diff compares only those root-project definitions rather than every `macro.*` record a manifest registers.
+- `dbtl lint` no longer drops a model's entire absence-based findings
+  when a `{{ }}` renders to whitespace or `(NULL)`. Each candidate is
+  now withheld only when a replaced tag could invalidate it: `unused_cte`
+  reports a CTE the tag can't read (`a.id IN {{ codes() }}` no longer
+  hides an unrelated unread CTE), `cartesian_join` yields only to a
+  clause-boundary tag in the same SELECT after the joined relation, and
+  `order_by_without_limit` only to one positioned after the outer
+  `ORDER BY`. `unknown_column_reference` still withholds model-wide,
+  and `--fix` still refuses edits on marked models.
 
 ## [0.7.3] - 2026-11-16
 

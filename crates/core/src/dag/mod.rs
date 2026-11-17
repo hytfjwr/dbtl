@@ -733,6 +733,11 @@ pub struct MacroInfo {
     /// in BOTH modes (dbt's `full_block`; source mode stores the same
     /// slice) — the surface a shared-macro change moves.
     pub sql: Option<String>,
+    /// The `{% macro %}` signature's declared parameter names (the
+    /// manifest's `arguments` list; source mode fills them from the
+    /// signature it collected). The per-tag withholding's body scan
+    /// excludes `{{ param }}` references from a body's unprovable parts.
+    pub params: Vec<String>,
     /// Macro `unique_id`s this macro itself calls.
     pub depends_on: Vec<String>,
 }
@@ -945,4 +950,5 @@ mod traverse;
 
 pub use convert::in_package;
 use convert::*;
+pub(crate) use query::opens_macro_block;
 use traverse::*;

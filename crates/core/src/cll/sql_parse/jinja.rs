@@ -103,20 +103,56 @@ pub(super) struct RenderedSql {
     /// `ref`/`source`/`this`/`config` renders and `{% %}`/`{# #}`
     /// drops never appear here.
     other_tags: Vec<Range<usize>>,
+    /// The clause-hiding `{{ }}` replacements — clause-boundary
+    /// whitespace and `(NULL)` right-hand sides — in emission order.
+    /// [`super::withhold`] reads them to decide, per finding and per
+    /// tag, whether the tag could invalidate the candidate — the
+    /// narrowing of `elided_clauses`/`in_rhs`'s whole-model emptying.
+    pub(super) replaced_tags: Vec<ReplacedTag>,
     /// A `{{ }}` at a clause boundary rendered to whitespace — the
     /// statement can be missing a JOIN/WHERE/LIMIT the real macro
-    /// emits, so facts proving an absence can't be trusted from this
-    /// parse: `compute_analyzed` empties `cartesian`/`unused_ctes`/
-    /// `unlimited_order_by`/`unresolved`, `--fix` planning refuses the
+    /// emits. `compute_analyzed` empties `unresolved` and lets the
+    /// per-tag [`ReplacedTag`] judgments withhold the absence-facts the
+    /// tag could actually invalidate; `--fix` planning refuses the
     /// node, and CLL falls back to the name-match resolver like an
     /// unparsable model. The mark is a fact-layer limitation, not a
     /// parse failure — the model still counts as analyzed.
     pub(super) elided_clauses: bool,
     /// A `{{ }}` on an `IN`/`ANY`/`SOME`/`ALL` right-hand side rendered
     /// as `(NULL)` — the macro may return a subquery reading a CTE the
-    /// parse can't see, so `unused_ctes` stays unproven on this model
-    /// too (and `--fix` plans no CTE delete). Other facts still judge.
+    /// parse can't see, so `--fix` plans no CTE delete and the per-tag
+    /// [`ReplacedTag`] judgments weigh the candidate CTEs. Other facts
+    /// still judge.
     pub(super) in_rhs: bool,
+}
+
+/// How [`Scan::other_text`] replaced an unclassifiable `{{ }}` — the two
+/// shapes a clause could hide behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TagShape {
+    /// Whitespace at a clause boundary — the tag may emit a JOIN/WHERE/
+    /// LIMIT the parse never saw.
+    ClauseBoundary,
+    /// `(NULL)` on an `IN`/`ANY`/`SOME`/`ALL` right-hand side — the tag
+    /// may emit a subquery (a CTE read the parse can't see).
+    InRhs,
+}
+
+/// One `{{ }}` the winning render replaced with a clause-hiding shape —
+/// the per-tag record [`super::withhold`] judges each absence-finding
+/// against ("could THIS tag invalidate THIS candidate?").
+#[derive(Debug, Clone)]
+pub(super) struct ReplacedTag {
+    /// The replacement [`Scan::other_text`] chose.
+    pub(super) shape: TagShape,
+    /// The byte range the replacement occupies in `text` — the position
+    /// the same-SELECT and after-ORDER-BY checks compare against.
+    pub(super) out: Range<usize>,
+    /// The tag's byte range in the raw SQL (`{{`/`}}` included).
+    pub(super) src: Range<usize>,
+    /// The tag's `{{ … }}` body (sigils and whitespace-control markers
+    /// kept — [`jinja_inner`] strips them).
+    pub(super) expr: String,
 }
 
 impl RenderedSql {
@@ -201,12 +237,52 @@ impl RenderedSql {
     /// empty span or one whose (line, column) math doesn't land on the
     /// text: a position the renderer can't place is no position.
     pub(super) fn span_source(&self, span: Span) -> Option<Range<usize>> {
+        self.span_rendered(span).and_then(|r| self.source_range(r))
+    }
+
+    /// [`span_source`]'s first half, kept in rendered coordinates — the
+    /// byte range `span` covers inside `text`, so a fact's position can
+    /// be compared against a [`ReplacedTag`]'s `out` range. `None` under
+    /// the same no-position rule.
+    pub(super) fn span_rendered(&self, span: Span) -> Option<Range<usize>> {
         if span.start.line == 0 || span.end.line == 0 {
             return None;
         }
         let start = position_offset(&self.text, span.start.line, span.start.column)?;
         let end = position_offset(&self.text, span.end.line, span.end.column)?;
-        self.source_range(start..end)
+        Some(start..end)
+    }
+
+    /// The SELECT `pos` belongs to — the last `select` keyword before it
+    /// at `pos`'s own parenthesis depth, as `(depth, keyword end)`.
+    /// `None` when no `select` at that depth precedes it: an
+    /// unattributable position the withholding must not scope to one
+    /// SELECT (it falls back to the whole model). `;` resets the frame
+    /// — a second statement's position never attributes to the first
+    /// statement's SELECT.
+    pub(super) fn select_at(&self, pos: usize) -> Option<(usize, usize)> {
+        let text = &self.text[..pos.min(self.text.len())];
+        let mut stack: Vec<Option<usize>> = vec![None];
+        for (r, t) in sep_tokens(text.as_bytes(), &self.lex) {
+            match t {
+                Tok::Other if text.as_bytes()[r.start] == b'(' => stack.push(None),
+                Tok::RParen => {
+                    if stack.len() > 1 {
+                        stack.pop();
+                    }
+                }
+                Tok::Semi => {
+                    stack.truncate(1);
+                    stack[0] = None;
+                }
+                Tok::Word if lower(text, &r) == "select" => {
+                    *stack.last_mut().unwrap() = Some(r.end);
+                }
+                _ => {}
+            }
+        }
+        let depth = stack.len() - 1;
+        stack.last().and_then(|s| s.map(|end| (depth, end)))
     }
 
     /// Is EVERY `,` inside rendered-text `gap` one an arm split emitted —
@@ -843,6 +919,9 @@ struct Scan<'a> {
     /// unclassifiable `{{ }}`s — in emission order, copied onto
     /// [`RenderedSql::other_tags`] by `finish`.
     other_tags: Vec<Range<usize>>,
+    /// The clause-hiding `{{ }}`s this render emitted — copied onto
+    /// [`RenderedSql::replaced_tags`] by `finish`.
+    replaced_tags: Vec<ReplacedTag>,
     /// Identifier bytes accumulating — flushed to `last_word` by the
     /// first non-identifier byte.
     word: Vec<u8>,
@@ -906,6 +985,7 @@ impl<'a> Scan<'a> {
             branch_commas: BTreeSet::new(),
             jinja_literals: Vec::new(),
             other_tags: Vec::new(),
+            replaced_tags: Vec::new(),
             word: Vec::new(),
             last_word: Vec::new(),
             last_sig: None,
@@ -1000,6 +1080,7 @@ impl<'a> Scan<'a> {
             branch_commas: self.branch_commas,
             jinja_literals: self.jinja_literals,
             other_tags: self.other_tags,
+            replaced_tags: self.replaced_tags,
             branches: self.branches,
             elided_clauses: self.elided_clauses,
             in_rhs: self.in_rhs,
@@ -1273,10 +1354,18 @@ impl<'a> Scan<'a> {
             }
             JinjaExpr::Other(literals) => {
                 self.jinja_literals.extend(literals);
-                let t = self.other_text(ctx, after);
+                let (t, shape) = self.other_text(ctx, after);
                 let from = self.out.len();
-                self.subst(src, t.as_bytes(), ctx.is_top());
+                self.subst(src.clone(), t.as_bytes(), ctx.is_top());
                 self.other_tags.push(from..self.out.len());
+                if let Some(shape) = shape {
+                    self.replaced_tags.push(ReplacedTag {
+                        shape,
+                        out: from..self.out.len(),
+                        src,
+                        expr: inner.to_string(),
+                    });
+                }
             }
         }
     }
@@ -1442,50 +1531,64 @@ impl<'a> Scan<'a> {
     ///   expression directly before the tag (and no select item open)
     ///   means the `{{ }}` can only stand where a whole clause goes
     ///   (`JOIN …`, `AND …`, `LIMIT …`), and any value breaks the
-    ///   statement. The render flags [`RenderedSql::elided_clauses`] so
-    ///   the analysis layer treats absence-facts as unproven — the
-    ///   clause the tag emits is invisible to this parse.
+    ///   statement. The render flags [`RenderedSql::elided_clauses`] —
+    ///   and records a [`TagShape::ClauseBoundary`] [`ReplacedTag`] —
+    ///   so the analysis layer treats the absence-facts the tag could
+    ///   invalidate as unproven, not the whole model.
     /// - anywhere else: a value — `NULL` under `Plain`, a marked quoted
     ///   identifier under `Marked`.
-    fn other_text(&mut self, ctx: TagCtx, after: Option<u8>) -> String {
+    ///
+    /// The returned [`TagShape`] is `Some` only for the clause-hiding
+    /// replacements (boundary whitespace / `(NULL)` right-hand side) —
+    /// every other shape reads as written SQL the parse judges fully.
+    fn other_text(&mut self, ctx: TagCtx, after: Option<u8>) -> (String, Option<TagShape>) {
         let name = self.jinja_name();
         match ctx {
-            TagCtx::Literal(q) if q == b'"' || q == b'`' => name,
-            TagCtx::Literal(_) => match self.mark {
-                JinjaMark::Plain => " NULL ".to_string(),
-                JinjaMark::Marked => name,
-            },
+            TagCtx::Literal(q) if q == b'"' || q == b'`' => (name, None),
+            TagCtx::Literal(_) => (
+                match self.mark {
+                    JinjaMark::Plain => " NULL ".to_string(),
+                    JinjaMark::Marked => name,
+                },
+                None,
+            ),
             TagCtx::Top => {
                 let word_adj = self.word_adjacent();
                 if self.adjacent(after)
                     || self.last_sig == Some(b'.')
                     || (word_adj && NAME_WORDS.contains(&self.last_word.as_slice()))
                 {
-                    return name;
+                    return (name, None);
                 }
                 if word_adj && self.list_rhs() {
                     self.in_rhs = true;
-                    return match self.mark {
-                        JinjaMark::Plain => "(NULL)".to_string(),
-                        JinjaMark::Marked => format!("(\"{name}\")"),
-                    };
+                    return (
+                        match self.mark {
+                            JinjaMark::Plain => "(NULL)".to_string(),
+                            JinjaMark::Marked => format!("(\"{name}\")"),
+                        },
+                        Some(TagShape::InRhs),
+                    );
                 }
                 if self.select {
                     if self.select_operand() {
-                        return self.value_text(name);
+                        return (self.value_text(name), None);
                     }
-                    return if self.expr_ender() {
-                        format!(", {name}")
-                    } else {
-                        name
-                    };
+                    return (
+                        if self.expr_ender() {
+                            format!(", {name}")
+                        } else {
+                            name
+                        },
+                        None,
+                    );
                 }
                 if self.elide && self.clause_boundary() {
                     self.elided_clauses = true;
                     self.just_elided = true;
-                    return " ".to_string();
+                    return (" ".to_string(), Some(TagShape::ClauseBoundary));
                 }
-                self.value_text(name)
+                (self.value_text(name), None)
             }
         }
     }
@@ -2505,7 +2608,7 @@ enum JinjaExpr {
 /// The `{{ … }}` body stripped of surrounding whitespace and Jinja's
 /// whitespace-control/sigil characters (`{{- … -}}`, `{{+ … +}}`,
 /// `{{~ … ~}}`) — the text `ref`/`source`/`this` matching reads.
-fn jinja_inner(inner: &str) -> &str {
+pub(super) fn jinja_inner(inner: &str) -> &str {
     inner
         .trim()
         .trim_start_matches(['-', '+', '~'])
@@ -2580,7 +2683,7 @@ fn call_display(e: &str) -> Option<String> {
 /// Jinja: `\n`/`\t`/`\r` produce the control chars, any other escaped
 /// char lands verbatim. An unterminated literal is dropped — it was
 /// never a complete string.
-fn jinja_string_literals(inner: &str) -> Vec<String> {
+pub(super) fn jinja_string_literals(inner: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut chars = inner.chars().peekable();
     while let Some(q) = chars.next() {

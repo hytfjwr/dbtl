@@ -654,8 +654,23 @@ pub struct RawMacro {
     /// same slice so the diff compares one surface.
     #[serde(default)]
     pub macro_sql: Option<String>,
+    /// The `{% macro %}` signature's declared parameters — the real dbt
+    /// manifest field name (v12). The per-tag withholding's body scan
+    /// reads the names to tell a `{{ param }}` reference (bound at the
+    /// call site) from an unprovable body part.
+    #[serde(default)]
+    pub arguments: Vec<RawMacroArgument>,
     #[serde(default)]
     pub depends_on: RawDependsOn,
+}
+
+/// One entry of a manifest macro's `arguments` list — the parameter's
+/// declared name (`type`/`description` ride the wire but nothing reads
+/// them).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RawMacroArgument {
+    #[serde(default)]
+    pub name: String,
 }
 
 /// A `docs` entry (`doc.<pkg>.<name>` — a `{% docs %}` block rendered at

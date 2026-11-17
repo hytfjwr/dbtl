@@ -21,6 +21,8 @@ use super::dialect::SqlDialect;
 use super::facts::{outer_order_by_span, output_name_occurrences};
 use super::jinja::{jinja_parse, JinjaMark};
 use super::scan::{scan_statements, scan_statements_positions};
+use super::withhold::Withhold;
+use crate::dag::Dag;
 use crate::source::{arms_exclusive, ArmStep};
 
 /// Positions inside a model's `raw_code` that the SQL lint rules attach
@@ -70,11 +72,17 @@ pub struct MarkedRelations {
 
 /// Render `raw` (`Plain`) and extract the positions — `Err` when the
 /// text doesn't parse: a positionless finding, never a guessed one.
+/// `scope` (`dag` + node uid) re-runs the facts' per-tag withholding on
+/// THIS render so `cartesian` stays index-aligned with the kept
+/// candidates — a withheld arm's position never shifts the i↔i pairing
+/// the rule trusts.
 pub(super) fn plain_positions(
     raw: &str,
     dialect: SqlDialect,
+    scope: Option<(&Dag, &str)>,
 ) -> Result<SqlPositions, ParseFailure> {
     let (rendered, stmts) = jinja_parse(raw, JinjaMark::Plain, dialect)?;
+    let withhold = scope.map(|(dag, node)| Withhold::new(dag, node, &rendered));
     let mut out = SqlPositions::default();
     for s in &stmts {
         if let Statement::Query(q) = s {
@@ -117,7 +125,13 @@ pub(super) fn plain_positions(
         out.order_by = outer_order_by_span(q).and_then(|s| rendered.span_source(s));
     }
     let scan = scan_statements_positions(&stmts, Some(&rendered));
-    for span in &scan.cartesian_spans {
+    for (_, span) in &scan.cartesian_items {
+        if withhold
+            .as_ref()
+            .is_some_and(|w| w.elides_cartesian(*span).is_some())
+        {
+            continue;
+        }
         if let Some(r) = rendered.span_source(*span) {
             out.cartesian_display.push(rendered.src_display(raw, &r));
             out.cartesian.push(r);
@@ -129,6 +143,16 @@ pub(super) fn plain_positions(
         }
     }
     for (name, span) in scan.unread_ctes() {
+        // Same filter as `cartesian`: withheld candidates surface through
+        // `SqlFacts::withheld` (culprit-tag range), not through this
+        // structure — a withheld CTE's decl position would only mislead
+        // a consumer that trusts "positions pair kept findings".
+        if withhold
+            .as_ref()
+            .is_some_and(|w| w.may_emit_cte(name).is_some())
+        {
+            continue;
+        }
         if let Some(r) = rendered.span_source(*span) {
             out.unused_ctes.push((name.clone(), r));
         }

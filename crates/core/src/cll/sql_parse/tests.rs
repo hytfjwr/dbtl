@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::cll::ColumnLineage;
-use crate::manifest::{RawManifest, RawNode};
+use crate::manifest::{RawMacro, RawMacroArgument, RawManifest, RawNode};
 use std::collections::HashMap;
 
 use super::depth::ParseFailure;
@@ -107,6 +107,45 @@ fn e(from: &str, to: &str, kind: ColumnEdgeKind) -> (String, String, ColumnEdgeK
 
 fn resolver() -> SqlParseResolver {
     SqlParseResolver::new(None, SqlDialect::Generic)
+}
+
+/// A `macro.t.<name>` entry for [`RawManifest::macros`] — `body` is the
+/// FULL `{% macro %}…{% endmacro %}` text the real manifest wire carries
+/// (`arguments` = the signature's declared parameter names).
+fn mac(name: &str, params: &[&str], body: &str) -> (String, RawMacro) {
+    (
+        format!("macro.t.{name}"),
+        RawMacro {
+            name: name.to_string(),
+            macro_sql: Some(body.to_string()),
+            arguments: params
+                .iter()
+                .map(|p| RawMacroArgument {
+                    name: p.to_string(),
+                })
+                .collect(),
+            depends_on: Default::default(),
+        },
+    )
+}
+
+/// The `unused_cte`/`cartesian_join`/`unknown_column_reference`/
+/// `order_by_without_limit` candidates `facts`' per-tag withholding
+/// took, as `(kind, payload)` pairs — the compact view the assertions
+/// match on.
+fn withheld_kinds(facts: &SqlFacts) -> Vec<(&'static str, String)> {
+    facts
+        .withheld
+        .iter()
+        .map(|w| match &w.candidate {
+            WithheldCandidate::CartesianJoin(t) => ("cartesian_join", t.clone()),
+            WithheldCandidate::UnknownColumn(p, c) => {
+                ("unknown_column_reference", format!("{p}.{c}"))
+            }
+            WithheldCandidate::UnusedCte(n) => ("unused_cte", n.clone()),
+            WithheldCandidate::OrderByWithoutLimit => ("order_by_without_limit", String::new()),
+        })
+        .collect()
 }
 
 // -- 1. projections: rename / passthrough / transform ---------------------
@@ -635,7 +674,7 @@ fn opaque_jinja_expressions_carry_their_string_literals() {
 #[test]
 fn plain_positions_extract_wildcard_join_and_column_spans() {
     let raw = "select a, o.*\nfrom {{ ref('o') }} o\njoin b.u\nwhere o.id = b.id";
-    let pos = plain_positions(raw, SqlDialect::Generic).unwrap();
+    let pos = plain_positions(raw, SqlDialect::Generic, None).unwrap();
     // `o.*` — the qualified wildcard underlines itself.
     assert_eq!(
         pos.wildcards,
@@ -664,7 +703,7 @@ fn plain_positions_extract_wildcard_join_and_column_spans() {
         ]
     );
     // An unparsable text is `Err` — never a position to guess.
-    assert!(plain_positions("select from where or", SqlDialect::Generic).is_err());
+    assert!(plain_positions("select from where or", SqlDialect::Generic, None).is_err());
 }
 
 #[test]
@@ -3516,12 +3555,24 @@ fn an_elided_model_empties_the_absence_facts_and_falls_back_for_cll() {
     let r = resolver();
     let facts = r.sql_facts(&dag, "model.t.m").unwrap();
     assert!(facts.elided_clauses && !facts.in_rhs);
-    // Every fact proving an absence is unproven — the elided clause
-    // could carry the ON, the LIMIT, or the column's real source.
+    // The clause the tag hides could carry the ON or the column's real
+    // source — the candidates it could invalidate withhold, per tag.
     assert!(facts.cartesian.is_empty() && facts.cartesian_count == 0);
     assert!(facts.unresolved.is_empty());
     assert!(facts.unused_ctes.is_empty());
-    assert!(!facts.unlimited_order_by);
+    // …but the tag sits BEFORE the ORDER BY, so it can't emit the bound
+    // that clause is missing — the ORDER BY still reports.
+    assert!(facts.unlimited_order_by);
+    // What was withheld is kept for the summary, candidate by
+    // candidate: the join arm, and the column reference set.
+    assert!(
+        facts
+            .withheld
+            .iter()
+            .any(|w| matches!(w.candidate, WithheldCandidate::CartesianJoin(_))),
+        "{:?}",
+        facts.withheld
+    );
     // CLL takes the name-match fallback — flag included — exactly like
     // an unparsable model (the elided JOIN's provenance can't be
     // trusted to a parse that never saw it).
@@ -3574,6 +3625,560 @@ fn an_in_rhs_model_empties_only_unused_ctes() {
     assert!(facts.unlimited_order_by);
     let _ = r.resolve(&dag, "model.t.m");
     assert!(!r.is_fallback("model.t.m"));
+}
+
+// ---- per-tag withholding ------------------------------------------------
+
+#[test]
+fn an_unrelated_macro_no_longer_silences_unused_cte() {
+    // The background: `in {{ codes() }}` — a root-project macro whose
+    // body carries no CTE name — no longer empties `unused_ctes`
+    // model-wide: `u` reports. (The `(NULL)` shape withholds a CTE only
+    // when the tag could actually emit a read of it.)
+    let mut m = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id", "v"]),
+            raw_model(
+                "model.t.s1",
+                "with u as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }}),\n     b as (select * from {{ ref('base') }})\nselect * from a, b where a.id in {{ codes() }} and b.id in ('1')",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.s1")],
+    );
+    m.macros.extend([mac(
+        "codes",
+        &[],
+        "{% macro codes() %} ('1', '2') {% endmacro %}",
+    )]);
+    let dag = Dag::build(&m);
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.s1").unwrap();
+    assert!(facts.in_rhs && !facts.elided_clauses);
+    assert_eq!(facts.unused_ctes, vec!["u".to_string()]);
+    assert!(facts.withheld.is_empty(), "{:?}", facts.withheld);
+    // …and the literal expansion still reports the same way.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.base", "select 1", &["id", "v"]),
+            raw_model(
+                "model.t.s2",
+                "with u as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }}),\n     b as (select * from {{ ref('base') }})\nselect * from a, b where a.id in ('1', '2') and b.id in ('1')",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.s2")],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.s2").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["u".to_string()]);
+    assert!(!facts.in_rhs && !facts.elided_clauses);
+}
+
+#[test]
+fn a_macro_body_name_withholds_only_that_cte() {
+    // `{{ read_u() }}` — a root-project macro whose body names `u` —
+    // could emit `left join u …`, so `u` withholds; `v`, which no body
+    // or argument carries, still reports.
+    let mut m = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id"]),
+            raw_model(
+                "model.t.s9",
+                "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ read_u() }}",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.s9")],
+    );
+    m.macros.extend([mac(
+        "read_u",
+        &[],
+        "{% macro read_u() %} left join u on true {% endmacro %}",
+    )]);
+    let dag = Dag::build(&m);
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.s9").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["v".to_string()]);
+    assert_eq!(
+        withheld_kinds(&facts),
+        vec![("unused_cte", "u".to_string())]
+    );
+}
+
+#[test]
+fn unprovable_and_unresolvable_tags_withhold_every_unused_cte() {
+    // (b) a name no literal binds — a `{% set %}` variable, `var()`,
+    // `this` — and (c) a callee that resolves nowhere, including
+    // `adapter.dispatch(…)`, can emit ANY text: every unread CTE
+    // withholds for that tag.
+    for (name, tail) in [
+        ("set_var", "{% set t = 'u' %}\nwhere a.id in {{ t }}"),
+        ("var_call", "where a.id in {{ var('ids_sql') }}"),
+        ("unknown_bare", "where a.id in {{ mystery() }}"),
+        ("dispatch", "{{ adapter.dispatch('m')() }}"),
+    ] {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.base", "select 1", &["id"]),
+                raw_model(
+                    "model.t.m",
+                    &format!(
+                        "with u as (select * from {{{{ ref('base') }}}}),\n     v as (select * from {{{{ ref('base') }}}}),\n     a as (select * from {{{{ ref('base') }}}})\nselect * from a {tail}"
+                    ),
+                    &[],
+                ),
+            ],
+            &[("model.t.base", "model.t.m")],
+        ));
+        let r = resolver();
+        let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+        assert!(
+            facts.unused_ctes.is_empty(),
+            "{name}: {:?}",
+            facts.unused_ctes
+        );
+        assert_eq!(
+            withheld_kinds(&facts),
+            vec![
+                ("unused_cte", "u".to_string()),
+                ("unused_cte", "v".to_string()),
+            ],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_package_macro_withholds_only_literal_carried_ctes() {
+    // `<pkg>.join_staging(['orders'])` — a foreign macro's body stays
+    // unproven, but a package macro can't name the caller's CTEs
+    // without an argument: only `stg_orders`, which the `'orders'`
+    // literal reaches as a substring, withholds. With no name-carrying
+    // argument (`group_cols(n=1)`), nothing withholds.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.base", "select 1", &["id"]),
+            raw_model(
+                "model.t.named",
+                "with stg_orders as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ pkg.join_staging(['orders']) }}",
+                &[],
+            ),
+            raw_model(
+                "model.t.argless",
+                "with stg_orders as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ pkg.group_cols(n=1) }}",
+                &[],
+            ),
+        ],
+        &[
+            ("model.t.base", "model.t.named"),
+            ("model.t.base", "model.t.argless"),
+        ],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.named").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["v".to_string()]);
+    assert_eq!(
+        withheld_kinds(&facts),
+        vec![("unused_cte", "stg_orders".to_string())]
+    );
+    let facts = r.sql_facts(&dag, "model.t.argless").unwrap();
+    assert_eq!(
+        facts.unused_ctes,
+        vec!["stg_orders".to_string(), "v".to_string()]
+    );
+    assert!(facts.withheld.is_empty(), "{:?}", facts.withheld);
+}
+
+#[test]
+fn a_param_fed_literal_reaches_the_macro_body() {
+    // `{{ m('stg') }}` calling a root-project macro whose body reads
+    // `{{ prefix }}_orders` — the param slot is bound at the call site;
+    // the literal fragment reaches `stg_orders` as a substring.
+    let mut m = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with stg_orders as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ m('stg') }}",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.m")],
+    );
+    m.macros.extend([mac(
+        "m",
+        &["prefix"],
+        "{% macro m(prefix) %} left join {{ prefix }}_orders on true {% endmacro %}",
+    )]);
+    let dag = Dag::build(&m);
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["v".to_string()]);
+    assert_eq!(
+        withheld_kinds(&facts),
+        vec![("unused_cte", "stg_orders".to_string())]
+    );
+}
+
+#[test]
+fn a_nested_root_macro_call_reaches_the_inner_body() {
+    // `{{ outer() }}`'s body calls `{{ inner() }}`, whose body emits
+    // `left join u` — the body walk follows the nested root-project
+    // call, so `u` withholds and only `v` reports.
+    let mut m = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ outer() }}",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.m")],
+    );
+    m.macros.extend([
+        mac(
+            "outer",
+            &[],
+            "{% macro outer() %} {{ inner() }} {% endmacro %}",
+        ),
+        mac(
+            "inner",
+            &[],
+            "{% macro inner() %} left join u on true {% endmacro %}",
+        ),
+    ]);
+    let dag = Dag::build(&m);
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["v".to_string()]);
+    assert_eq!(
+        withheld_kinds(&facts),
+        vec![("unused_cte", "u".to_string())]
+    );
+}
+
+#[test]
+fn a_param_bound_nested_call_stays_provable() {
+    // `{{ inner(p) }}` inside `outer`'s body passes outer's bound
+    // param — the call stays provable, so the body walk reaches
+    // `inner` and its `u` word withholds only that CTE (`v` reports).
+    // The `{{ outer('x') }}` literal names no CTE, so it changes
+    // nothing — the withhold comes from the scanned inner body, not
+    // opacity.
+    let mut m = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ outer('x') }}",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.m")],
+    );
+    m.macros.extend([
+        mac(
+            "outer",
+            &["p"],
+            "{% macro outer(p) %} {{ inner(p) }} {% endmacro %}",
+        ),
+        mac(
+            "inner",
+            &["p"],
+            "{% macro inner(p) %} left join u{{ p }} on true {% endmacro %}",
+        ),
+    ]);
+    let dag = Dag::build(&m);
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["v".to_string()]);
+    assert_eq!(
+        withheld_kinds(&facts),
+        vec![("unused_cte", "u".to_string())]
+    );
+}
+
+#[test]
+fn unprovable_parts_inside_a_body_mark_the_whole_body_opaque() {
+    // The body scan applies the same provability a model-level tag
+    // gets: a `{% %}` block, a `var()`/`env_var()` call, a nested call
+    // carrying a non-literal/non-param argument, and a `f()()` re-call
+    // are all parts whose emitted text can't be proven — each withholds
+    // every unread CTE. (`inner`/`f` resolve to real project macros, so
+    // the opacity comes from the argument/tail, not the callee.)
+    for (name, body) in [
+        (
+            "block",
+            "{% macro w() %} {% if x %} left join u {% endif %} {% endmacro %}",
+        ),
+        (
+            "var",
+            "{% macro w() %} where x in ({{ var('ids') }}) {% endmacro %}",
+        ),
+        (
+            "env_var",
+            "{% macro w() %} and y = {{ env_var('E') }} {% endmacro %}",
+        ),
+        (
+            "call_var_arg",
+            "{% macro w() %} {{ inner(var('x')) }} {% endmacro %}",
+        ),
+        (
+            "call_unbound_arg",
+            "{% macro w() %} {{ inner(unbound) }} {% endmacro %}",
+        ),
+        ("recall", "{% macro w() %} {{ f()() }} {% endmacro %}"),
+    ] {
+        let mut m = manifest(
+            vec![
+                model("model.t.base", "select 1", &["id"]),
+                raw_model(
+                    "model.t.m",
+                    "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ w() }}",
+                    &[],
+                ),
+            ],
+            &[("model.t.base", "model.t.m")],
+        );
+        m.macros.extend([
+            mac("w", &[], body),
+            mac("inner", &["x"], "{% macro inner(x) %} 1 {% endmacro %}"),
+            mac("f", &[], "{% macro f() %} 1 {% endmacro %}"),
+        ]);
+        let dag = Dag::build(&m);
+        let r = resolver();
+        let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+        assert!(
+            facts.unused_ctes.is_empty(),
+            "{name}: {:?}",
+            facts.unused_ctes
+        );
+        assert_eq!(
+            withheld_kinds(&facts),
+            vec![
+                ("unused_cte", "u".to_string()),
+                ("unused_cte", "v".to_string()),
+            ],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn cartesian_withholds_only_arms_the_tag_can_condition() {
+    // `{{ join_on('c', 'a.id') }}` sits in the outer SELECT, after the
+    // `a`/`b` arms — it could emit their ON/WHERE, so both withhold.
+    // The conditionless `y` inside `c1`'s own SELECT has no such tag
+    // and still reports.
+    let mut m = manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            model("model.t.b", "select 1", &["id"]),
+            model("model.t.x", "select 1", &["id"]),
+            model("model.t.y", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with c1 as (select * from \"x\" x, \"y\" y)\nselect * from c1, \"a\" a, \"b\" b {{ join_on('c', 'a.id') }}",
+                &[],
+            ),
+        ],
+        &[
+            ("model.t.a", "model.t.m"),
+            ("model.t.b", "model.t.m"),
+            ("model.t.x", "model.t.m"),
+            ("model.t.y", "model.t.m"),
+        ],
+    );
+    m.macros.extend([mac(
+        "join_on",
+        &[],
+        "{% macro join_on(c, cond) %} where 1 = 1 {% endmacro %}",
+    )]);
+    let dag = Dag::build(&m);
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert!(facts.elided_clauses);
+    assert_eq!(facts.cartesian, vec!["\"y\" y".to_string()]);
+    let w = withheld_kinds(&facts);
+    assert!(
+        w.iter().filter(|(k, _)| *k == "cartesian_join").count() == 2,
+        "{w:?}"
+    );
+}
+
+#[test]
+fn a_derived_select_tag_withholds_only_its_own_cartesian() {
+    // `(select * from b, c {{ filt() }}) x` — the tag attributes to the
+    // INNER select (same paren depth): the inner `c` arm withholds, the
+    // outer `x` arm still reports.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            model("model.t.b", "select 1", &["id"]),
+            model("model.t.c", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "select * from \"a\" a, (select * from \"b\" b, \"c\" c {{ filt() }}) x",
+                &[],
+            ),
+        ],
+        &[
+            ("model.t.a", "model.t.m"),
+            ("model.t.b", "model.t.m"),
+            ("model.t.c", "model.t.m"),
+        ],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert!(facts.elided_clauses);
+    assert_eq!(facts.cartesian.len(), 1);
+    assert!(facts.cartesian[0].contains('x'), "{:?}", facts.cartesian);
+    assert_eq!(
+        withheld_kinds(&facts),
+        vec![("cartesian_join", "\"c\" c".to_string())]
+    );
+}
+
+#[test]
+fn order_by_withholds_only_when_the_tag_follows() {
+    // A clause-boundary tag BEFORE the outer ORDER BY can't emit its
+    // missing bound — the finding reports. AFTER it, the tag could emit
+    // `limit 10` — withheld.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            raw_model(
+                "model.t.before",
+                "select id from \"a\" {{ m() }} order by id",
+                &[],
+            ),
+            raw_model(
+                "model.t.after",
+                "select id from \"a\" order by id {{ m() }}",
+                &[],
+            ),
+        ],
+        &[
+            ("model.t.a", "model.t.before"),
+            ("model.t.a", "model.t.after"),
+        ],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.before").unwrap();
+    assert!(facts.elided_clauses);
+    assert!(facts.unlimited_order_by);
+    assert!(
+        facts
+            .withheld
+            .iter()
+            .all(|w| !matches!(w.candidate, WithheldCandidate::OrderByWithoutLimit)),
+        "{:?}",
+        facts.withheld
+    );
+    let facts = r.sql_facts(&dag, "model.t.after").unwrap();
+    assert!(facts.elided_clauses);
+    assert!(!facts.unlimited_order_by);
+    assert_eq!(
+        withheld_kinds(&facts),
+        vec![("order_by_without_limit", String::new())]
+    );
+}
+
+#[test]
+fn withheld_candidates_agree_across_modes() {
+    // The same shape in source mode (a `{% macro %}` file, body-only
+    // `macro_sql`) and manifest mode (full-def `macro_sql` +
+    // `arguments`) judges identically: `u` withholds through `read_u`,
+    // `v` reports. A bare name no root macro defines —
+    // `current_timestamp()` — is (c)-opaque either way.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("dbt_project.yml"), "name: t\nprofile: t\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("macros")).unwrap();
+    std::fs::write(
+        dir.path().join("macros/read_u.sql"),
+        "{% macro read_u() %} left join u on true {% endmacro %}",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    let sql = "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ read_u() }}";
+    std::fs::write(dir.path().join("models/base.sql"), "select 1 as id").unwrap();
+    std::fs::write(dir.path().join("models/m.sql"), sql).unwrap();
+    let src = crate::source::manifest_from_source(dir.path()).unwrap();
+    let dag_src = Dag::build(&src);
+
+    let mut mf = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id"]),
+            raw_model("model.t.m", sql, &[]),
+        ],
+        &[("model.t.base", "model.t.m")],
+    );
+    mf.macros.extend([mac(
+        "read_u",
+        &[],
+        "{% macro read_u() %} left join u on true {% endmacro %}",
+    )]);
+    let dag_mf = Dag::build(&mf);
+
+    let r = resolver();
+    let src_uid = dag_src
+        .nodes()
+        .keys()
+        .find(|u| u.ends_with(".m"))
+        .cloned()
+        .expect("source model uid");
+    for (dag, uid) in [(&dag_src, src_uid.as_str()), (&dag_mf, "model.t.m")] {
+        let facts = r.sql_facts(dag, uid).unwrap();
+        assert_eq!(facts.unused_ctes, vec!["v".to_string()], "{uid}");
+        assert_eq!(
+            withheld_kinds(&facts),
+            vec![("unused_cte", "u".to_string())],
+            "{uid}"
+        );
+    }
+}
+
+#[test]
+fn withholding_is_dialect_independent() {
+    // The tag judgment reads render positions and Jinja text only —
+    // every supported adapter dialect withholds `u` through `read_u`
+    // and reports `v` the same way.
+    let mut m = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ read_u() }}",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.m")],
+    );
+    m.macros.extend([mac(
+        "read_u",
+        &[],
+        "{% macro read_u() %} left join u on true {% endmacro %}",
+    )]);
+    let dag = Dag::build(&m);
+    for dialect in [
+        SqlDialect::Generic,
+        SqlDialect::Redshift,
+        SqlDialect::Postgres,
+        SqlDialect::Snowflake,
+        SqlDialect::BigQuery,
+        SqlDialect::DuckDb,
+    ] {
+        let r = SqlParseResolver::new(None, dialect);
+        let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+        assert_eq!(facts.unused_ctes, vec!["v".to_string()], "{dialect:?}");
+        assert_eq!(
+            withheld_kinds(&facts),
+            vec![("unused_cte", "u".to_string())],
+            "{dialect:?}"
+        );
+    }
 }
 
 #[test]
@@ -3872,7 +4477,9 @@ fn a_loose_rescued_model_empties_the_absence_facts() {
     assert!(facts.cartesian.is_empty() && facts.cartesian_count == 0);
     assert!(facts.unresolved.is_empty());
     assert!(facts.unused_ctes.is_empty());
-    assert!(!facts.unlimited_order_by);
+    // `{{ m() }}` precedes `order by id` — it can't emit the missing
+    // bound, so the ORDER BY reports (a `{{ m() }}` after it would).
+    assert!(facts.unlimited_order_by);
     let _ = r.resolve(&dag, "model.t.m");
     assert!(r.is_fallback("model.t.m"));
 }

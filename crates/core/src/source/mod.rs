@@ -271,12 +271,16 @@ use yaml::*;
 // The span-carrying call extractors lint uses for finding positions — same
 // machinery as the loaders' own pass, not a second implementation.
 pub use collect::mask_jinja_comments;
+pub(crate) use macros::{split_kwarg, BUILTIN_BARE, BUILTIN_NS};
 pub use paths::project_resource_dirs;
 pub use patterns::{
     arms_exclusive, call_sites_masked, jinja_branches, ArmKind, ArmStep, CallKind, CallSite,
     JinjaBranches,
 };
-pub(crate) use patterns::{call_version, config_arg, kwarg, lit_value, tag_values_of};
+pub(crate) use patterns::{
+    call_head_re, call_version, config_arg, kwarg, lit_value, scan_call_args, tag_values_of,
+    top_level_segments,
+};
 pub(crate) use patterns::{find_subslice, jinja_set_assigns, jinja_tag_close, tag_word};
 pub(crate) use python::{is_identifier, scan_python, PyCallKind};
 pub use vars::CliVars;

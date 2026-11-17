@@ -26,6 +26,7 @@ pub(crate) use sql_parse::{
 };
 pub use sql_parse::{
     MarkedRelations, SqlDialect, SqlFacts, SqlParseResolver, SqlPositions, UnparsedReason,
+    Withheld, WithheldCandidate,
 };
 
 use crate::catalog::Catalog;
