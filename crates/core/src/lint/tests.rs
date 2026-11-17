@@ -11575,7 +11575,10 @@ fn a_partly_withheld_pair_still_counts() {
         "macro.p.touch".to_string(),
         RawMacro {
             name: "touch".into(),
-            macro_sql: Some("{% macro touch() %} left join u on true {% endmacro %}".into()),
+            // The trailing `-- x` keeps the emitted text from closing, so
+            // the call can't expand — the tag stays positional and its
+            // body's `u` reach is what withholds.
+            macro_sql: Some("{% macro touch() %} left join u on true -- x {% endmacro %}".into()),
             ..Default::default()
         },
     );
