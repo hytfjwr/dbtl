@@ -1758,8 +1758,9 @@ impl JinjaBranches {
     }
 
     /// The file's template-bound name table — [`Vars::node_enabled`]/
-    /// [`Vars::node_condition`]'s unprovable-name set.
-    pub(super) fn bound_names(&self) -> &BoundNames {
+    /// [`Vars::node_condition`]'s unprovable-name set, and the macro
+    /// expansion's call-shadow check.
+    pub(crate) fn bound_names(&self) -> &BoundNames {
         &self.bound
     }
 
@@ -1798,19 +1799,44 @@ struct ChainArms {
 /// `expr` evaluates at render), so the enabled/condition evaluator treats
 /// them like dbt's parse-context names: unprovable, never `Undefined`.
 #[derive(Debug, Default)]
-pub(super) struct BoundNames {
+pub(crate) struct BoundNames {
     names: std::collections::BTreeSet<String>,
+    /// The subset of `names` bound by a VALUE binding — `{% set %}`/
+    /// `{% for %}`/`{% import %}`/`{% from %}`/`{% with %}`/`{% call %}` —
+    /// the bindings that shadow a bare call's callee. `{% macro %}`/
+    /// `{% test %}` signature names stay out: dbt's model render resolves
+    /// the project's macro table past an in-model def, so a same-named
+    /// signature never shadows the call.
+    nondef: std::collections::BTreeSet<String>,
 }
 
 impl BoundNames {
-    /// Extend the table with a binding position's identifiers.
+    /// Extend the table with a binding position's identifiers — a name a
+    /// `{% set %}`/`{% for %}`/`{% import %}`/`{% with %}`/`{% call %}`
+    /// binds holds a VALUE at render, so it shadows a same-spelled callee.
     fn extend<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
+        for n in names {
+            self.names.insert(n.to_string());
+            self.nondef.insert(n.to_string());
+        }
+    }
+
+    /// Extend the table with a `{% macro %}`/`{% test %}` signature's
+    /// names — defined but never value-bound at the model render.
+    fn extend_defs<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
         self.names.extend(names.into_iter().map(str::to_string));
     }
 
     /// Is `name` bound anywhere in the template?
     pub(super) fn contains(&self, name: &str) -> bool {
         self.names.contains(name)
+    }
+
+    /// Does a `{% set %}`/`{% for %}`/import/with/call binding claim
+    /// `name` — making a `{{ name(…) }}` call the BOUND VALUE's, never
+    /// the macro table's?
+    pub(crate) fn shadows(&self, name: &str) -> bool {
+        self.nondef.contains(name)
     }
 }
 
@@ -1988,7 +2014,7 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
                 }
                 word @ ("macro" | "test" | "docs" | "materialization" | "verification") => {
                     if word == "macro" || word == "test" {
-                        bound.extend(sig_bind_names(rest));
+                        bound.extend_defs(sig_bind_names(rest));
                     }
                     let (_, end) = DEFERRED_TAGS.iter().find(|(w, _)| *w == word).unwrap();
                     stack.push(Frame::Block(end, Some(e + 2)));

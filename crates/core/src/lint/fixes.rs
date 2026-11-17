@@ -187,10 +187,15 @@ impl ApplyRefusal {
 /// `Ok(new)` is the file's post-fix content; `new == text` never
 /// happens on a non-empty edit list (the ranges are non-empty by
 /// construction) but costs the caller nothing to compare anyway.
+/// `node` (`dag` + uid + the batch's resolver) lets the post-edit
+/// re-parse expand the same `{{ m(…) }}`s the judged render did,
+/// reusing the resolver's memoized macro table rather than building
+/// one per call.
 pub fn apply_fixes(
     text: &str,
     edits: &[FixEdit],
     dialect: SqlDialect,
+    node: Option<(&Dag, &str, &SqlParseResolver)>,
 ) -> Result<String, ApplyRefusal> {
     let mut ranges: Vec<Range<usize>> = Vec::with_capacity(edits.len());
     let mut reparses = false;
@@ -209,7 +214,7 @@ pub fn apply_fixes(
     for r in ranges.iter().rev() {
         out.replace_range(r.clone(), "");
     }
-    if reparses && !sql_still_parses(&out, dialect) {
+    if reparses && !sql_still_parses(&out, dialect, node) {
         return Err(ApplyRefusal::Reparse);
     }
     Ok(out)
@@ -364,6 +369,7 @@ mod tests {
                 kill(LintRule::UnusedCte, 5, 22),
             ],
             SqlDialect::Generic,
+            None,
         )
         .unwrap();
         assert_eq!(out, "with b as (select 2)\nselect * from b");
@@ -380,7 +386,8 @@ mod tests {
                     kill(LintRule::UnusedCte, 0, 5),
                     kill(LintRule::UnusedCte, 3, 7)
                 ],
-                SqlDialect::Generic
+                SqlDialect::Generic,
+                None
             ),
             Err(ApplyRefusal::Overlap)
         );
@@ -390,7 +397,8 @@ mod tests {
             apply_fixes(
                 text,
                 &[kill(LintRule::UnusedCte, mid, mid + 1)],
-                SqlDialect::Generic
+                SqlDialect::Generic,
+                None
             ),
             Err(ApplyRefusal::Boundary)
         );
@@ -405,7 +413,8 @@ mod tests {
             apply_fixes(
                 text,
                 &[kill(LintRule::TrailingSemicolon, 8, 9)],
-                SqlDialect::Generic
+                SqlDialect::Generic,
+                None
             ),
             Ok("select 1".to_string())
         );
@@ -414,7 +423,8 @@ mod tests {
             apply_fixes(
                 "with a as (select 1) select * from a",
                 &[kill(LintRule::UnusedCte, 10, 11)],
-                SqlDialect::Generic
+                SqlDialect::Generic,
+                None
             ),
             Err(ApplyRefusal::Reparse)
         );

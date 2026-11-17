@@ -1119,19 +1119,13 @@ impl<'a> EnabledExpr<'a, '_> {
         // arity, a keyword naming no parameter or re-naming a filled
         // one (Python's "multiple values" TypeError) — is a parse
         // error, not a binding.
-        if pos.len() > def.params.len() {
+        if !call_shape_valid(&def.params, &pos, &kw) {
             return None;
-        }
-        for (name, _) in &kw {
-            match def.params.iter().position(|p| p.name == *name) {
-                Some(i) if i >= pos.len() => {}
-                _ => return None,
-            }
         }
         // Bind through the shared positional/keyword/default rule —
         // call args bind first, then defaults fill the leftovers
         // evaluated in the callee frame against the params bound so far.
-        let slots = bind_slots(def, &pos, &kw);
+        let slots = bind_slots(&def.params, &pos, &kw);
         let mut frame: HashMap<String, Val> = HashMap::new();
         for (i, slot) in slots.iter().enumerate() {
             let v = match slot {

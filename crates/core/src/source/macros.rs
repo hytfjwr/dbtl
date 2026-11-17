@@ -46,7 +46,7 @@ use super::yaml::scalar_to_string;
 /// reports `incomplete` — real chains run 1–3 deep; the cap is for
 /// self-recursive and mutually-recursive bodies, which a per-level
 /// decrement bounds without cycle bookkeeping.
-pub(super) const MAX_MACRO_DEPTH: usize = 8;
+pub(crate) const MAX_MACRO_DEPTH: usize = 8;
 
 /// Bare-call names dbt/Jinja expose in every context — consulted only
 /// AFTER the project's own `{% macro %}` table (a project macro always
@@ -212,9 +212,9 @@ struct BodyCall {
 /// One `{% macro %}` parameter — the name, plus its default expression's
 /// raw text (evaluated inside the callee frame against the parameters
 /// bound before it, the only scope Jinja lets a default reference).
-pub(super) struct Param {
-    pub(super) name: String,
-    pub(super) default: Option<String>,
+pub(crate) struct Param {
+    pub(crate) name: String,
+    pub(crate) default: Option<String>,
 }
 
 /// One collected `{% macro %}`: its signature and the dependency-relevant
@@ -356,10 +356,11 @@ fn arg_value(args: &CallArgs, i: usize, name: &str, bound: &[Option<String>]) ->
 }
 
 /// Which expression fills a parameter slot — the shared
-/// positional/keyword/default binding rule the edge pass's string binding
-/// and the `enabled` evaluator's value binding both follow.
+/// positional/keyword/default binding rule the edge pass's string binding,
+/// the `enabled` evaluator's value binding, and the SQL render's macro
+/// expansion all follow.
 #[derive(Clone, Copy)]
-pub(super) enum SlotSource<'a, A> {
+pub(crate) enum SlotSource<'a, A> {
     /// The call's own argument — evaluated in the caller's frame.
     Arg(&'a A),
     /// The parameter's declared default — evaluated in the callee frame
@@ -367,33 +368,58 @@ pub(super) enum SlotSource<'a, A> {
     Default(&'a str),
 }
 
-/// Map a call's arguments onto `def`'s parameter slots: positionals by
-/// index, keywords by name (overriding a positional at the same slot), a
+/// Map a call's arguments onto `params`' slots: positionals by index,
+/// keywords by name (overriding a positional at the same slot), a
 /// declared default filling whatever is left, `None` for a param the call
 /// supplies nothing for. Variadic `*args`/`**kwargs` aren't in `params`,
 /// so an arg landing there binds nothing.
-pub(super) fn bind_slots<'a, A>(
-    def: &'a MacroDef,
+pub(crate) fn bind_slots<'a, A>(
+    params: &'a [Param],
     pos: &'a [A],
     kw: &'a [(String, A)],
 ) -> Vec<Option<SlotSource<'a, A>>> {
-    let mut slots: Vec<Option<SlotSource<'a, A>>> = (0..def.params.len()).map(|_| None).collect();
+    let mut slots: Vec<Option<SlotSource<'a, A>>> = (0..params.len()).map(|_| None).collect();
     for (i, arg) in pos.iter().enumerate() {
         if let Some(slot) = slots.get_mut(i) {
             *slot = Some(SlotSource::Arg(arg));
         }
     }
     for (name, arg) in kw {
-        if let Some(i) = def.params.iter().position(|p| p.name == *name) {
+        if let Some(i) = params.iter().position(|p| p.name == *name) {
             slots[i] = Some(SlotSource::Arg(arg));
         }
     }
-    for (i, p) in def.params.iter().enumerate() {
+    for (i, p) in params.iter().enumerate() {
         if slots[i].is_none() {
             slots[i] = p.default.as_deref().map(SlotSource::Default);
         }
     }
     slots
+}
+
+/// Would dbt reject this call's shape — a positional past the arity, a
+/// keyword naming no parameter, one re-naming a slot a positional
+/// already filled (Python's "multiple values" TypeError), or the same
+/// keyword spelled twice ("keyword argument repeated")? The provable
+/// passes refuse rather than approximate a call the compile itself
+/// rejects.
+pub(crate) fn call_shape_valid<A>(params: &[Param], pos: &[A], kw: &[(String, A)]) -> bool {
+    if pos.len() > params.len() {
+        return false;
+    }
+    if kw
+        .iter()
+        .enumerate()
+        .any(|(i, (name, _))| kw[..i].iter().any(|(n, _)| n == name))
+    {
+        return false;
+    }
+    kw.iter().all(|(name, _)| {
+        params
+            .iter()
+            .position(|p| p.name == *name)
+            .is_some_and(|i| i >= pos.len())
+    })
 }
 
 /// The resolved shape of one `ref`/`source` body dep under `bound` —
@@ -634,7 +660,7 @@ impl Macros {
     /// `def`'s parameters through [`bind_slots`]'s shared
     /// positional/keyword/default rule.
     fn bind(def: &MacroDef, args: &CallArgs, frame: &[Option<String>]) -> Vec<Option<String>> {
-        let slots = bind_slots(def, &args.pos, &args.kw);
+        let slots = bind_slots(&def.params, &args.pos, &args.kw);
         let names: Vec<String> = def.params.iter().map(|p| p.name.clone()).collect();
         let mut bound: Vec<Option<String>> = vec![None; def.params.len()];
         for (i, slot) in slots.iter().enumerate() {
@@ -926,7 +952,7 @@ fn macro_def(body: &str, params: Vec<Param>, sql: &str) -> MacroDef {
 /// Parse a `{% macro %}` signature — `name` parameters in order, each
 /// optional `= expr` default kept as raw text (the binding passes
 /// classify/evaluate it inside the callee frame).
-fn parse_params(sig: &str) -> Vec<Param> {
+pub(crate) fn parse_params(sig: &str) -> Vec<Param> {
     let mut params = Vec::new();
     for seg in top_level_segments(sig) {
         let seg = seg.trim();

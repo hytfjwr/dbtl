@@ -9,6 +9,8 @@ use sqlparser::ast::Statement;
 use sqlparser::tokenizer::Span;
 
 use super::depth::{parse_statements, split_error_position, ParseFailure};
+use super::expand::ExpandScope;
+use super::withhold::leading_call;
 use super::SqlDialect;
 use crate::source::{
     call_sites_masked, call_version, find_subslice, jinja_branches, jinja_set_assigns,
@@ -60,6 +62,12 @@ struct Seg {
     /// `true`: `src` copied verbatim — offsets map 1:1. `false`: a Jinja
     /// tag's render — every byte of `out` stands for all of `src`.
     copy: bool,
+    /// `true` on the one non-copy shape [`Scan::expand_call`] emits: a
+    /// proven `{% macro %}` expansion — real SQL text the parse reads,
+    /// not a placeholder. [`RenderedSql::is_generated`] leaves it out
+    /// (its names ARE the relation text), while [`expanded_refs`] still
+    /// marks the `ref`/`source` renders inside it.
+    expanded: bool,
 }
 
 /// Raw model SQL rendered for the parser, plus the map back to source:
@@ -124,6 +132,17 @@ pub(super) struct RenderedSql {
     /// [`ReplacedTag`] judgments weigh the candidate CTEs. Other facts
     /// still judge.
     pub(super) in_rhs: bool,
+    /// At least one `{{ }}` rendered its proven `{% macro %}` expansion
+    /// — [`jinja_parse`]'s probe reads this to decide whether the
+    /// expanded variant exists at all.
+    pub(super) expanded_any: bool,
+    /// `out` byte ranges inside expanded renders that stand for a
+    /// `ref`/`source` relation — the macro call's own emitted text is
+    /// real SQL, but the relation NAMES it carries are generated
+    /// (a `{{ ref('x') }}` in a macro body renders the model's name —
+    /// it shares a CTE's name without reading it, exactly like a
+    /// top-level `{{ ref }}` render).
+    expanded_refs: Vec<Range<usize>>,
 }
 
 /// How [`Scan::other_text`] replaced an unclassifiable `{{ }}` — the two
@@ -329,7 +348,11 @@ impl RenderedSql {
         };
         self.segs
             .iter()
-            .any(|s| !s.copy && s.out.start < end && start < s.out.end)
+            .any(|s| !s.copy && !s.expanded && s.out.start < end && start < s.out.end)
+            || self
+                .expanded_refs
+                .iter()
+                .any(|r| r.start < end && start < r.end)
     }
 
     /// Does `offset` land inside an unclassifiable `{{ }}`'s render —
@@ -414,6 +437,7 @@ fn emit_copy(out: &mut Vec<u8>, segs: &mut Vec<Seg>, src: Range<usize>, bytes: &
         out: from..out.len(),
         src,
         copy: true,
+        expanded: false,
     });
 }
 
@@ -426,6 +450,7 @@ fn emit_subst(out: &mut Vec<u8>, segs: &mut Vec<Seg>, src: Range<usize>, bytes: 
         out: from..out.len(),
         src,
         copy: false,
+        expanded: false,
     });
 }
 
@@ -960,6 +985,17 @@ struct Scan<'a> {
     /// Per-render counter stamped on generated names so two `{{ }}`
     /// placeholders can never collide into one name.
     seq: usize,
+    /// The node's macro-expansion context — `Some` on the expanded
+    /// variant's renders only, so the placeholder variant and every
+    /// [`render_jinja_mapped`] caller run the scan exactly as before.
+    expand: Option<ExpandScope>,
+    /// `out` ranges inside expanded renders that stand for a
+    /// `ref`/`source` relation — copied onto
+    /// [`RenderedSql::expanded_refs`].
+    expanded_refs: Vec<Range<usize>>,
+    /// An expansion emitted this render — copied onto
+    /// [`RenderedSql::expanded_any`].
+    expanded_any: bool,
 }
 
 impl<'a> Scan<'a> {
@@ -996,6 +1032,9 @@ impl<'a> Scan<'a> {
             just_elided: false,
             in_rhs: false,
             seq: 0,
+            expand: None,
+            expanded_refs: Vec::new(),
+            expanded_any: false,
         }
     }
 
@@ -1084,6 +1123,8 @@ impl<'a> Scan<'a> {
             branches: self.branches,
             elided_clauses: self.elided_clauses,
             in_rhs: self.in_rhs,
+            expanded_any: self.expanded_any,
+            expanded_refs: self.expanded_refs,
         }
     }
 
@@ -1289,10 +1330,7 @@ impl<'a> Scan<'a> {
         match tag_close(b, i, kind) {
             Some(e) => {
                 match kind {
-                    b'{' => {
-                        self.expr_tag(i, e, ctx);
-                        e + 2
-                    }
+                    b'{' => self.expr_tag(i, e, ctx),
                     b'%' => self.block_tag(i, e, ctx),
                     _ => {
                         self.subst(i..e + 2, b" ", ctx.is_top()); // `{# … #}`
@@ -1308,9 +1346,12 @@ impl<'a> Scan<'a> {
     }
 
     /// Render a `{{ … }}` expression tag — `config(…)` emits nothing,
-    /// `ref`/`source`/`this` emit their relation name(s), everything else
+    /// `ref`/`source`/`this` emit their relation name(s), a proven
+    /// root `{% macro %}` call emits its expansion, everything else
     /// takes the position-aware shape [`Scan::other_text`] picks.
-    fn expr_tag(&mut self, i: usize, e: usize, ctx: TagCtx) {
+    /// Returns the index after the tag — after skipped whitespace when
+    /// an expanded `-}}` ate it.
+    fn expr_tag(&mut self, i: usize, e: usize, ctx: TagCtx) -> usize {
         let inner = &self.sql[i + 2..e];
         let src = i..e + 2;
         let after = self.sql.as_bytes().get(e + 2).copied();
@@ -1353,6 +1394,20 @@ impl<'a> Scan<'a> {
                 self.subst(src, t.as_bytes(), ctx.is_top());
             }
             JinjaExpr::Other(literals) => {
+                // A provable root `{% macro %}` call — `{{ m(…) }}` the
+                // macro table emits — only where [`Scan::other_text`]
+                // wouldn't take the name-fragment shape anyway: never
+                // glued to identifier text or a `.`, never right after
+                // a [`NAME_WORDS`] keyword, never inside a literal.
+                if ctx.is_top()
+                    && !self.adjacent(after)
+                    && self.last_sig != Some(b'.')
+                    && !(self.word_adjacent() && NAME_WORDS.contains(&self.last_word.as_slice()))
+                {
+                    if let Some(resume) = self.expand_call(i, e) {
+                        return resume;
+                    }
+                }
                 self.jinja_literals.extend(literals);
                 let (t, shape) = self.other_text(ctx, after);
                 let from = self.out.len();
@@ -1368,6 +1423,7 @@ impl<'a> Scan<'a> {
                 }
             }
         }
+        e + 2
     }
 
     /// `{% … %}` handling, with two body-aware exceptions:
@@ -1600,6 +1656,101 @@ impl<'a> Scan<'a> {
         match self.mark {
             JinjaMark::Plain => " NULL ".to_string(),
             JinjaMark::Marked => format!("\"{name}\""),
+        }
+    }
+
+    /// `{{ name(args) }}`'s proven expansion — `name` binding an
+    /// expandable root `{% macro %}` — emitted in place of the
+    /// placeholder, mapped to the call's whole tag, with `{{-`/`-}}`
+    /// whitespace control honored. `Some(resume)` only on success;
+    /// `None` runs the placeholder path unchanged: an unresolvable or
+    /// unexpandable callee, an argument that can't prove, a `{% set %}`-
+    /// style binding shadowing the name, or an emitted tail that can't
+    /// close (a `--`-terminated expansion would swallow the model's own
+    /// trailing text).
+    fn expand_call(&mut self, i: usize, e: usize) -> Option<usize> {
+        let scope = self.expand.as_ref()?;
+        if !scope.enabled() {
+            return None;
+        }
+        let (name, args, tail) = leading_call(jinja_inner(&self.sql[i + 2..e]))?;
+        if !tail.is_empty() {
+            return None;
+        }
+        // A `{% set %}`/loop/import value binding shadows the root def —
+        // dbt reads `name` as the bound value, never the macro.
+        if self
+            .branches
+            .bound_names()
+            .shadows(name.split('.').next().unwrap_or(name))
+        {
+            return None;
+        }
+        let (text, refs) = scope.expand_call(name, args, self.mark)?;
+        if ends_in_open_tail(&text, &self.lex) {
+            return None;
+        }
+        let b = self.sql.as_bytes();
+        if b.get(i + 2) == Some(&b'-') {
+            self.lstrip();
+        }
+        self.note_rendered(&text);
+        let from = self.out.len();
+        emit_subst(&mut self.out, &mut self.segs, i..e + 2, text.as_bytes());
+        if let Some(seg) = self.segs.last_mut() {
+            seg.expanded = true;
+        }
+        self.expanded_any = true;
+        self.expanded_refs
+            .extend(refs.into_iter().map(|r| from + r.start..from + r.end));
+        Some(if b.get(e.wrapping_sub(1)) == Some(&b'-') {
+            skip_ws(b, e + 2)
+        } else {
+            e + 2
+        })
+    }
+
+    /// `{{-`'s whitespace control — trim the emitted text's trailing
+    /// whitespace run, never further than the last emitted segment's
+    /// own content: the dash eats TEMPLATE whitespace — a previous
+    /// tag's render is not the template's to strip.
+    fn lstrip(&mut self) {
+        let Some(seg) = self.segs.last() else {
+            return;
+        };
+        let floor = if seg.copy { seg.out.start } else { seg.out.end };
+        let keep = self.out[floor..]
+            .iter()
+            .rposition(|c| !c.is_ascii_whitespace())
+            .map_or(0, |p| p + 1);
+        let end = floor + keep;
+        if end == self.out.len() {
+            return;
+        }
+        self.out.truncate(end);
+        if let Some(seg) = self.segs.last_mut() {
+            if seg.copy {
+                seg.src.end -= seg.out.end - end;
+                seg.out.end = end;
+                if seg.out.is_empty() {
+                    self.segs.pop();
+                }
+            }
+        }
+    }
+
+    /// Feed an expansion's emitted text through the tokenization the
+    /// parser sees — [`sep_tokens`] skips comments and literal
+    /// interiors (a `'`/`(`/`--` inside an interpolated string argument
+    /// can't corrupt the paren depth or the last word), and a skipped
+    /// literal counts as one operand — the `"` boundary byte
+    /// [`Scan::literal`] feeds at a quote's close.
+    fn note_rendered(&mut self, text: &str) {
+        for (r, t) in sep_tokens(text.as_bytes(), &self.lex) {
+            match t {
+                Tok::Operand => self.note(b"\""),
+                _ => self.note(&text.as_bytes()[r]),
+            }
         }
     }
 
@@ -1938,7 +2089,7 @@ pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark, dialect: SqlDialect) -
 /// arm render ([`RenderArms::Union`]) with clause-boundary elision on.
 #[cfg(test)]
 pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark, dialect: SqlDialect) -> RenderedSql {
-    render_arms(sql, mark, dialect, RenderArms::Union, true, false)
+    render_arms(sql, mark, dialect, RenderArms::Union, true, false, None)
 }
 
 /// [`render_jinja_mapped`] with an explicit arm mode — see
@@ -1951,7 +2102,8 @@ pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark, dialect: SqlDialec
 /// with `elide: false` (the value shape) when the boundary render fails.
 /// `loose` picks the boundary's word test — `false` is the strict
 /// no-keyword-completes rule, `true` the operand-awaiting test the
-/// second pass runs.
+/// second pass runs. `expand` — the node's macro table — is `Some` only
+/// on [`jinja_parse`]'s expanded variant.
 pub(super) fn render_arms(
     sql: &str,
     mark: JinjaMark,
@@ -1959,9 +2111,11 @@ pub(super) fn render_arms(
     arms: RenderArms,
     elide: bool,
     loose: bool,
+    expand: Option<ExpandScope>,
 ) -> RenderedSql {
     let branches = jinja_branches(&mask_jinja_comments(sql));
     let mut scan = Scan::new(sql, mark, Lex::new(dialect), branches, arms, elide, loose);
+    scan.expand = expand;
     scan.run();
     scan.finish()
 }
@@ -2006,17 +2160,31 @@ pub(super) fn render_arms(
 /// [`ParseFailure::JinjaGenerated`] first — it reads ONLY this stage's
 /// renders, never a retry's, so a fallback's own artifacts can't mint
 /// the reason.
+///
+/// `expand` — the node's macro table — runs a second variant of every
+/// stage FIRST: a `{{ m(…) }}` that proves a root `{% macro %}` body
+/// renders the emitted text instead of the placeholder. Every stage
+/// tries the expanded render before its unexpanded one, so a parseable
+/// expansion always wins and a model that analyzed before can never
+/// lose to one that didn't (the unexpanded stage still runs when the
+/// expanded text can't parse). `expanded_any` on the probe render
+/// decides whether the variant exists at all — a dag without an
+/// expandable macro, a package node, or a file no call proves in all
+/// run the single-variant ladder exactly as before.
 pub(super) fn jinja_parse(
     sql: &str,
     mark: JinjaMark,
     dialect: SqlDialect,
+    expand: Option<ExpandScope>,
 ) -> Result<(RenderedSql, Vec<Statement>), ParseFailure> {
     let lex = Lex::new(dialect);
     // The first pass's union stage — its clause-boundary render's
     // failure, and the value-shape retry's when the boundary render
     // actually dropped a tag. `jinja_generated` reads these when every
     // stage fails; the boundary failure is also the `Err` the caller's
-    // contract returns (the first failure ever recorded).
+    // contract returns (the first failure ever recorded). Only the
+    // UNEXPANDED renders record — a `{{ }}` the placeholder replaced is
+    // the only shape "Jinja generates the query" names.
     let mut union_boundary: Option<(RenderedSql, ParseFailure)> = None;
     let mut union_value: Option<(RenderedSql, ParseFailure)> = None;
     // Every text already parsed — a second-pass render producing one of
@@ -2024,42 +2192,84 @@ pub(super) fn jinja_parse(
     // only rewrites the boundary render, so a stage's value-shape text
     // is always in this set by the second pass.)
     let mut tried: Vec<String> = Vec::new();
+    // The expanded variant's probe — the first stage's own render —
+    // decides whether any `{{ m() }}` proved out. `None` folds the
+    // variant loop to the unexpanded render alone.
+    let (expand_scope, mut probe) = match expand.filter(|e| e.enabled()) {
+        Some(scope) => {
+            let r = render_arms(
+                sql,
+                mark,
+                dialect,
+                RenderArms::Union,
+                true,
+                false,
+                Some(scope.clone()),
+            );
+            if r.expanded_any {
+                (Some(scope), Some(r))
+            } else {
+                (None, None)
+            }
+        }
+        None => (None, None),
+    };
     for loose in [false, true] {
         for arms in [RenderArms::Union, RenderArms::Collapse] {
             for strip in [false, true] {
-                for elide in [true, false] {
-                    if loose && !elide {
-                        // The value shape never consults the boundary
-                        // — the loose flag can't change this text, so
-                        // it is already in `tried` and its parse failed.
-                        break;
+                for expanded in [true, false] {
+                    if expanded && expand_scope.is_none() {
+                        continue;
                     }
-                    let mut rendered = render_arms(sql, mark, dialect, arms, elide, loose);
-                    if strip {
-                        strip_dangling(&mut rendered, &lex);
-                    }
-                    if loose && tried.contains(&rendered.text) {
-                        // Byte-identical to a strict render — its parse
-                        // already failed, so this stage is done.
-                        break;
-                    }
-                    match parse_statements(dialect, &rendered.text) {
-                        Ok(stmts) => return Ok((rendered, stmts)),
-                        Err(e) => {
-                            tried.push(rendered.text.clone());
-                            let elided = rendered.elided_clauses;
-                            if !loose && arms == RenderArms::Union && !strip {
-                                if elide {
-                                    union_boundary = Some((rendered, e));
-                                } else {
-                                    union_value = Some((rendered, e));
+                    for elide in [true, false] {
+                        if loose && !elide {
+                            // The value shape never consults the boundary
+                            // — the loose flag can't change this text, so
+                            // it is already in `tried` and its parse failed.
+                            break;
+                        }
+                        let scope = if expanded { expand_scope.clone() } else { None };
+                        let mut rendered = if expanded
+                            && !loose
+                            && arms == RenderArms::Union
+                            && !strip
+                            && elide
+                            && probe.is_some()
+                        {
+                            // The probe IS this stage's expanded render —
+                            // it ran before the ladder to decide the
+                            // variant exists.
+                            probe.take().expect("checked non-empty")
+                        } else {
+                            render_arms(sql, mark, dialect, arms, elide, loose, scope)
+                        };
+                        if strip {
+                            strip_dangling(&mut rendered, &lex);
+                        }
+                        if loose && tried.contains(&rendered.text) {
+                            // Byte-identical to a strict render — its parse
+                            // already failed, so this stage is done.
+                            break;
+                        }
+                        match parse_statements(dialect, &rendered.text) {
+                            Ok(stmts) => return Ok((rendered, stmts)),
+                            Err(e) => {
+                                tried.push(rendered.text.clone());
+                                let elided = rendered.elided_clauses;
+                                if !expanded && !loose && arms == RenderArms::Union && !strip {
+                                    if elide {
+                                        union_boundary = Some((rendered, e));
+                                    } else {
+                                        union_value = Some((rendered, e));
+                                    }
                                 }
-                            }
-                            if !elided {
-                                // The boundary render dropped nothing —
-                                // the value-shape retry would re-parse
-                                // the same text, so the stage is done.
-                                break;
+                                if !elided {
+                                    // The boundary render dropped nothing
+                                    // — the value-shape retry would
+                                    // re-parse the same text, so the
+                                    // stage is done.
+                                    break;
+                                }
                             }
                         }
                     }
@@ -2309,6 +2519,81 @@ fn arm_start(b: &[u8], from: usize, lex: &Lex) -> ArmStart {
 /// check's lookahead.
 fn next_sig_byte(b: &[u8], from: usize) -> Option<u8> {
     b[from..].iter().find(|c| !c.is_ascii_whitespace()).copied()
+}
+
+/// The index after `from`'s whitespace run — a `-}}`/`-#}`/`{%-`-style
+/// control eats the whole run.
+fn skip_ws(b: &[u8], from: usize) -> usize {
+    b[from..]
+        .iter()
+        .position(|c| !c.is_ascii_whitespace())
+        .map_or(b.len(), |p| from + p)
+}
+
+/// Does `text` end inside something the scan can't close — an
+/// unterminated `'…'`/`"…"`/`` `…` ``/`q'[..]'`/`$$…$$` literal, a `/*`
+/// comment, or a line comment reaching the end? An expansion emitting
+/// one would swallow whatever the model wrote after the tag — the call
+/// stays a placeholder instead. (`{` Jinja opens can't appear inside
+/// the emitted text — a body's own delimiters can't nest.)
+fn ends_in_open_tail(text: &str, lex: &Lex) -> bool {
+    let b = text.as_bytes();
+    let mut j = 0usize;
+    while j < b.len() {
+        match b[j] {
+            b'-' if lex.dash_comment_at(b, j) => {
+                j = line_comment_end(b, j);
+                if j == b.len() {
+                    return true;
+                }
+            }
+            b'/' if lex.slash_comment_at(b, j) => {
+                j = line_comment_end(b, j);
+                if j == b.len() {
+                    return true;
+                }
+            }
+            b'/' if b.get(j + 1) == Some(&b'*') => {
+                let end = block_comment_end(b, j, lex.nested_comments);
+                if !b[..end].ends_with(b"*/") {
+                    return true;
+                }
+                j = end;
+            }
+            b'#' if lex.hash_comment_at(b, j) => {
+                j = line_comment_end(b, j);
+                if j == b.len() {
+                    return true;
+                }
+            }
+            b'\'' if lex.q_quote_at(b, j) => {
+                let end = q_quote_end(b, j);
+                if b.get(end.wrapping_sub(1)) != Some(&b'\'') {
+                    return true;
+                }
+                j = end;
+            }
+            q @ (b'\'' | b'"' | b'`') => {
+                let end = quoted_end(b, j, q, lex.escape_for(b, j));
+                if b.get(end.wrapping_sub(1)) != Some(&q) {
+                    return true;
+                }
+                j = end;
+            }
+            b'$' if lex.dollar_quote => match dollar_quote_open(b, j) {
+                Some(dlen) => {
+                    let from = j + dlen;
+                    match dollar_quote_close(b, from, &b[j..j + dlen]) {
+                        Some(close) => j = close + dlen,
+                        None => return true,
+                    }
+                }
+                None => j += 1,
+            },
+            _ => j += 1,
+        }
+    }
+    false
 }
 
 /// The next `{` opening a `{{`/`{%`/`{#` marker at or after `from` —
