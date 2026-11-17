@@ -207,6 +207,10 @@ pub struct ReportSummary {
     /// one model was skipped that way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unparsed_models: Option<UnparsedModels>,
+    /// (model, rule) pairs whose candidates a replaced `{{ }}` withheld
+    /// — present only when at least one was withheld.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub withheld: Option<WithheldSummary>,
     /// `.dbtl.yml` `exclude:` entries carrying no reason — present only
     /// when `suppressions_without_reason` ran (the entries can never be
     /// findings of their own; the count is their audit).
@@ -293,6 +297,21 @@ pub struct UnparsedModels {
     pub reasons: Option<BTreeMap<String, String>>,
 }
 
+/// The withheld-finding rollup `summary.withheld` carries — the same
+/// (model, rule) pairs the text summary's withheld line names.
+/// Informational only: withheld entries are never findings, so they
+/// never gate and never count toward `errors`/`warnings`.
+#[derive(Debug, Clone, Serialize)]
+pub struct WithheldSummary {
+    /// `names.len()` echoed for consumers that don't list them.
+    pub count: usize,
+    /// The models' [`dbtl_core::display_name`]s in `unique_id` order.
+    pub names: Vec<String>,
+    /// Which rules withheld on each model — display name → rule ids in
+    /// `LintRule::ALL` order.
+    pub rules: BTreeMap<String, Vec<String>>,
+}
+
 /// The lint-run tallies the `text`/`concise` summary lines need that the
 /// gate list alone can't express: findings `--diff` suppressed before
 /// counting, whether the `new` wording applies, the enabled-but-unrunnable
@@ -326,6 +345,11 @@ pub struct LintTally {
     /// when `suppressions_without_reason` ran (enabled); the text summary
     /// counts them on one line, the JSON summary the same key.
     pub reasonless_excludes: Option<usize>,
+    /// The (model, rule) pairs a replaced `{{ }}` withheld — display name
+    /// plus its rule ids per model, in `unique_id` order. The text
+    /// summary names each `name (rule, …)`; `summary.withheld` carries
+    /// the same shape. Informational only — never a finding, never gated.
+    pub withheld: Vec<(String, Vec<LintRule>)>,
     /// The suppressed-finding rollup — total, mechanism split, and the
     /// count carrying no reason. The text summary's fourth line and the
     /// JSON `summary.suppressed` both read it.
@@ -442,6 +466,25 @@ impl Report {
                 count: lint.unparsed_models.len(),
                 names: lint.unparsed_models.clone(),
                 reasons: Some(lint.unparsed_reasons.clone()),
+            });
+        }
+        if !lint.withheld.is_empty() {
+            // A display-name collision merges rule lists — two models
+            // can't be told apart by name, so the union is the honest
+            // answer (order stays `LintRule::ALL`).
+            let mut rules: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (name, rs) in &lint.withheld {
+                let entry = rules.entry(name.clone()).or_default();
+                for r in rs {
+                    if !entry.iter().any(|id| id == r.name()) {
+                        entry.push(r.name().to_string());
+                    }
+                }
+            }
+            self.summary.withheld = Some(WithheldSummary {
+                count: lint.withheld.len(),
+                names: lint.withheld.iter().map(|(n, _)| n.clone()).collect(),
+                rules,
             });
         }
         self.summary.exclude_entries_without_reason = lint.reasonless_excludes;

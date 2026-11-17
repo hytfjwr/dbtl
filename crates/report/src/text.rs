@@ -206,6 +206,9 @@ pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
         second += &format!("; {} skipped ({})", lint.skipped.len(), reasons.join(", "));
     }
     let mut lines = vec![first, second];
+    // Summary lines name up to 10 entries — a wall of names would bury
+    // the exit-relevant tally; the `+K more` tail keeps the count honest.
+    const SHOWN: usize = 10;
     if lint.suppressed.total > 0 {
         // The mechanism split reads "N meta.dbtl.ignore / M exclude"; the
         // unreasoned tail only appears when at least one lacks a reason.
@@ -237,10 +240,7 @@ pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
         }
     }
     if !lint.unparsed_models.is_empty() {
-        // Name up to 10 skipped models — a wall of names would bury the
-        // exit-relevant tally; the `+K more` tail keeps the count honest.
-        // Each name carries the reason its parse failed.
-        const SHOWN: usize = 10;
+        // Each skipped model's name carries the reason its parse failed.
         let shown = lint.unparsed_models.len().min(SHOWN);
         let named = lint.unparsed_models[..shown]
             .iter()
@@ -260,6 +260,41 @@ pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
             line += &format!(" +{hidden} more");
         }
         lines.push(line);
+    }
+    if !lint.withheld.is_empty() {
+        // Each model names the rules a replaced `{{ }}` muted —
+        // informational, never a finding.
+        let shown = lint.withheld.len().min(SHOWN);
+        let named = lint.withheld[..shown]
+            .iter()
+            .map(|(name, rules)| {
+                format!(
+                    "{name} ({})",
+                    rules
+                        .iter()
+                        .map(|r| r.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut line = format!(
+            "{} had SQL findings withheld next to {{{{…}}}} tags: {}",
+            counted(lint.withheld.len(), "model", "models"),
+            named,
+        );
+        let hidden = lint.withheld.len() - shown;
+        if hidden > 0 {
+            line += &format!(" +{hidden} more");
+        }
+        lines.push(line);
+        lines.push(
+            "a replaced {{ }} tag can add conditions or clauses the parse never \
+             saw — run `dbt compile` and lint target/manifest.json (it carries \
+             compiled_code) for the definitive call"
+                .to_string(),
+        );
     }
     if let Some(fixed) = &lint.fixed {
         // `--fix` counts what it wrote; `--fix-dry-run` writes nothing —
@@ -619,6 +654,7 @@ mod tests {
             unparsed_models: Vec::new(),
             unparsed_reasons: std::collections::BTreeMap::new(),
             reasonless_excludes: None,
+            withheld: Vec::new(),
             suppressed: SuppressedSummary::default(),
             fixed: None,
             fix_refused: Vec::new(),
@@ -777,6 +813,64 @@ mod tests {
              0 rules reported findings\n\
              2 models skipped SQL rules (unparsable SQL): \
              m_a (parse error at 1:13: Expected: table name), m_b"
+        );
+    }
+
+    /// The withheld summary line names each model with the rules a
+    /// replaced `{{ }}` muted — up to ten entries, then a `+K more`
+    /// tail — followed by the help line; both stay absent when nothing
+    /// withheld.
+    #[test]
+    fn summary_names_up_to_ten_withheld_models() {
+        let report = Report::new("p", "source (x)");
+        let lint = |pairs: Vec<(&str, Vec<dbtl_core::LintRule>)>| LintTally {
+            withheld: pairs
+                .into_iter()
+                .map(|(n, rs)| (n.to_string(), rs))
+                .collect(),
+            ..LintTally::default()
+        };
+        assert_eq!(
+            summary_lines(
+                &report,
+                &lint(vec![
+                    ("orders_wide", vec![dbtl_core::LintRule::CartesianJoin]),
+                    (
+                        "refunds",
+                        vec![
+                            dbtl_core::LintRule::OrderByWithoutLimit,
+                            dbtl_core::LintRule::UnusedCte,
+                        ],
+                    ),
+                ]),
+                false
+            ),
+            "No findings\n\
+             0 rules reported findings\n\
+             2 models had SQL findings withheld next to {{…}} tags: \
+             orders_wide (cartesian_join), refunds (order_by_without_limit, unused_cte)\n\
+             a replaced {{ }} tag can add conditions or clauses the parse never saw — \
+             run `dbt compile` and lint target/manifest.json (it carries compiled_code) \
+             for the definitive call"
+        );
+        // > 10 — the first ten then the hidden count.
+        let pairs: Vec<(String, Vec<dbtl_core::LintRule>)> = (0..13)
+            .map(|i| (format!("m{i:02}"), vec![dbtl_core::LintRule::UnusedCte]))
+            .collect();
+        let l = LintTally {
+            withheld: pairs,
+            ..LintTally::default()
+        };
+        assert!(summary_lines(&report, &l, false).contains(
+            "13 models had SQL findings withheld next to {{…}} tags: \
+             m00 (unused_cte), m01 (unused_cte), m02 (unused_cte), m03 (unused_cte), \
+             m04 (unused_cte), m05 (unused_cte), m06 (unused_cte), m07 (unused_cte), \
+             m08 (unused_cte), m09 (unused_cte) +3 more"
+        ));
+        // None — no line, no help.
+        assert_eq!(
+            summary_lines(&report, &LintTally::default(), false),
+            "No findings\n0 rules reported findings"
         );
     }
 
