@@ -216,6 +216,7 @@ impl Vars {
                     proj: &self.proj,
                     locals: None,
                     depth: MAX_MACRO_DEPTH,
+                    render: None,
                 };
                 jinja_expr(s)
                     .and_then(|e| eval_enabled_expr(e, scope))
@@ -303,7 +304,8 @@ impl Vars {
         macros: &Macros,
     ) -> Option<bool> {
         let lookup = |n: &str| self.node_scope(n);
-        eval_enabled_expr(expr, self.node_scope_ctx(bound, macros, &lookup)).map(|v| truthy(&v))
+        eval_enabled_expr(expr, self.node_scope_ctx(bound, macros, &lookup))
+            .and_then(|v| truthy(&v))
     }
 
     /// The node-render [`EvalScope`] — the tolerant `var()` table, the
@@ -322,6 +324,7 @@ impl Vars {
             proj: &self.proj,
             locals: None,
             depth: MAX_MACRO_DEPTH,
+            render: None,
         }
     }
 
@@ -376,15 +379,48 @@ fn file_vars(dir: &Path, warnings: &mut Vec<String>) -> serde_json::Map<String, 
     }
 }
 
-/// A value the `enabled` evaluator produced — a resolved Python/Jinja
-/// value, or Jinja's `Undefined` (a bare name the context never carries).
-/// The two are alike almost everywhere — `Undefined` is falsy, `==` only
-/// to itself, and fails the leaf's bool validation just like a non-bool —
-/// EXCEPT under the `is defined`/`is undefined`/`is none` tests: Python
-/// `None` IS defined while a missing name is not.
+/// A value the Jinja-expression evaluator produced — a resolved
+/// Python/Jinja value, or Jinja's `Undefined` (a bare name the context
+/// never carries). The two are alike almost everywhere — `Undefined`
+/// is falsy, `==` only to itself, and fails the leaf's bool validation
+/// just like a non-bool — EXCEPT under the `is defined`/`is undefined`/
+/// `is none` tests: Python `None` IS defined while a missing name is
+/// not. The `enabled` passes only ever produce `V`/`Undefined`; the
+/// remaining variants exist only under the render context
+/// [`eval_render`] runs — a macro body's own value domain, where JSON
+/// can't model what an expression yields (a tuple is not a list,
+/// `range` is lazy, a `ref()` is a relation object, `loop` is Jinja's
+/// LoopContext).
 #[derive(Clone, Debug)]
-enum Val {
+pub(crate) enum Val {
+    /// A JSON-modelled value — the `enabled` passes' everything, and
+    /// the render's strings/ints/bools/none.
     V(serde_json::Value),
+    /// A float literal — `Some(spelling)` only when the literal's own
+    /// spelling already IS Python's `repr` (`1.5`, `0.25`, `2.0`); the
+    /// `{{ }}` emitter may print a float only through that provable
+    /// spelling.
+    Float(f64, Option<String>),
+    /// `[a, b]` — a render-context list.
+    List(Vec<Val>),
+    /// `(a, b)`/`()` — a render-context tuple, a kind apart from
+    /// `List` (`(1, 2) == [1, 2]` is Python-False but unprovable here).
+    Tuple(Vec<Val>),
+    /// `{k: v}` — a render-context dict, insertion-ordered.
+    Dict(Vec<(String, Val)>),
+    /// `range(start, stop, step)` — `len` precomputed (a range past
+    /// [`RANGE_CAP`] is never minted).
+    Range { start: i64, step: i64, len: usize },
+    /// A `ref()`/`source()` relation object — emits its relation name
+    /// or passes through a call-arg binding; binding it in a `{% set %}`
+    /// RHS, comparing it, or conditioning on it is unprovable.
+    Relation(Relation),
+    /// `loop` inside a `{% for %}` body — `index0`/`length` of the
+    /// post-filter sequence.
+    Loop(LoopInfo),
+    /// Jinja's `Undefined` — the `enabled` passes' missing-name
+    /// marker; the render context produces none (a missing name fails
+    /// the eval).
     Undefined,
 }
 
@@ -398,7 +434,94 @@ impl Val {
             _ => None,
         }
     }
+
+    /// What `{% for x in v %}` / `{% set a, b = v %}` / `v | join`
+    /// iterate — `None` when `v` isn't iterable (a number, `none`, a
+    /// relation, `loop`). A dict iterates its keys, a string its
+    /// characters — Python's own rules.
+    pub(crate) fn iterate(&self) -> Option<Seq> {
+        match self {
+            Val::V(serde_json::Value::String(s)) => Some(Seq::Chars(s.chars().collect())),
+            Val::V(serde_json::Value::Array(a)) => {
+                Some(Seq::Items(a.iter().map(|v| Val::V(v.clone())).collect()))
+            }
+            Val::V(serde_json::Value::Object(m)) => Some(Seq::Items(
+                m.keys().map(|k| Val::V(k.clone().into())).collect(),
+            )),
+            Val::List(items) | Val::Tuple(items) => Some(Seq::Items(items.clone())),
+            Val::Dict(d) => Some(Seq::Items(
+                d.iter().map(|(k, _)| Val::V(k.clone().into())).collect(),
+            )),
+            Val::Range { start, step, len } => Some(Seq::Range {
+                start: *start,
+                step: *step,
+                len: *len,
+            }),
+            _ => None,
+        }
+    }
 }
+
+/// The relation a `ref()`/`source()` binds — a name the render emits
+/// or passes through, never a value it compares.
+#[derive(Clone, Debug)]
+pub(crate) enum Relation {
+    /// `ref('name')`.
+    Ref(String),
+    /// `source('src', 'tbl')`.
+    Source(String, String),
+}
+
+/// `loop` inside one `{% for %}` iteration — the post-filter index
+/// (`index0`, 0-based) and sequence `length`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LoopInfo {
+    /// The iteration's 0-based position in the post-filter sequence.
+    pub(crate) index0: usize,
+    /// The post-filter sequence's length.
+    pub(crate) len: usize,
+}
+
+/// An iterable's view for `{% for %}`/`{% set a, b = %}` — `Range`
+/// stays lazy (a 100k range allocates nothing).
+pub(crate) enum Seq {
+    /// Materialized elements (list/tuple/dict keys).
+    Items(Vec<Val>),
+    /// `range` elements computed on demand.
+    Range { start: i64, step: i64, len: usize },
+    /// A string's characters.
+    Chars(Vec<char>),
+}
+
+impl Seq {
+    /// Element count — `{% for %}` bounds and `loop.length` share it.
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Seq::Items(v) => v.len(),
+            Seq::Range { len, .. } => *len,
+            Seq::Chars(c) => c.len(),
+        }
+    }
+
+    /// The `i`th element as a value.
+    pub(crate) fn item(&self, i: usize) -> Val {
+        match self {
+            Seq::Items(v) => v[i].clone(),
+            Seq::Range { start, step, .. } => Val::V((start + i as i64 * step).into()),
+            Seq::Chars(c) => Val::V(c[i].to_string().into()),
+        }
+    }
+}
+
+/// A parsed call's argument list — positional values, then the
+/// `(name, value)` keyword args in order.
+pub(crate) type ArgVals = (Vec<Val>, Vec<(String, Val)>);
+
+/// The largest `range(…)` a macro body may mint — `| length`, `in`,
+/// and `{% for %}` all compute off it (Python's own range is lazy and
+/// unbounded, but a `range(200000)` shape is past anything a render
+/// needs to prove — the loop/output caps would cut it anyway).
+const RANGE_CAP: usize = 100_000;
 
 /// The render context an `enabled`/`{% if %}` expression evaluates
 /// under — one per render pass. `lookup`/`missing_none` carry the pass's
@@ -428,6 +551,32 @@ struct EvalScope<'b> {
     /// Remaining project-macro calls the evaluator will follow —
     /// [`MAX_MACRO_DEPTH`]-bounded like the edge pass's.
     depth: usize,
+    /// `Some` marks the scope a macro-body render — the `enabled`
+    /// fields it replaces (`lookup`/`missing_none`/`bound`/`macros`/
+    /// `locals`/`depth`) are dead there.
+    render: Option<RenderCx<'b>>,
+}
+
+/// The render-context half of [`EvalScope`] — the value domain a macro
+/// body's own Jinja evaluates under. Same grammar as the `enabled`
+/// subset; the differences are what a name resolves to (the frame
+/// only — params, `{% set %}` locals, loop variables, `loop`), which
+/// calls exist (`range`/`ref`/`source` only — macro names resolve in
+/// the caller, everything else is unprovable), which literals are
+/// exact (strings honor `\\ \' \" \n \t \r` escapes only; ints are
+/// i64 with no leading zeros; floats carry a canonicality flag for the
+/// `{{ }}` emitter), and what postfix allows (`.attr` on `loop` only;
+/// `|` on `join`/`length` only).
+#[derive(Clone, Copy)]
+struct RenderCx<'b> {
+    /// The scope stack — innermost last — of param/`{% set %}`/loop
+    /// bindings. A bare name reads no further than this.
+    frame: &'b [HashMap<String, Val>],
+    /// Model-level `{{ m(…) }}` argument position — narrows the
+    /// grammar to plain literals plus `ref`/`source` calls: no
+    /// operators, tests, filters, `range`, or names. Anything else
+    /// leaves input unconsumed and fails the eval's end check.
+    literals_only: bool,
 }
 
 /// Evaluate a Jinja `enabled` expression to the Python value it resolves
@@ -448,6 +597,46 @@ fn eval_enabled_expr(expr: &str, scope: EvalScope) -> Option<Val> {
     let mut e = EnabledExpr {
         p: LitParser { s: expr, i: 0 },
         scope,
+        used_var: false,
+    };
+    let v = e.parse_or()?;
+    e.p.ws();
+    (e.p.i == expr.len()).then_some(v)
+}
+
+/// Evaluate `expr` inside a project macro body's render — the
+/// [`RenderCx`] context: literal values, the frame's bound names
+/// (params, `{% set %}` locals, loop variables, `loop`),
+/// `ref`/`source`/`range` calls, the shared operator grammar, `| join`
+/// / `| length` filters, and `is` tests. `None` on anything dbt would
+/// fail or source can't prove — a name outside the frame, a
+/// context/builtin call (`var`, `config`, `target`, `execute`,
+/// `adapter`, `exceptions`, `caller`, and macro calls, which the caller
+/// resolves), an attribute read that isn't `loop.<field>`, a subscript,
+/// an unknown filter, a type error, or trailing input. `literals_only`
+/// narrows the grammar to plain literals + `ref`/`source` calls — the
+/// shape a model-level `{{ m(…) }}` argument accepts.
+pub(crate) fn eval_render(
+    expr: &str,
+    frame: &[HashMap<String, Val>],
+    literals_only: bool,
+) -> Option<Val> {
+    let no_vars = |_: &str| None;
+    let mut e = EnabledExpr {
+        p: LitParser { s: expr, i: 0 },
+        scope: EvalScope {
+            lookup: &no_vars,
+            missing_none: false,
+            bound: None,
+            macros: None,
+            proj: "",
+            locals: None,
+            depth: 0,
+            render: Some(RenderCx {
+                frame,
+                literals_only,
+            }),
+        },
         used_var: false,
     };
     let v = e.parse_or()?;
@@ -572,11 +761,38 @@ impl<'a> EnabledExpr<'a, '_> {
         Some(&s[start..self.p.i])
     }
 
+    /// The render context this expression evaluates under, if any.
+    fn render(&self) -> Option<RenderCx<'_>> {
+        self.scope.render
+    }
+
+    /// Model-level `{{ m(…) }}` argument position — the literal-only
+    /// sub-grammar (see [`RenderCx::literals_only`]): every operator
+    /// level is left unconsumed so a `+`/`<`/`is`/`|`/`or`/`and`/`not`
+    /// trailing a literal fails the eval's end-of-input check.
+    fn literals_only(&self) -> bool {
+        self.scope.render.is_some_and(|r| r.literals_only)
+    }
+
+    /// A frame lookup — the innermost scope wins; a miss is unprovable.
+    fn frame_get(&self, name: &str) -> Option<Val> {
+        self.scope
+            .render?
+            .frame
+            .iter()
+            .rev()
+            .find_map(|f| f.get(name))
+            .cloned()
+    }
+
     /// `a or b or …` — Python `or`: the first truthy operand's value,
     /// else the last one. The operand value matters (`0 or false` is
     /// `false`), so a short-circuit only excuses the rhs being
     /// UNPROVABLE, never its parse.
     fn parse_or(&mut self) -> Option<Val> {
+        if self.literals_only() {
+            return self.parse_and();
+        }
         let mut l = self.parse_and()?;
         loop {
             self.p.ws();
@@ -588,10 +804,9 @@ impl<'a> EnabledExpr<'a, '_> {
             // to parse (e.g. `false and (`), which is a syntax error in
             // dbt, not a value. Any `None` rhs makes the whole expression
             // unprovable → warn + enabled, never a silent disable.
-            match self.parse_and() {
-                Some(r) if !truthy(&l) => l = r,
-                Some(_) => {}
-                None => return None,
+            let r = self.parse_and()?;
+            if !truthy(&l)? {
+                l = r;
             }
         }
     }
@@ -599,6 +814,9 @@ impl<'a> EnabledExpr<'a, '_> {
     /// `a and b and …` — Python `and`: the first falsy operand's value,
     /// else the last one.
     fn parse_and(&mut self) -> Option<Val> {
+        if self.literals_only() {
+            return self.parse_not();
+        }
         let mut l = self.parse_not()?;
         loop {
             self.p.ws();
@@ -606,10 +824,9 @@ impl<'a> EnabledExpr<'a, '_> {
                 return Some(l);
             }
             // Same rule as `parse_or` — see the note there.
-            match self.parse_not() {
-                Some(r) if truthy(&l) => l = r,
-                Some(_) => {}
-                None => return None,
+            let r = self.parse_not()?;
+            if truthy(&l)? {
+                l = r;
             }
         }
     }
@@ -617,10 +834,13 @@ impl<'a> EnabledExpr<'a, '_> {
     /// `not x` — a real bool result (`not` binds tighter than `and`/`or`,
     /// looser than comparisons, so `not a == b` is `not (a == b)`).
     fn parse_not(&mut self) -> Option<Val> {
+        if self.literals_only() {
+            return self.parse_cmp();
+        }
         self.p.ws();
         if self.eat_kw("not") {
             let v = self.parse_not()?;
-            Some(Val::V((!truthy(&v)).into()))
+            Some(Val::V((!truthy(&v)?).into()))
         } else {
             self.parse_cmp()
         }
@@ -632,6 +852,9 @@ impl<'a> EnabledExpr<'a, '_> {
     /// is `False` short-circuits the remaining comparisons like CPython
     /// does — a later link's type error can then never fire.
     fn parse_cmp(&mut self) -> Option<Val> {
+        if self.literals_only() {
+            return self.parse_postfix();
+        }
         let mut prev = self.parse_postfix()?;
         let mut chained = false;
         let mut ok = true;
@@ -656,8 +879,8 @@ impl<'a> EnabledExpr<'a, '_> {
     /// (mixed ordering types, `in` on a non-container) — unresolvable.
     fn compare(&self, op: Cmp, a: &Val, b: &Val) -> Option<bool> {
         match op {
-            Cmp::Eq => Some(py_eq(a, b)),
-            Cmp::Ne => Some(!py_eq(a, b)),
+            Cmp::Eq => py_eq(a, b),
+            Cmp::Ne => py_eq(a, b).map(|b| !b),
             Cmp::Lt => py_cmp(a, b).map(|o| o == std::cmp::Ordering::Less),
             Cmp::Le => py_cmp(a, b).map(|o| o != std::cmp::Ordering::Greater),
             Cmp::Gt => py_cmp(a, b).map(|o| o == std::cmp::Ordering::Greater),
@@ -699,12 +922,17 @@ impl<'a> EnabledExpr<'a, '_> {
         self.eat_kw("in").then_some(Cmp::In)
     }
 
-    /// A primary plus its postfix chain — `| filter` (only `as_bool`
-    /// resolves), `.attr`, `[sub]`, `(args)`, `is` tests. Anything but
-    /// `as_bool` and the supported tests is unprovable (`target.name`,
-    /// `env_var(…)`, `x[0]`, a macro call).
+    /// A primary plus its postfix chain — `| filter`, `.attr`,
+    /// `[sub]`, `(args)`, `is` tests. The `enabled` pass resolves only
+    /// `as_bool` + the supported tests (`target.name`, `env_var(…)`,
+    /// `x[0]`, a macro call are unprovable); the render context
+    /// additionally resolves `join`/`length` and `loop.<field>` — its
+    /// only attribute reads.
     fn parse_postfix(&mut self) -> Option<Val> {
         let mut v = self.parse_primary()?;
+        if self.literals_only() {
+            return Some(v);
+        }
         loop {
             self.p.ws();
             match self.p.peek() {
@@ -712,15 +940,43 @@ impl<'a> EnabledExpr<'a, '_> {
                     self.p.bump();
                     self.p.ws();
                     match self.ident()? {
-                        "as_bool" => {
+                        "as_bool" if self.render().is_none() => {
                             self.p.ws();
                             if self.rest().starts_with("()") {
                                 self.p.i += 2;
                             }
                             v = as_bool(&v)?;
                         }
+                        // Render-context filters — `join` over
+                        // verbatim-renderable elements, `length` on a
+                        // sequence/mapping/string.
+                        "join" if self.render().is_some() => {
+                            self.p.ws();
+                            let sep = if self.p.peek() == Some('(') {
+                                self.p.bump();
+                                let arg = self.parse_or()?;
+                                self.p.ws();
+                                if self.p.bump() != Some(')') {
+                                    return None;
+                                }
+                                let Val::V(serde_json::Value::String(s)) = arg else {
+                                    return None;
+                                };
+                                s
+                            } else {
+                                String::new()
+                            };
+                            v = render_join(&v, &sep)?;
+                        }
+                        "length" if self.render().is_some() => {
+                            v = render_len(&v)?;
+                        }
                         _ => return None,
                     }
+                }
+                Some('.') if self.render().is_some() => {
+                    self.p.bump();
+                    v = loop_attr(&v, self.ident()?)?;
                 }
                 Some('.') | Some('[') | Some('(') => return None,
                 // Jinja `is` tests — the same operand-postfix slot `|`
@@ -739,37 +995,7 @@ impl<'a> EnabledExpr<'a, '_> {
                     let r = match t {
                         "sameas" => py_is(&v, &self.test_operand()?)?,
                         _ if self.p.peek() == Some('(') => return None,
-                        "defined" => !matches!(v, Val::Undefined),
-                        "undefined" => matches!(v, Val::Undefined),
-                        "none" => matches!(v, Val::V(serde_json::Value::Null)),
-                        "string" => matches!(v, Val::V(serde_json::Value::String(_))),
-                        // `isinstance(True, Number)` — a bool IS a number.
-                        "number" => matches!(
-                            v,
-                            Val::V(serde_json::Value::Number(_))
-                                | Val::V(serde_json::Value::Bool(_))
-                        ),
-                        "boolean" => matches!(v, Val::V(serde_json::Value::Bool(_))),
-                        "mapping" => matches!(v, Val::V(serde_json::Value::Object(_))),
-                        // Jinja's `sequence`/`iterable` tests duck-type:
-                        // lists, dicts AND strings pass both, and so does
-                        // `Undefined` (it defines `__len__`/`__getitem__`/
-                        // `__iter__` — verified on Jinja 3.1: `missing is
-                        // sequence` renders True).
-                        "sequence" | "iterable" => matches!(
-                            v,
-                            Val::Undefined
-                                | Val::V(serde_json::Value::Array(_))
-                                | Val::V(serde_json::Value::String(_))
-                                | Val::V(serde_json::Value::Object(_))
-                        ),
-                        "true" => matches!(v, Val::V(serde_json::Value::Bool(true))),
-                        "false" => matches!(v, Val::V(serde_json::Value::Bool(false))),
-                        // `x % 2` — a Python TypeError on a non-number
-                        // (Undefined included) is unprovable, not False.
-                        "even" => num_val(&v)? % 2.0 == 0.0,
-                        "odd" => num_val(&v)? % 2.0 != 0.0,
-                        _ => return None,
+                        _ => is_test(t, &v)?,
                     };
                     v = Val::V((r != neg).into());
                 }
@@ -823,25 +1049,30 @@ impl<'a> EnabledExpr<'a, '_> {
                 // `()` — the empty tuple.
                 if self.p.peek() == Some(')') {
                     self.p.bump();
-                    return Some(Val::V(serde_json::Value::Array(vec![])));
+                    return Some(if self.render().is_some() {
+                        Val::Tuple(vec![])
+                    } else {
+                        Val::V(serde_json::Value::Array(vec![]))
+                    });
                 }
                 let first = self.parse_or()?;
                 self.p.ws();
                 match self.p.bump()? {
-                    // `(a, b)` / `(a,)` — a tuple maps to a JSON array.
+                    // `(a, b)` / `(a,)` — a tuple: its own kind under
+                    // the render context, a JSON array elsewhere.
                     ',' => {
                         let mut items = vec![first];
                         loop {
                             self.p.ws();
                             if self.p.peek() == Some(')') {
                                 self.p.bump();
-                                return val_seq(items);
+                                return self.seq_end(items, true);
                             }
                             items.push(self.parse_or()?);
                             self.p.ws();
                             match self.p.bump()? {
                                 ',' => continue,
-                                ')' => return val_seq(items),
+                                ')' => return self.seq_end(items, true),
                                 _ => return None,
                             }
                         }
@@ -852,6 +1083,7 @@ impl<'a> EnabledExpr<'a, '_> {
             }
             '[' => self.seq(),
             '{' => self.map_literal(),
+            '\'' | '"' if self.render().is_some() => self.render_string().map(|s| Val::V(s.into())),
             '\'' | '"' => self.p.string().map(|s| Val::V(s.into())),
             // Unary `-`/`+` — Python TypeErrors on a non-number operand.
             '-' | '+' => {
@@ -867,9 +1099,14 @@ impl<'a> EnabledExpr<'a, '_> {
                                 .map(|n| Val::V(n.into()))
                         }
                     }
+                    Val::Float(f, canon) => {
+                        let f = if neg { -f } else { f };
+                        Some(Val::Float(f, canon.map(|_| py_float_repr(f))))
+                    }
                     _ => None,
                 }
             }
+            '0'..='9' | '.' if self.render().is_some() => self.render_number(),
             '0'..='9' | '.' => self.p.number().map(Val::V),
             _ => self.parse_name_or_call(),
         }
@@ -884,28 +1121,46 @@ impl<'a> EnabledExpr<'a, '_> {
             self.p.ws();
             if self.p.peek() == Some(']') {
                 self.p.bump();
-                return val_seq(items);
+                return self.seq_end(items, false);
             }
             items.push(self.parse_or()?);
             self.p.ws();
             match self.p.bump()? {
                 ',' => continue,
-                ']' => return val_seq(items),
+                ']' => return self.seq_end(items, false),
                 _ => return None,
             }
         }
     }
 
-    /// `{k: v, …}` — keys evaluate like values but must be strings for
-    /// the JSON map (a `var()`-produced string key is fine).
+    /// The `[…]`/`(…)` element list → the mode's sequence value — a
+    /// `List`/`Tuple` under the render context, a JSON `Array`
+    /// otherwise.
+    fn seq_end(&self, items: Vec<Val>, tuple: bool) -> Option<Val> {
+        if self.render().is_some() {
+            if items.iter().any(|v| matches!(v, Val::Undefined)) {
+                return None;
+            }
+            return Some(if tuple {
+                Val::Tuple(items)
+            } else {
+                Val::List(items)
+            });
+        }
+        val_seq(items)
+    }
+
+    /// `{k: v, …}` — keys evaluate like values but must be strings (a
+    /// `var()`-produced string key is fine under the enabled pass).
     fn map_literal(&mut self) -> Option<Val> {
         self.p.bump();
         let mut obj = serde_json::Map::new();
+        let mut pairs: Vec<(String, Val)> = Vec::new();
         loop {
             self.p.ws();
             if self.p.peek() == Some('}') {
                 self.p.bump();
-                return Some(Val::V(obj.into()));
+                return Some(self.map_end(obj, pairs));
             }
             let key = match self.parse_or()? {
                 Val::V(serde_json::Value::String(s)) => s,
@@ -915,18 +1170,40 @@ impl<'a> EnabledExpr<'a, '_> {
             if self.p.bump() != Some(':') {
                 return None;
             }
-            let Val::V(v) = self.parse_or()? else {
+            let v = self.parse_or()?;
+            if self.render().is_some() {
                 // A `{k: Undefined}` member is a dbt-side error, not a
                 // value the map carries — unprovable.
-                return None;
-            };
-            obj.insert(key, v);
+                if matches!(v, Val::Undefined) {
+                    return None;
+                }
+                pairs.push((key, v));
+            } else {
+                let Val::V(v) = v else {
+                    return None;
+                };
+                obj.insert(key, v);
+            }
             self.p.ws();
             match self.p.bump()? {
                 ',' => continue,
-                '}' => return Some(Val::V(obj.into())),
+                '}' => return Some(self.map_end(obj, pairs)),
                 _ => return None,
             }
+        }
+    }
+
+    /// The `{k: v}` members → the mode's map value — a `Dict` under
+    /// the render context, a JSON `Object` otherwise.
+    fn map_end(
+        &self,
+        obj: serde_json::Map<String, serde_json::Value>,
+        pairs: Vec<(String, Val)>,
+    ) -> Val {
+        if self.render().is_some() {
+            Val::Dict(pairs)
+        } else {
+            Val::V(obj.into())
         }
     }
 
@@ -940,7 +1217,12 @@ impl<'a> EnabledExpr<'a, '_> {
         match name {
             "true" | "True" => Some(Val::V(true.into())),
             "false" | "False" => Some(Val::V(false.into())),
-            "none" | "None" | "null" | "Null" => Some(Val::V(serde_json::Value::Null)),
+            "none" | "None" => Some(Val::V(serde_json::Value::Null)),
+            // The render context resolves names through the frame
+            // only — `null`/`Null` are just NAMES there (Python/Jinja
+            // spell `none`), so they stay on the generic path.
+            _ if self.render().is_some() => self.render_name(name),
+            "null" | "Null" => Some(Val::V(serde_json::Value::Null)),
             _ => {
                 // A `ns.rest` chain ending in `(` is ONE callee spelling
                 // (`demo.bool_var(…)`); a `.attr` without the call is
@@ -1177,6 +1459,181 @@ impl<'a> EnabledExpr<'a, '_> {
     fn eval_body(&mut self, expr: &str, frame: &HashMap<String, Val>) -> Option<Val> {
         self.eval_in(expr, Some(frame), self.scope.depth.saturating_sub(1))
     }
+
+    // -- the render context --------------------------------------------------
+    //
+    // The methods below only run under [`RenderCx`]: a macro body's own
+    // value domain — frame names, `ref`/`source` relations, `range`, and
+    // the literal spelling rules the `{{ }}` emitter needs.
+
+    /// A name/call in the render context — frame values only. `ref`/
+    /// `source` bind relation objects; `range` binds the lazy sequence
+    /// (off under `literals_only` — model-level args take literals +
+    /// `ref`/`source` only). Everything else — a name the frame doesn't
+    /// bind, a context/builtin call (`var`, `config`, `target`,
+    /// `adapter`, `exceptions`, macro calls — the caller resolves
+    /// those), or calling a frame value — is unprovable.
+    fn render_name(&mut self, name: &str) -> Option<Val> {
+        let save = self.p.i;
+        self.p.ws();
+        if self.p.peek() == Some('(') {
+            // A name the frame binds is a VALUE — calling one is
+            // Jinja's "not callable" error.
+            if self.frame_get(name).is_some() {
+                return None;
+            }
+            return match name {
+                "ref" | "source" => self.render_dep(name),
+                "range" if !self.literals_only() => self.render_range(),
+                _ => None,
+            };
+        }
+        self.p.i = save;
+        self.frame_get(name)
+    }
+
+    /// `(a, b, k=c)` at the cursor — the `(` is consumed — each arg a
+    /// full expression, `name=` segments peeled as kwargs (a `=` that
+    /// isn't `==`, the same scan [`split_kwarg`] runs over text).
+    fn call_args(&mut self) -> Option<ArgVals> {
+        debug_assert_eq!(self.p.peek(), Some('('));
+        self.p.bump();
+        let mut pos = Vec::new();
+        let mut kw: Vec<(String, Val)> = Vec::new();
+        loop {
+            self.p.ws();
+            if self.p.peek() == Some(')') {
+                self.p.bump();
+                break;
+            }
+            let save = self.p.i;
+            let mut kwarg_name: Option<String> = None;
+            if let Some(id) = self.ident() {
+                let inner_save = self.p.i;
+                self.p.ws();
+                if self.p.peek() == Some('=')
+                    && self.p.s.as_bytes().get(self.p.i + 1) != Some(&b'=')
+                {
+                    self.p.bump();
+                    kwarg_name = Some(id.to_string());
+                } else {
+                    self.p.i = inner_save;
+                }
+            }
+            if kwarg_name.is_none() {
+                self.p.i = save;
+            }
+            let v = self.parse_or()?;
+            match kwarg_name {
+                Some(n) => {
+                    if kw.iter().any(|(k, _)| *k == n) {
+                        return None;
+                    }
+                    kw.push((n, v));
+                }
+                None => pos.push(v),
+            }
+            self.p.ws();
+            match self.p.bump()? {
+                ',' => continue,
+                ')' => break,
+                _ => return None,
+            }
+        }
+        Some((pos, kw))
+    }
+
+    /// `ref(…)`/`source(…)` under the render context — the relation
+    /// object the call binds; [`dep_name`] applies the arg-shape rules
+    /// (string names, no duplicated slots, pins read but never reach
+    /// the text).
+    fn render_dep(&mut self, name: &str) -> Option<Val> {
+        let (pos, kw) = self.call_args()?;
+        dep_name(name, &pos, &kw).map(Val::Relation)
+    }
+
+    /// `range(…)` — 1–3 integer args like Python; `len` computes now
+    /// so a range past [`RANGE_CAP`] never materializes. Non-int args,
+    /// a `0` step, or kwargs are unprovable.
+    fn render_range(&mut self) -> Option<Val> {
+        let (pos, kw) = self.call_args()?;
+        if !kw.is_empty() {
+            return None;
+        }
+        let ints: Option<Vec<i64>> = pos
+            .iter()
+            .map(|v| match v {
+                Val::V(serde_json::Value::Number(n)) => n.as_i64(),
+                _ => None,
+            })
+            .collect();
+        let (start, stop, step) = match ints?.as_slice() {
+            [s] => (0, *s, 1),
+            [a, b] => (*a, *b, 1),
+            [a, b, s] => (*a, *b, *s),
+            _ => return None,
+        };
+        let len = range_len(start, stop, step)?;
+        if len > RANGE_CAP {
+            return None;
+        }
+        Some(Val::Range { start, step, len })
+    }
+
+    /// A `'…'`/`"…"` literal the render context reads — strict escapes
+    /// (`\\ \' \" \n \t \r` only). Anything else (`\a`, `\x41`, …) is
+    /// a spelling Jinja reads differently than source can prove →
+    /// `None`.
+    fn render_string(&mut self) -> Option<String> {
+        let quote = self.p.bump()?;
+        let mut out = String::new();
+        loop {
+            match self.p.bump()? {
+                '\\' => out.push(match self.p.bump()? {
+                    '\\' => '\\',
+                    '\'' => '\'',
+                    '"' => '"',
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    _ => return None,
+                }),
+                c if c == quote => return Some(out),
+                c => out.push(c),
+            }
+        }
+    }
+
+    /// A number literal the render context reads — an i64 int
+    /// (leading zeros are a Jinja tokenize error; `u64`-sized and
+    /// float spellings aren't ints), else a [`Val::Float`] carrying
+    /// whether its spelling IS Python's `repr` — the only float the
+    /// `{{ }}` emitter may print.
+    fn render_number(&mut self) -> Option<Val> {
+        let start = self.p.i;
+        while self
+            .p
+            .peek()
+            .is_some_and(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E'))
+        {
+            self.p.bump();
+        }
+        let tok = &self.p.s[start..self.p.i];
+        if tok.contains(['.', 'e', 'E']) {
+            let v: f64 = tok.parse().ok()?;
+            if !v.is_finite() {
+                return None;
+            }
+            let canon = (py_float_repr(v) == tok).then(|| tok.to_string());
+            Some(Val::Float(v, canon))
+        } else {
+            if tok.len() > 1 && tok.starts_with('0') {
+                // `007` — Jinja's tokenizer rejects a leading zero.
+                return None;
+            }
+            tok.parse::<i64>().ok().map(|i| Val::V(i.into()))
+        }
+    }
 }
 
 /// Comparison operators the `enabled` subset recognizes.
@@ -1194,9 +1651,10 @@ enum Cmp {
 
 /// Python truthiness: `None`/`false`/`0`/`''`/empty containers are falsy;
 /// `'false'` and `'0'` are TRUTHY (non-empty strings). Jinja's
-/// `Undefined` is falsy too.
-fn truthy(v: &Val) -> bool {
-    match v {
+/// `Undefined` is falsy too. `None` is a relation operand — the render
+/// refuses to judge a `ref()`/`source()` value's truthiness at all.
+pub(crate) fn truthy(v: &Val) -> Option<bool> {
+    Some(match v {
         Val::Undefined => false,
         Val::V(serde_json::Value::Null) => false,
         Val::V(serde_json::Value::Bool(b)) => *b,
@@ -1204,20 +1662,103 @@ fn truthy(v: &Val) -> bool {
         Val::V(serde_json::Value::String(s)) => !s.is_empty(),
         Val::V(serde_json::Value::Array(a)) => !a.is_empty(),
         Val::V(serde_json::Value::Object(o)) => !o.is_empty(),
-    }
+        Val::Float(f, _) => *f != 0.0,
+        Val::List(x) | Val::Tuple(x) => !x.is_empty(),
+        Val::Dict(d) => !d.is_empty(),
+        Val::Range { len, .. } => *len > 0,
+        Val::Relation(_) => return None,
+        Val::Loop(_) => true,
+    })
 }
 
 /// Python `==`: bool compares as `0`/`1` against numbers, ints compare
-/// numerically across int/float, everything else is strict — a string is
-/// never a number and a number is never `True`'s string form. Jinja's
-/// `Undefined` equals only another `Undefined` (each lookup mints a new
-/// one, but `Undefined() == Undefined()` holds — verified).
-fn py_eq(a: &Val, b: &Val) -> bool {
+/// numerically across int/float, sequences of the SAME kind compare
+/// element-wise. Jinja's `Undefined` equals only another `Undefined`
+/// (each lookup mints a new one, but `Undefined() == Undefined()` holds
+/// — verified). Cross-kind sequence pairs (`(1,2) == [1,2]`,
+/// `range(3) == [0,1,2]` — Python answers `False`, but the render
+/// refuses to prove the kind distinction) and a relation operand are
+/// unprovable — `None`.
+fn py_eq(a: &Val, b: &Val) -> Option<bool> {
+    use serde_json::Value as J;
     match (a, b) {
-        (Val::Undefined, Val::Undefined) => true,
-        (Val::Undefined, _) | (_, Val::Undefined) => false,
-        (Val::V(a), Val::V(b)) => py_eq_j(a, b),
+        (Val::Relation(_), _) | (_, Val::Relation(_)) => None,
+        (Val::Loop(x), Val::Loop(y)) => Some(x == y),
+        (Val::Loop(_), _) | (_, Val::Loop(_)) => Some(false),
+        (Val::Undefined, Val::Undefined) => Some(true),
+        (Val::Undefined, _) | (_, Val::Undefined) => Some(false),
+        (Val::V(a), Val::V(b)) => Some(py_eq_j(a, b)),
+        (Val::Float(x, _), Val::Float(y, _)) => Some(x == y),
+        (Val::Float(x, _), Val::V(n)) | (Val::V(n), Val::Float(x, _)) => match n {
+            J::Number(y) => y.as_f64().map(|y| *x == y),
+            J::Bool(y) => Some(*x == (*y as u8) as f64),
+            _ => Some(false),
+        },
+        (Val::Float(_, _), _) | (_, Val::Float(_, _)) => Some(false),
+        (Val::List(x), Val::List(y)) | (Val::Tuple(x), Val::Tuple(y)) => seq_eq(x, y),
+        (Val::Range { .. }, Val::Range { .. }) => range_eq(a, b),
+        (
+            Val::List(_) | Val::Tuple(_) | Val::Range { .. },
+            Val::List(_) | Val::Tuple(_) | Val::Range { .. },
+        ) => None,
+        (Val::List(_) | Val::Tuple(_) | Val::Range { .. }, _)
+        | (_, Val::List(_) | Val::Tuple(_) | Val::Range { .. }) => Some(false),
+        (Val::Dict(x), Val::Dict(y)) => dict_eq(x, y),
+        (Val::Dict(_), _) | (_, Val::Dict(_)) => Some(false),
     }
+}
+
+/// Same-kind sequence `==` — element-wise, `None` propagating.
+fn seq_eq(a: &[Val], b: &[Val]) -> Option<bool> {
+    if a.len() != b.len() {
+        return Some(false);
+    }
+    for (x, y) in a.iter().zip(b) {
+        if !py_eq(x, y)? {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+/// `range(a) == range(b)` — element-wise over the lazy elements.
+fn range_eq(a: &Val, b: &Val) -> Option<bool> {
+    let (
+        Val::Range {
+            start: s1,
+            step: t1,
+            len: l1,
+        },
+        Val::Range {
+            start: s2,
+            step: t2,
+            len: l2,
+        },
+    ) = (a, b)
+    else {
+        return None;
+    };
+    if l1 != l2 {
+        return Some(false);
+    }
+    Some((0..*l1).all(|i| *s1 + i as i64 * *t1 == *s2 + i as i64 * *t2))
+}
+
+/// `dict == dict` — insertion order aside: every key of one maps equal
+/// in the other.
+fn dict_eq(a: &[(String, Val)], b: &[(String, Val)]) -> Option<bool> {
+    if a.len() != b.len() {
+        return Some(false);
+    }
+    for (k, v) in a {
+        let Some(w) = b.iter().find(|(bk, _)| bk == k).map(|(_, bv)| bv) else {
+            return Some(false);
+        };
+        if !py_eq(v, w)? {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 /// `py_eq` on two `serde_json` values — containers can't hold a
@@ -1261,14 +1802,39 @@ fn num_eq(x: &serde_json::Number, y: &serde_json::Number) -> bool {
 }
 
 /// Python ordering (`<`/`<=`/`>`/`>=`): numbers against numbers (a bool
-/// counts as 0/1), strings lexicographically, lists element-wise — every
-/// other pairing is a TypeError dbt would raise (`None` here). An
-/// `Undefined` operand TypeErrors too — Jinja's `missing < x` raises.
+/// counts as 0/1), strings lexicographically, same-kind sequences
+/// element-wise — every other pairing is a TypeError dbt would raise
+/// (`None` here): mixed kinds, `range`, dicts, relations, `Undefined`.
 fn py_cmp(a: &Val, b: &Val) -> Option<std::cmp::Ordering> {
-    let (Val::V(a), Val::V(b)) = (a, b) else {
-        return None;
-    };
-    py_cmp_j(a, b)
+    match (a, b) {
+        (Val::V(a), Val::V(b)) => py_cmp_j(a, b),
+        (Val::Float(x, _), Val::Float(y, _)) => Some(x.total_cmp(y)),
+        (Val::Float(x, _), Val::V(n)) => num_f64_of(n).map(|y| x.total_cmp(&y)),
+        (Val::V(n), Val::Float(y, _)) => num_f64_of(n).map(|x| x.total_cmp(y)),
+        (Val::List(x), Val::List(y)) | (Val::Tuple(x), Val::Tuple(y)) => seq_cmp(x, y),
+        _ => None,
+    }
+}
+
+/// A serde number/bool as f64 — for ordering against a [`Val::Float`].
+fn num_f64_of(v: &serde_json::Value) -> Option<f64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::Bool(b) => Some(*b as u8 as f64),
+        _ => None,
+    }
+}
+
+/// Element-wise ordering of two same-kind sequences — Python's
+/// find-first-difference rule.
+fn seq_cmp(a: &[Val], b: &[Val]) -> Option<std::cmp::Ordering> {
+    for (x, y) in a.iter().zip(b) {
+        if py_eq(x, y)? {
+            continue;
+        }
+        return py_cmp(x, y);
+    }
+    Some(a.len().cmp(&b.len()))
 }
 
 /// `py_cmp` on raw values — containers can't hold a `Undefined`, so the
@@ -1320,19 +1886,73 @@ fn num_cmp(x: &serde_json::Number, y: &serde_json::Number) -> Option<std::cmp::O
 }
 
 /// `x in container` — list membership by `py_eq`, a string substring
-/// (the needle must be a string), or a dict key lookup. Every other
-/// shape is a Python TypeError — unresolvable (`None`); an `Undefined`
-/// operand raises too.
+/// (the needle must be a string), a range's arithmetic membership, or
+/// a dict key lookup. A sequence as the needle (`[1] in ys`,
+/// `(1,2) in ys`) and relation/loop/`Undefined` operands are
+/// unprovable; every other shape is a Python TypeError —
+/// unresolvable (`None`).
 fn contains(container: &Val, x: &Val) -> Option<bool> {
-    let (Val::V(container), Val::V(x)) = (container, x) else {
+    use serde_json::Value as J;
+    if matches!(
+        x,
+        Val::List(_) | Val::Tuple(_) | Val::Range { .. } | Val::Relation(_) | Val::Loop(_)
+    ) {
         return None;
-    };
-    match (container, x) {
-        (serde_json::Value::Array(items), _) => Some(items.iter().any(|i| py_eq_j(i, x))),
-        (serde_json::Value::String(s), serde_json::Value::String(sub)) => Some(s.contains(sub)),
-        (serde_json::Value::Object(m), serde_json::Value::String(k)) => Some(m.contains_key(k)),
-        _ => None,
     }
+    match container {
+        Val::V(J::Array(items)) => {
+            let Val::V(x) = x else { return None };
+            Some(items.iter().any(|i| py_eq_j(i, x)))
+        }
+        Val::V(J::String(s)) => match x {
+            Val::V(J::String(sub)) => Some(s.contains(sub)),
+            _ => None,
+        },
+        Val::V(J::Object(m)) => match x {
+            Val::V(J::String(k)) => Some(m.contains_key(k)),
+            _ => None,
+        },
+        Val::V(_) | Val::Float(..) | Val::Undefined => None,
+        Val::List(items) | Val::Tuple(items) => {
+            for i in items {
+                if py_eq(i, x)? {
+                    return Some(true);
+                }
+            }
+            Some(false)
+        }
+        Val::Dict(d) => match x {
+            Val::V(J::String(k)) => Some(d.iter().any(|(key, _)| key == k)),
+            // An unhashable or unjudgeable needle TypeErrors; every
+            // other non-string needle provably misses (str keys).
+            Val::Dict(_) | Val::Undefined => None,
+            _ => Some(false),
+        },
+        Val::Range { start, step, len } => range_contains(*start, *step, *len, x),
+        Val::Relation(_) | Val::Loop(_) => None,
+    }
+}
+
+/// `x in range(start, …, step)` — membership by arithmetic: a
+/// non-numeric needle can't equal an element (provable `False`), a
+/// numeric one is a member iff `(x - start) / step` lands in `[0, len)`.
+fn range_contains(start: i64, step: i64, len: usize, x: &Val) -> Option<bool> {
+    let v = match x {
+        Val::V(serde_json::Value::Number(n)) => n.as_f64()?,
+        Val::V(serde_json::Value::Bool(b)) => *b as u8 as f64,
+        Val::Float(f, _) => *f,
+        Val::V(_) => return Some(false),
+        _ => return None,
+    };
+    if v.fract() != 0.0 || v < i64::MIN as f64 || v > i64::MAX as f64 {
+        return Some(false);
+    }
+    let (d, st) = (v as i64 as i128 - start as i128, step as i128);
+    if d % st != 0 {
+        return Some(false);
+    }
+    let k = d / st;
+    Some(k >= 0 && k < len as i128)
 }
 
 /// A sequence/tuple's `Val` elements → the JSON array — `None` when one
@@ -1344,7 +1964,7 @@ fn val_seq(items: Vec<Val>) -> Option<Val> {
         .into_iter()
         .map(|v| match v {
             Val::V(v) => Some(v),
-            Val::Undefined => None,
+            _ => None,
         })
         .collect::<Option<Vec<_>>>()
         .map(|v| Val::V(v.into()))
@@ -1373,6 +1993,7 @@ fn num_val(v: &Val) -> Option<f64> {
     match v {
         Val::V(serde_json::Value::Number(n)) => n.as_f64(),
         Val::V(serde_json::Value::Bool(b)) => Some(*b as u8 as f64),
+        Val::Float(f, _) => Some(*f),
         _ => None,
     }
 }
@@ -1386,6 +2007,8 @@ fn num_val(v: &Val) -> Option<f64> {
 /// dbt, the same literal twice renders True). Everything else — floats,
 /// out-of-range ints, containers, `Undefined`, cross-type pairs — is
 /// `False`: freshly boxed values are never the same object as a literal.
+/// A relation/`loop` operand is unprovable — `is` on a `ref()` value
+/// (`r is string`) answers with context the render refuses to judge.
 fn py_is(a: &Val, b: &Val) -> Option<bool> {
     use serde_json::Value as J;
     match (a, b) {
@@ -1393,7 +2016,211 @@ fn py_is(a: &Val, b: &Val) -> Option<bool> {
         (Val::V(J::Null), Val::V(J::Null)) => Some(true),
         (Val::V(J::Number(x)), Val::V(J::Number(y))) => Some(small_int_is(x, y)),
         (Val::V(J::String(x)), Val::V(J::String(y))) if x == y => None,
+        (Val::Relation(_), _) | (_, Val::Relation(_)) => None,
         _ => Some(false),
+    }
+}
+
+/// The bare `x is <test>` set — `None` on an unsupported test or an
+/// operand the render refuses to judge (a relation or `loop` object).
+fn is_test(t: &str, v: &Val) -> Option<bool> {
+    use serde_json::Value as J;
+    if matches!(v, Val::Relation(_) | Val::Loop(_)) {
+        return None;
+    }
+    Some(match t {
+        "defined" => !matches!(v, Val::Undefined),
+        "undefined" => matches!(v, Val::Undefined),
+        "none" => matches!(v, Val::V(J::Null)),
+        "string" => matches!(v, Val::V(J::String(_))),
+        // `isinstance(True, Number)` — a bool IS a number.
+        "number" => matches!(
+            v,
+            Val::V(J::Number(_)) | Val::V(J::Bool(_)) | Val::Float(..)
+        ),
+        "boolean" => matches!(v, Val::V(J::Bool(_))),
+        "mapping" => matches!(v, Val::V(J::Object(_)) | Val::Dict(_)),
+        // Jinja's `sequence`/`iterable` tests duck-type: lists, dicts
+        // AND strings pass both, and so does `Undefined` (it defines
+        // `__len__`/`__getitem__`/`__iter__` — verified on Jinja 3.1:
+        // `missing is sequence` renders True). The render's own
+        // containers and `range` pass the same way.
+        "sequence" | "iterable" => matches!(
+            v,
+            Val::Undefined
+                | Val::V(J::Array(_))
+                | Val::V(J::String(_))
+                | Val::V(J::Object(_))
+                | Val::List(_)
+                | Val::Tuple(_)
+                | Val::Dict(_)
+                | Val::Range { .. }
+        ),
+        "true" => matches!(v, Val::V(J::Bool(true))),
+        "false" => matches!(v, Val::V(J::Bool(false))),
+        // `x % 2` — a Python TypeError on a non-number (Undefined
+        // included) is unprovable, not False.
+        "even" => num_val(v)? % 2.0 == 0.0,
+        "odd" => num_val(v)? % 2.0 != 0.0,
+        _ => return None,
+    })
+}
+
+/// `loop.<field>` — the only attribute read the render context proves
+/// (`cycle`/`previtem`/`nextitem`/`changed`/`depth*` stay unprovable).
+fn loop_attr(v: &Val, attr: &str) -> Option<Val> {
+    let Val::Loop(l) = v else {
+        return None;
+    };
+    let int = |n: usize| Val::V((n as i64).into());
+    Some(match attr {
+        "index" => int(l.index0 + 1),
+        "index0" => int(l.index0),
+        "revindex" => int(l.len - l.index0),
+        "revindex0" => int(l.len - l.index0 - 1),
+        "first" => Val::V((l.index0 == 0).into()),
+        "last" => Val::V((l.index0 + 1 == l.len).into()),
+        "length" => int(l.len),
+        _ => return None,
+    })
+}
+
+/// `v | join(sep)` — every element must render verbatim: a string as
+/// itself, an integer decimal. A float/bool/container/relation/`loop`
+/// element — or a non-iterable — is unprovable (`None`).
+fn render_join(v: &Val, sep: &str) -> Option<Val> {
+    fn piece(v: &Val) -> Option<String> {
+        match v {
+            Val::V(serde_json::Value::String(s)) => Some(s.clone()),
+            Val::V(serde_json::Value::Number(n)) => n.as_i64().map(|i| i.to_string()),
+            _ => None,
+        }
+    }
+    let items: Vec<String> = match v {
+        Val::List(items) | Val::Tuple(items) => items.iter().map(piece).collect::<Option<_>>()?,
+        Val::V(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|i| piece(&Val::V(i.clone())))
+            .collect::<Option<_>>()?,
+        Val::Dict(d) => d.iter().map(|(k, _)| k.clone()).collect(),
+        Val::V(serde_json::Value::Object(m)) => m.keys().cloned().collect(),
+        Val::V(serde_json::Value::String(s)) => s.chars().map(|c| c.to_string()).collect(),
+        Val::Range { start, step, len } => (0..*len)
+            .map(|i| (start + i as i64 * step).to_string())
+            .collect(),
+        _ => return None,
+    };
+    Some(Val::V(items.join(sep).into()))
+}
+
+/// `v | length` — Python `len()`: a string's code points, a container's
+/// element count, a range's computed length. `None` on `int`/`bool`/
+/// `none`/`float`/relation/`loop`.
+fn render_len(v: &Val) -> Option<Val> {
+    let n = match v {
+        Val::V(serde_json::Value::String(s)) => s.chars().count(),
+        Val::V(serde_json::Value::Array(a)) => a.len(),
+        Val::V(serde_json::Value::Object(o)) => o.len(),
+        Val::List(x) | Val::Tuple(x) => x.len(),
+        Val::Dict(d) => d.len(),
+        Val::Range { len, .. } => *len,
+        _ => return None,
+    };
+    Some(Val::V((n as i64).into()))
+}
+
+/// The relation a `ref(…)`/`source(…)` call binds — `None` when an arg
+/// is non-string, a slot binds twice, or an unknown keyword shows up
+/// (all shapes dbt itself errors on). `ref` reads its LAST positional
+/// as the name (or `name=` when no positional binds it); `v`/`version`
+/// pins read fine but never reach the text.
+fn dep_name(name: &str, pos: &[Val], kw: &[(String, Val)]) -> Option<Relation> {
+    let kw_arg = |n: &str| kw.iter().find(|(k, _)| k == n).map(|(_, v)| v);
+    let name_of = |v: &Val| match v {
+        Val::V(serde_json::Value::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    match name {
+        "ref" => {
+            if pos.len() > 2
+                || kw
+                    .iter()
+                    .any(|(k, _)| !matches!(k.as_str(), "name" | "v" | "version"))
+                || (!pos.is_empty() && kw_arg("name").is_some())
+            {
+                return None;
+            }
+            Some(Relation::Ref(name_of(
+                pos.last().or_else(|| kw_arg("name"))?,
+            )?))
+        }
+        "source" => {
+            let dup = kw.iter().any(|(k, _)| {
+                (k == "source_name" && !pos.is_empty()) || (k == "table_name" && pos.len() > 1)
+            });
+            if pos.len() > 2
+                || kw
+                    .iter()
+                    .any(|(k, _)| !matches!(k.as_str(), "source_name" | "table_name"))
+                || dup
+            {
+                return None;
+            }
+            let at = |i: usize, n: &str| pos.get(i).or_else(|| kw_arg(n));
+            match (at(0, "source_name"), at(1, "table_name")) {
+                (Some(a), Some(b)) => Some(Relation::Source(name_of(a)?, name_of(b)?)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// `len(range(start, stop, step))` — `None` on a `0` step (Python's
+/// ValueError). i128 math keeps the `i64` edges honest.
+fn range_len(start: i64, stop: i64, step: i64) -> Option<usize> {
+    if step == 0 {
+        return None;
+    }
+    let (s, e, st) = (start as i128, stop as i128, step as i128);
+    let len = if st > 0 {
+        if e <= s {
+            0
+        } else {
+            (e - s + st - 1) / st
+        }
+    } else {
+        let st = -st;
+        if e >= s {
+            0
+        } else {
+            (s - e + st - 1) / st
+        }
+    };
+    usize::try_from(len).ok()
+}
+
+/// Python's `repr(float)` — what `{{ }}` emits for a float: the
+/// shortest round-trip decimal for exponents -4..=15, the `d[.ddd]e±NN`
+/// form outside them (`1e+16`, `1.5e-05`). Rust's shortest-float
+/// formatting agrees on the digits.
+pub(crate) fn py_float_repr(v: f64) -> String {
+    let sci = format!("{v:e}");
+    let Some((mant, exp)) = sci.split_once('e') else {
+        return format!("{v}");
+    };
+    let exp: i32 = exp.parse().unwrap_or(0);
+    if (-4..16).contains(&exp) {
+        // Fixed-point form — Python insists a spelled-out float keeps
+        // its `.0` tail.
+        let s = format!("{v}");
+        if s.contains(['.', 'e', 'E']) {
+            s
+        } else {
+            format!("{s}.0")
+        }
+    } else {
+        format!("{mant}e{}{:02}", if exp < 0 { "-" } else { "+" }, exp.abs())
     }
 }
 

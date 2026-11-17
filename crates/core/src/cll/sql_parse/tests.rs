@@ -4063,6 +4063,90 @@ fn a_whole_query_macro_leaves_unparsed() {
 }
 
 #[test]
+fn a_control_flow_macro_expands_into_the_analysis() {
+    // `{{ status_codes() }}` proves its `IN` list
+    // through `set`/`if`/`for`/`loop.last`, so `u` reports and nothing
+    // withholds; the `as_rows=true` whole-query call parses instead of
+    // leaving `JinjaGenerated`.
+    const STATUS_CODES: &str = concat!(
+        "{% macro status_codes(as_rows=false) -%}\n",
+        "    {%- set codes = ['a1', 'b2', 'c3'] -%}\n",
+        "    {%- if as_rows %}\n",
+        "        {%- for code in codes %}\n",
+        "            SELECT '{{ code }}' AS code\n",
+        "            {%- if not loop.last %}\n",
+        "                UNION ALL\n",
+        "            {%- endif %}\n",
+        "        {%- endfor %}\n",
+        "    {%- else -%}\n",
+        "        (\n",
+        "            {%- for code in codes %}\n",
+        "                '{{ code }}'{% if not loop.last %},{% endif %}\n",
+        "            {%- endfor %}\n",
+        "        )\n",
+        "    {%- endif %}\n",
+        "{%- endmacro %}"
+    );
+    let mut m = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id", "code"]),
+            raw_model(
+                "model.t.a",
+                "with u as (select * from {{ ref('base') }}),\n     s as (select * from {{ ref('base') }})\nselect * from s where s.code in {{ status_codes() }}",
+                &[],
+            ),
+            raw_model("model.t.b", "{{ status_codes(as_rows=true) }}", &[]),
+        ],
+        &[("model.t.base", "model.t.a"), ("model.t.base", "model.t.b")],
+    );
+    m.macros
+        .extend([mac("status_codes", &["as_rows"], STATUS_CODES)]);
+    let dag = Dag::build(&m);
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.a").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["u".to_string()]);
+    assert!(facts.withheld.is_empty(), "{:?}", facts.withheld);
+    assert!(r.sql_facts(&dag, "model.t.b").is_some());
+    assert!(r.unparsed_reason("model.t.b").is_none());
+    let _ = r.resolve(&dag, "model.t.b");
+    assert!(!r.is_fallback("model.t.b"));
+}
+
+#[test]
+fn an_unprovable_control_flow_keeps_every_mark() {
+    // The same shape, but the body's condition reads `target` — the
+    // render can't prove it, so the tag keeps its placeholder and the
+    // withheld analysis judges it exactly like any opaque `{{ }}`.
+    let mut m = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a where a.id in {{ codes() }}",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.m")],
+    );
+    m.macros.extend([mac(
+        "codes",
+        &[],
+        "{% macro codes() %}{% if target.name == 'prod' %} ('1') {% else %} ('2') {% endif %}{% endmacro %}",
+    )]);
+    let dag = Dag::build(&m);
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert!(facts.unused_ctes.is_empty());
+    assert_eq!(
+        withheld_kinds(&facts),
+        vec![
+            ("unused_cte", "u".to_string()),
+            ("unused_cte", "v".to_string()),
+        ]
+    );
+}
+
+#[test]
 fn kwargs_defaults_and_qualified_calls_expand() {
     // Keyword arguments, a defaulted parameter left unbound, and the
     // `{{ t.codes() }}` project-qualified form all prove — each renders
@@ -4507,6 +4591,72 @@ fn unqualify_compiled(sql: &str) -> String {
         out = out.replace(prefix, rest);
     }
     out
+}
+
+/// The `macroctl` relation-qualification strip — expansion writes
+/// `"base"`, the compile writes `"dbtl_macroctl"."main"."base"`.
+fn unqualify_macroctl(sql: &str) -> String {
+    sql.replace("\"dbtl_macroctl\".\"main\".", "")
+}
+
+#[test]
+fn macroctl_expansions_match_the_compiled_code_byte_for_byte() {
+    // The real-dbt pin for control flow: every `macroctl` model's raw
+    // body renders through the expansion to EXACTLY the fixture's
+    // `compiled_code` — whitespace and all (the `UNION ALLSELECT` glue
+    // included — a real compile really emits it); only the relation
+    // qualification differs (dbt writes `"db"."main"."x"`, the render
+    // writes `"x"`). Generated on dbt-core 1.12.7.
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/macroctl_manifest.json"
+    );
+    let text = std::fs::read_to_string(path).unwrap();
+    let m = parse_manifest(&text).unwrap();
+    let dag = Dag::build(&m);
+    for uid in [
+        "model.macroctl.in_list",     // `in {{ status_codes() }}`
+        "model.macroctl.as_rows",     // `{{ status_codes(as_rows=true) }}`
+        "model.macroctl.paired",      // loop var → `ref(t)`, `UNION ALL`
+        "model.macroctl.empty_union", // `{{ union_tables([]) }}` — `for` else
+        "model.macroctl.graded",      // `| join` + an `elif` chain
+        "model.macroctl.ranged",      // `range(n)` loop emission
+        "model.macroctl.grid",        // nested `for`/`loop.index` + `for` else
+        "model.macroctl.whitespaced", // emitted space survives `{{-`
+    ] {
+        let raw = dag.raw_code(uid).unwrap();
+        let compiled = dag.compiled_code(uid).unwrap();
+        let rendered = render_arms(
+            raw,
+            JinjaMark::Plain,
+            SqlDialect::Generic,
+            RenderArms::Union,
+            true,
+            false,
+            expand::ExpandScope::for_node(&dag, uid),
+        );
+        assert!(rendered.expanded_any, "{uid} rendered without expansion");
+        assert_eq!(
+            rendered.text,
+            unqualify_macroctl(compiled),
+            "{uid}'s expansion diverges from compiled_code"
+        );
+    }
+    // `paired`/`grid` expand to the compile's `UNION ALLSELECT` glue —
+    // faithful output the SQL parser can't read, so the models keep
+    // their `JinjaGenerated` answer exactly like an unexpandable call.
+    for uid in ["model.macroctl.paired", "model.macroctl.grid"] {
+        let raw = dag.raw_code(uid).unwrap();
+        assert!(matches!(
+            jinja_parse(
+                raw,
+                JinjaMark::Plain,
+                SqlDialect::Generic,
+                expand::ExpandScope::for_node(&dag, uid),
+            ),
+            Err(ParseFailure::JinjaGenerated { .. })
+        ));
+    }
 }
 
 #[test]

@@ -1,0 +1,7 @@
+name: macroctl
+version: "1.0.0"
+config-version: 2
+profile: macroctl
+
+model-paths: ["models"]
+macro-paths: ["macros"]
