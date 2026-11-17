@@ -63,7 +63,7 @@ It compares the surfaces that a dbt change moves:
 
 ### Macros
 
-When both sides are compiled manifests, a change inside a shared macro is caught too. The diff reads each manifest's `macros` and every node's `depends_on.macros`, then marks callers of a changed macro with a `macro:<name>` reason. Transitive macro-to-macro calls count. Raw SQL cannot show this change.
+When both sides are compiled manifests, a change inside a shared macro is caught too — and a manifest↔source diff catches the same change in the root project's own `{% macro %}` definitions, the only macro records a source load can produce. Records a manifest also registers under `macro.*` but source mode can never see — built-in and installed-package macros, `{% test %}`/`{% data_test %}` blocks, materializations — are left out of a cross-mode comparison, so they never read as added or removed. The diff reads each side's `macros` and every node's `depends_on.macros`, then marks callers of a changed macro with a `macro:<name>` reason. Transitive macro-to-macro calls count. Raw SQL cannot show this change.
 
 ### Column-level breaking changes
 

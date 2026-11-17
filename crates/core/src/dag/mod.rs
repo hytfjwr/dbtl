@@ -729,7 +729,9 @@ pub struct MacroInfo {
     /// The macro's short name (`macro.project.name` → `name`), for the
     /// `macro:<name>` modified reason.
     pub name: String,
-    /// The Jinja body (`macro_sql`) — the surface a shared-macro change moves.
+    /// The recorded `macro_sql` — the complete `{% … %}…{% end… %}` block
+    /// in BOTH modes (dbt's `full_block`; source mode stores the same
+    /// slice) — the surface a shared-macro change moves.
     pub sql: Option<String>,
     /// The `{% macro %}` signature's declared parameter names (the
     /// manifest's `arguments` list; source mode fills them from the
@@ -948,4 +950,5 @@ mod traverse;
 
 pub use convert::in_package;
 use convert::*;
+pub(crate) use query::opens_macro_block;
 use traverse::*;

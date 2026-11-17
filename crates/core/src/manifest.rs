@@ -649,7 +649,9 @@ pub struct RawUnitTestIo {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawMacro {
     pub name: String,
-    /// The macro's Jinja body — the real dbt manifest field name (v12).
+    /// The complete `{% … %}…{% end… %}` block (dbt's `full_block`) —
+    /// the real dbt manifest field name (v12); source mode stores the
+    /// same slice so the diff compares one surface.
     #[serde(default)]
     pub macro_sql: Option<String>,
     /// The `{% macro %}` signature's declared parameters — the real dbt
@@ -728,9 +730,11 @@ pub struct RawManifest {
     /// manifests) omit the key entirely.
     #[serde(default)]
     pub exposures: HashMap<String, RawExposure>,
-    /// `#[serde(default)]`: manifests before the macros key existed (and every
-    /// synthesized source-mode manifest, which never parses macros) omit it —
-    /// an absent map disables macro-diff detection rather than inventing one.
+    /// `#[serde(default)]`: manifests before the macros key existed (and
+    /// minimal hand-built manifests) omit it — an absent map disables
+    /// macro-diff detection rather than inventing one. A synthesized
+    /// source-mode manifest DOES fill it, with the root project's
+    /// `{% macro %}` definitions — the one record shape source can parse.
     #[serde(default)]
     pub macros: HashMap<String, RawMacro>,
     /// The `disabled` map dbt writes — nodes an `enabled: false` parked

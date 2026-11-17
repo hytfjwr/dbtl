@@ -35,7 +35,7 @@ use std::ops::Range;
 
 use sqlparser::tokenizer::Span;
 
-use crate::dag::{Dag, MacroInfo};
+use crate::dag::{opens_macro_block, Dag, MacroInfo};
 use crate::source::{
     call_head_re, is_identifier, jinja_tag_close, lit_value, mask_jinja_comments, scan_call_args,
     split_kwarg, tag_word, top_level_segments, BUILTIN_BARE, BUILTIN_NS,
@@ -324,15 +324,11 @@ fn leading_call(e: &str) -> Option<(&str, &str, &str)> {
 
 /// Does `sql` hold a `{% macro %}` definition — vs a `{% test %}`,
 /// `{% materialization %}`, or `{% docs %}` body the manifest's `macros`
-/// map also carries? Source mode's `macro_sql` is the def BODY (no
-/// header) — its collector only keeps real `{% macro %}` defs, so a
-/// body-shaped value counts as a macro.
+/// map also carries? Both modes store the complete def block now, so
+/// the shared [`opens_macro_block`] test — the same one the diff's
+/// macro walk applies — is the answer.
 fn is_macro_def(m: &MacroInfo) -> bool {
-    let Some(sql) = &m.sql else { return false };
-    match leading_block(sql) {
-        Some((word, _)) => word == "macro",
-        None => true,
-    }
+    m.sql.as_deref().is_some_and(opens_macro_block)
 }
 
 /// `sql`'s leading `{% … %}` tag — `(word, tag span)` — `None` when the
@@ -416,12 +412,11 @@ fn body_reach(
     reach
 }
 
-/// One body's emit-words + opacity. A `{% macro %}` header (manifest
-/// shape) is stripped first — its signature params, when
-/// `MacroInfo::params` doesn't already carry them — and a first
-/// `{% endmacro %}` truncates the scan. Source-mode bodies carry
-/// neither. `visiting` holds the recursion stack so a cycle and the
-/// depth cap both judge opaque.
+/// One body's emit-words + opacity. The `{% macro %}` header (both
+/// modes store the complete block) is stripped first — its signature
+/// params, when `MacroInfo::params` doesn't already carry them — and a
+/// first `{% endmacro %}` truncates the scan. `visiting` holds the
+/// recursion stack so a cycle and the depth cap both judge opaque.
 fn body_scan(
     dag: &Dag,
     proj: Option<&str>,

@@ -2,13 +2,54 @@ use super::*;
 
 impl Dag {
     /// The manifest's macros (`macro.<project>.<name>` → [`MacroInfo`]).
-    /// A synthesized source-mode manifest carries the root project's own
-    /// `{% macro %}` defs too — body text, signature params, and the
-    /// `depends_on.macros` call edges — so the diff's shared-macro walk
-    /// and the per-tag withholding's body scan read the same table in
-    /// both modes. Package macros never appear in source mode.
+    /// A real manifest registers every `{% macro %}`/`{% test %}`/
+    /// `{% materialization %}` block here — the root project's AND every
+    /// installed package's; a synthesized source-mode manifest carries
+    /// only the root project's `{% macro %}` definitions (its
+    /// `macro-paths` are the only macro sources it reads) — full def
+    /// block, signature params, and the `depends_on.macros` call edges,
+    /// so the table is non-empty in source mode too. Cross-mode macro
+    /// comparison therefore covers only the root-project `{% macro %}`
+    /// defs both sides can carry — [`is_root_macro_def`](Dag::is_root_macro_def)/
+    /// `is_root_macro_def_in` is the shared predicate — while the
+    /// per-tag withholding's body scan reads the same table for the
+    /// callee bodies it can prove.
     pub fn macros(&self) -> &BTreeMap<String, MacroInfo> {
         &self.macros
+    }
+
+    /// Whether `unique_id` names a root-project `{% macro %}` definition —
+    /// the one macro-record shape source mode can carry, and so the only
+    /// records a manifest↔source diff may compare: `macro.<root>.<name>`
+    /// whose stored `macro_sql` opens a `{% macro %}` tag. The exclusions
+    /// are source mode's blind spots, not changes: installed-package and
+    /// `dbt`-internal defs sit under their own package segment, and dbt
+    /// registers `{% test %}`/`{% data_test %}` blocks and
+    /// materializations under the same `macro.*` uid space.
+    /// [`PackageScope`]-unresolvable projects treat every record as root —
+    /// the same not-dropping bias [`is_root_project`](Dag::is_root_project)
+    /// takes.
+    ///
+    /// Per-call cost is O(1) when `metadata.project_name` is recorded — but
+    /// like [`is_root_project`](Dag::is_root_project) this is the ONE-OFF
+    /// test: sweeps resolve the package ONCE via
+    /// [`primary_package`](Dag::primary_package) and call the crate-internal
+    /// `is_root_macro_def_in` per record.
+    pub fn is_root_macro_def(&self, unique_id: &str) -> bool {
+        self.is_root_macro_def_in(self.primary_package().as_deref(), unique_id)
+    }
+
+    /// [`is_root_macro_def`](Dag::is_root_macro_def) with the owning package
+    /// already resolved — the sweep form (the diff's macro walk). `None`
+    /// keeps the unresolvable-project all-root bias.
+    pub(crate) fn is_root_macro_def_in(&self, primary: Option<&str>, unique_id: &str) -> bool {
+        let in_root = primary.is_none_or(|p| uid_package(unique_id).is_some_and(|seg| seg == p));
+        in_root
+            && self
+                .macros
+                .get(unique_id)
+                .and_then(|m| m.sql.as_deref())
+                .is_some_and(opens_macro_block)
     }
 
     /// The macro `unique_id`s a kept node invokes (`depends_on.macros`).
@@ -432,4 +473,22 @@ impl Dag {
     pub fn exposure(&self, unique_id: &str) -> Option<&ExposureInfo> {
         self.exposures.get(unique_id)
     }
+}
+
+/// Whether a stored `macro_sql` opens a `{% macro %}` tag — the recorded
+/// text starts at the block's own tag (whitespace control aside), so the
+/// first tag's word IS the block type: `{% test %}` blocks and
+/// materializations sort themselves out. `{%+` stays unclassified on
+/// purpose — dbt's block regex doesn't register it either. Shared with
+/// the per-tag withholding's callee check — one "is this record a
+/// `{% macro %}` def" test for every pass that reads [`Dag::macros`].
+pub(crate) fn opens_macro_block(sql: &str) -> bool {
+    let Some(rest) = sql.trim_start().strip_prefix("{%") else {
+        return false;
+    };
+    let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '-');
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    &rest[..end] == "macro"
 }
