@@ -845,8 +845,11 @@ pub(super) enum EvalWarnKind {
 }
 
 /// The single-file spelling an [`EvalWarn`]'s own line takes — what a
-/// lone report keeps.
+/// lone report keeps. The expression prints whitespace-normalized, the
+/// same spelling the fold keys on, so a lone report and a grouped one
+/// read identically.
 pub(super) fn eval_warn_line(kind: EvalWarnKind, expr: &str, ctx: &str) -> String {
+    let expr = normalize_ws(expr);
     match kind {
         EvalWarnKind::Expr => format!(
             "{ctx}: config(enabled={expr}) could not be evaluated as a boolean; the resource stays enabled"

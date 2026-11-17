@@ -4593,6 +4593,39 @@ fn enabled_macro_warnings_fold_by_normalized_expression() {
 }
 
 #[test]
+fn eval_warnings_print_the_normalized_expression() {
+    // The lone-file line folds whitespace like the grouped spelling —
+    // the `{% if %}` tag keeps the padding around its condition in the
+    // raw source, and the `enabled=` expression keeps the line wraps
+    // inside the call.
+    let (d, w) = enabled(
+        "{% if  target.name == 'prod'\n %}{{ config(enabled=false) }}{% endif %}select 1",
+        &no_vars(),
+    );
+    assert_eq!(d, Some(Enabled::Unproven));
+    assert_eq!(
+        w,
+        vec![
+            "models/m.sql: config(enabled=…) sits in a Jinja branch whose condition cannot be evaluated (target.name == 'prod'); the resource stays enabled"
+                .to_string()
+        ],
+        "{w:?}"
+    );
+    let (_, w) = enabled(
+        "{{ config(enabled=  target.name\n   ==\t'prod' ) }}select 1",
+        &no_vars(),
+    );
+    assert_eq!(
+        w,
+        vec![
+            "models/m.sql: config(enabled=target.name == 'prod') could not be evaluated as a boolean; the resource stays enabled"
+                .to_string()
+        ],
+        "{w:?}"
+    );
+}
+
+#[test]
 fn enabled_macro_calls_drive_the_source_disabled_set() {
     let dir = tempfile::tempdir().unwrap();
     macro_project(
