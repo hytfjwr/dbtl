@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Unchanged project macros no longer appear as `macro:<name>` changes in a manifest↔source `--diff` — source mode stores the same complete `{% macro %}…{% endmacro %}` definition dbt records, and a cross-mode diff compares only those root-project definitions rather than every `macro.*` record a manifest registers.
+
 ## [0.7.3] - 2026-11-16
 
 ### Changed

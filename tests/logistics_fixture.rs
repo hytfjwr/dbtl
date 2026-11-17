@@ -305,6 +305,37 @@ fn hook_ref_is_an_edge_in_both_modes() {
     }
 }
 
+/// A Dag's macro records restricted to the comparable set — the root
+/// project's `{% macro %}` definitions — as `uid -> macro_sql` pairs.
+fn root_macro_defs(d: &Dag) -> BTreeMap<&str, Option<&str>> {
+    d.macros()
+        .iter()
+        .filter(|(uid, _)| d.is_root_macro_def(uid))
+        .map(|(uid, m)| (uid.as_str(), m.sql.as_deref()))
+        .collect()
+}
+
+#[test]
+fn root_project_macro_definitions_are_identical() {
+    // The manifest's `macros` map reaches far wider than the project's
+    // own table: `macro.dbt.*` internals, the vendored `shipkit`
+    // package's defs, and `{% test %}` registrations — none of which a
+    // source load can carry. The comparable slice is the six root
+    // `{% macro %}` records; they must match uid-for-uid and
+    // byte-for-byte across modes.
+    let (m, s) = dags();
+    let (md, sd) = (root_macro_defs(&m), root_macro_defs(&s));
+    assert_eq!(
+        md.len(),
+        6,
+        "the fixture's six project macros must sit inside the shared set: {md:?}"
+    );
+    assert_eq!(
+        md, sd,
+        "root `{{% macro %}}` definitions diverge between modes"
+    );
+}
+
 #[test]
 fn macro_body_deps_are_edges_in_both_modes() {
     // Every project-macro dependency shape must produce the same edge dbt

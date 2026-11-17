@@ -87,6 +87,37 @@ fn tests_are_identical_as_kind_column_multisets() {
     cmp::assert_tests_identical(&m, &s);
 }
 
+/// A Dag's macro records restricted to the comparable set — the root
+/// project's `{% macro %}` definitions — as `uid -> macro_sql` pairs.
+fn root_macro_defs(d: &Dag) -> BTreeMap<&str, Option<&str>> {
+    d.macros()
+        .iter()
+        .filter(|(uid, _)| d.is_root_macro_def(uid))
+        .map(|(uid, m)| (uid.as_str(), m.sql.as_deref()))
+        .collect()
+}
+
+#[test]
+fn root_project_macro_definitions_are_identical() {
+    // A real manifest registers far more under `macro.*` than a source
+    // load can see — `{% test %}`/`{% data_test %}` blocks,
+    // materializations, and every installed-package definition. The
+    // shared slice is the root project's `{% macro %}` records: those
+    // must line up uid-for-uid AND byte-for-byte (`macro_sql` is the
+    // `{% macro %}…{% endmacro %}` block itself, not the body inside).
+    let (m, s) = dags();
+    let (md, sd) = (root_macro_defs(&m), root_macro_defs(&s));
+    assert!(
+        md.contains_key("macro.sample.bool_var"),
+        "the fixture's one project macro must sit inside the shared set — \
+         otherwise this comparison covers nothing: {md:?}"
+    );
+    assert_eq!(
+        md, sd,
+        "root `{{% macro %}}` definitions diverge between modes"
+    );
+}
+
 #[test]
 fn exposures_are_identical_including_payload() {
     // Exposures ride the same NodeInfo/closure comparisons as every other node
