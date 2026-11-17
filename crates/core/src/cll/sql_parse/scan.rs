@@ -58,13 +58,11 @@ use super::jinja::{generated_name, RenderedSql};
 pub(super) struct RelationScan<'a> {
     /// Hand-written relation names (`sch.t` dotted), sorted.
     pub hard_coded: BTreeSet<String>,
-    /// `JOIN`-arm display text with no join condition, sorted.
-    pub cartesian: BTreeSet<String>,
     /// `(display text, joined relation's span)` per conditionless JOIN
-    /// arm, in occurrence order — `cartesian` dedups display text, a
-    /// model can hit the same join text twice. The span lets the
-    /// per-tag withholding scope a clause-boundary `{{ }}` to the
-    /// SELECT-level candidate it actually shadows.
+    /// arm, in occurrence order — a model can hit the same join text
+    /// twice, and the span lets the per-tag withholding scope a
+    /// clause-boundary `{{ }}` to the SELECT-level candidate it
+    /// actually shadows.
     pub cartesian_items: Vec<(String, Span)>,
     /// Every recorded relation name + its name span, in source order —
     /// the positions `hard_coded_references` points at.
@@ -450,9 +448,8 @@ fn scan_select(sel: &Select, scope: &ScanScope, out: &mut RelationScan<'_>) {
             // no render map at all) still counts.
             let gap = Span::new(sel.from[i - 1].span().end, twj.span().start);
             if !out.rendered.is_some_and(|r| r.only_branch_commas(gap)) {
-                let text = twj.relation.to_string();
-                out.cartesian.insert(text.clone());
-                out.cartesian_items.push((text, twj.relation.span()));
+                out.cartesian_items
+                    .push((twj.relation.to_string(), twj.relation.span()));
             }
         }
         seen.extend(bound_names(twj));
@@ -616,7 +613,6 @@ fn scan_join(j: &Join, scope: &ScanScope, out: &mut RelationScan<'_>) {
     if unconditional {
         // The relation's own span — the `JOIN` keyword stays outside it,
         // so the finding underlines the joined table, not the keyword.
-        out.cartesian.insert(j.to_string());
         out.cartesian_items.push((j.to_string(), j.relation.span()));
     }
     if let JoinOperator::AsOf {

@@ -3822,6 +3822,151 @@ fn a_param_fed_literal_reaches_the_macro_body() {
 }
 
 #[test]
+fn a_nested_root_macro_call_reaches_the_inner_body() {
+    // `{{ outer() }}`'s body calls `{{ inner() }}`, whose body emits
+    // `left join u` — the body walk follows the nested root-project
+    // call, so `u` withholds and only `v` reports.
+    let mut m = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ outer() }}",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.m")],
+    );
+    m.macros.extend([
+        mac(
+            "outer",
+            &[],
+            "{% macro outer() %} {{ inner() }} {% endmacro %}",
+        ),
+        mac(
+            "inner",
+            &[],
+            "{% macro inner() %} left join u on true {% endmacro %}",
+        ),
+    ]);
+    let dag = Dag::build(&m);
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["v".to_string()]);
+    assert_eq!(
+        withheld_kinds(&facts),
+        vec![("unused_cte", "u".to_string())]
+    );
+}
+
+#[test]
+fn a_param_bound_nested_call_stays_provable() {
+    // `{{ inner(p) }}` inside `outer`'s body passes outer's bound
+    // param — the call stays provable, so the body walk reaches
+    // `inner` and its `u` word withholds only that CTE (`v` reports).
+    // The `{{ outer('x') }}` literal names no CTE, so it changes
+    // nothing — the withhold comes from the scanned inner body, not
+    // opacity.
+    let mut m = manifest(
+        vec![
+            model("model.t.base", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ outer('x') }}",
+                &[],
+            ),
+        ],
+        &[("model.t.base", "model.t.m")],
+    );
+    m.macros.extend([
+        mac(
+            "outer",
+            &["p"],
+            "{% macro outer(p) %} {{ inner(p) }} {% endmacro %}",
+        ),
+        mac(
+            "inner",
+            &["p"],
+            "{% macro inner(p) %} left join u{{ p }} on true {% endmacro %}",
+        ),
+    ]);
+    let dag = Dag::build(&m);
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["v".to_string()]);
+    assert_eq!(
+        withheld_kinds(&facts),
+        vec![("unused_cte", "u".to_string())]
+    );
+}
+
+#[test]
+fn unprovable_parts_inside_a_body_mark_the_whole_body_opaque() {
+    // The body scan applies the same provability a model-level tag
+    // gets: a `{% %}` block, a `var()`/`env_var()` call, a nested call
+    // carrying a non-literal/non-param argument, and a `f()()` re-call
+    // are all parts whose emitted text can't be proven — each withholds
+    // every unread CTE. (`inner`/`f` resolve to real project macros, so
+    // the opacity comes from the argument/tail, not the callee.)
+    for (name, body) in [
+        (
+            "block",
+            "{% macro w() %} {% if x %} left join u {% endif %} {% endmacro %}",
+        ),
+        (
+            "var",
+            "{% macro w() %} where x in ({{ var('ids') }}) {% endmacro %}",
+        ),
+        (
+            "env_var",
+            "{% macro w() %} and y = {{ env_var('E') }} {% endmacro %}",
+        ),
+        (
+            "call_var_arg",
+            "{% macro w() %} {{ inner(var('x')) }} {% endmacro %}",
+        ),
+        (
+            "call_unbound_arg",
+            "{% macro w() %} {{ inner(unbound) }} {% endmacro %}",
+        ),
+        ("recall", "{% macro w() %} {{ f()() }} {% endmacro %}"),
+    ] {
+        let mut m = manifest(
+            vec![
+                model("model.t.base", "select 1", &["id"]),
+                raw_model(
+                    "model.t.m",
+                    "with u as (select * from {{ ref('base') }}),\n     v as (select * from {{ ref('base') }}),\n     a as (select * from {{ ref('base') }})\nselect * from a {{ w() }}",
+                    &[],
+                ),
+            ],
+            &[("model.t.base", "model.t.m")],
+        );
+        m.macros.extend([
+            mac("w", &[], body),
+            mac("inner", &["x"], "{% macro inner(x) %} 1 {% endmacro %}"),
+            mac("f", &[], "{% macro f() %} 1 {% endmacro %}"),
+        ]);
+        let dag = Dag::build(&m);
+        let r = resolver();
+        let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+        assert!(
+            facts.unused_ctes.is_empty(),
+            "{name}: {:?}",
+            facts.unused_ctes
+        );
+        assert_eq!(
+            withheld_kinds(&facts),
+            vec![
+                ("unused_cte", "u".to_string()),
+                ("unused_cte", "v".to_string()),
+            ],
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn cartesian_withholds_only_arms_the_tag_can_condition() {
     // `{{ join_on('c', 'a.id') }}` sits in the outer SELECT, after the
     // `a`/`b` arms — it could emit their ON/WHERE, so both withhold.

@@ -143,6 +143,16 @@ pub(super) fn plain_positions(
         }
     }
     for (name, span) in scan.unread_ctes() {
+        // Same filter as `cartesian`: withheld candidates surface through
+        // `SqlFacts::withheld` (culprit-tag range), not through this
+        // structure — a withheld CTE's decl position would only mislead
+        // a consumer that trusts "positions pair kept findings".
+        if withhold
+            .as_ref()
+            .is_some_and(|w| w.may_emit_cte(name).is_some())
+        {
+            continue;
+        }
         if let Some(r) = rendered.span_source(*span) {
             out.unused_ctes.push((name.clone(), r));
         }

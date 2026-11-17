@@ -1,9 +1,12 @@
 use super::*;
 
 impl Dag {
-    /// The manifest's macros (`macro.<project>.<name>` → [`MacroInfo`]). Empty
-    /// for a synthesized source-mode manifest — macro-diff detection is
-    /// manifest-vs-manifest only, by design.
+    /// The manifest's macros (`macro.<project>.<name>` → [`MacroInfo`]).
+    /// A synthesized source-mode manifest carries the root project's own
+    /// `{% macro %}` defs too — body text, signature params, and the
+    /// `depends_on.macros` call edges — so the diff's shared-macro walk
+    /// and the per-tag withholding's body scan read the same table in
+    /// both modes. Package macros never appear in source mode.
     pub fn macros(&self) -> &BTreeMap<String, MacroInfo> {
         &self.macros
     }

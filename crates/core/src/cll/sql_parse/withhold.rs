@@ -16,7 +16,11 @@
 //   and the tag's string literals match a CTE name by substring
 //   (`{{ m('stg') }}` bound into `{{ prefix }}_orders` reaches
 //   `stg_orders`). A package macro's body stays unproven without a
-//   name-carrying argument — callers' CTE names can't reach it.
+//   name-carrying argument — callers' CTE names can't reach it. That
+//   last judgment is a rule of thumb, not a guarantee: a package macro
+//   COULD coincidentally read a same-named table, so the approximation
+//   may under-withhold there — acceptable, since over-withholding is
+//   the worse direction.
 // - `cartesian_join`: only a clause-boundary tag can add the missing
 //   `ON`/`WHERE`, and only to the SELECT it sits in — the last `select`
 //   keyword at the tag's own parenthesis depth. A tag with no
@@ -247,7 +251,10 @@ enum Class {
     Opaque,
     /// A listed builtin — only the literal-fragment match applies.
     Builtin,
-    /// `<other pkg>.m` — a package macro.
+    /// `<other pkg>.m` — a package macro. Its body isn't scanned: the
+    /// rule of thumb is that it can't name the caller's CTEs, so only a
+    /// literal argument carrying the name counts (an approximation — a
+    /// coincidental same-named read slips through).
     Package,
     /// No leading call at all (`{{ 'u' }}`) — only the literal check.
     NoCall,
@@ -483,17 +490,40 @@ fn body_scan(
                 }
                 if lit_value(e).is_some() {
                     // A pure literal emits only itself — counted above.
-                } else if let Some((name, _, _)) = leading_call(e) {
-                    match call_class(dag, proj, true, name) {
-                        Class::Project(next) => {
-                            let (w, op) = body_reach(dag, proj, &next, memo, visiting);
-                            emit.extend(w);
-                            opaque |= op;
+                } else if let Some((name, args, tail)) = leading_call(e) {
+                    // The same provability a model-level tag gets:
+                    // `var()`/`env_var()` can hold a whole clause, a
+                    // `f()()` tail applies the result once more, and an
+                    // argument that is neither a literal nor one of this
+                    // body's bound params (`var()`, `this`, an
+                    // expression) could feed the callee's `{{ param }}`
+                    // slots a value this scan can't see.
+                    let provable_call = tail.trim().is_empty()
+                        && !matches!(name, "var" | "env_var")
+                        && top_level_segments(args).iter().all(|s| {
+                            arg_literal(s) || {
+                                let seg = s.trim();
+                                let arg = split_kwarg(seg).map_or(seg, |(_, e)| e).trim();
+                                params.iter().any(|p| param_ref(arg, p))
+                            }
+                        });
+                    if !provable_call {
+                        opaque = true;
+                    } else {
+                        match call_class(dag, proj, true, name) {
+                            Class::Project(next) => {
+                                let (w, op) = body_reach(dag, proj, &next, memo, visiting);
+                                emit.extend(w);
+                                opaque |= op;
+                            }
+                            // A builtin/`ref`/`source` emits a value or a
+                            // relation name; a package macro can't name
+                            // the caller's CTEs — the same rule of thumb
+                            // the model-level call applies. The
+                            // literals already counted either way.
+                            Class::Builtin | Class::Package | Class::NoCall => {}
+                            Class::Opaque => opaque = true,
                         }
-                        // A builtin/`ref`/`source` emits a value or a
-                        // relation name — its literals already counted.
-                        Class::Builtin => {}
-                        _ => opaque = true,
                     }
                 } else {
                     // `{{ name }}` not bound to a param, or an
