@@ -92,7 +92,7 @@ sqlparser = "0.64"
 tempfile = "3"
 # `text`/`concise` report renderers in dbtl-report: annotated source
 # excerpts, and the styling palette the ANSI output paints with.
-annotate-snippets = "=0.12.17"
+annotate-snippets = "=0.12.18"
 anstyle = "1"
 
 dbtl-core = { path = "crates/core" }
